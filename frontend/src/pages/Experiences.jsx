@@ -21,8 +21,10 @@ export default function Experiences() {
   const { user } = useAuth();
   const [items, setItems] = useState([]);
   const [providers, setProviders] = useState([]);
+  const [facets, setFacets] = useState({ countries: [], cities: [], types: [] });
   const [q, setQ] = useState("");
   const [filterCountry, setFilterCountry] = useState("");
+  const [filterCity, setFilterCity] = useState("");
   const [filterType, setFilterType] = useState("");
   const [editing, setEditing] = useState(null);
   const [importOpen, setImportOpen] = useState(false);
@@ -35,12 +37,17 @@ export default function Experiences() {
       const params = {};
       if (q) params.q = q;
       if (filterCountry) params.country = filterCountry;
+      if (filterCity) params.city = filterCity;
       if (filterType) params.type = filterType;
-      const [a, b] = await Promise.all([api.get("/experiences", { params }), api.get("/providers")]);
-      setItems(a.data); setProviders(b.data);
+      const [a, b, c] = await Promise.all([
+        api.get("/experiences", { params }),
+        api.get("/providers"),
+        api.get("/experiences/facets"),
+      ]);
+      setItems(a.data); setProviders(b.data); setFacets(c.data);
     } finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, [q, filterCountry, filterType]);
+  useEffect(() => { load(); }, [q, filterCountry, filterCity, filterType]);
 
   const save = async () => {
     if (!editing.provider_id) { toast.error("El proveedor es obligatorio"); return; }
@@ -102,12 +109,19 @@ export default function Experiences() {
       </div>
 
       {/* filters */}
-      <div className="grid grid-cols-[1fr_180px_180px] gap-3 mb-4">
+      <div className="grid grid-cols-[1fr_160px_160px_160px] gap-3 mb-4">
         <div className="relative">
           <Search size={14} className="absolute left-3 top-3 text-clay-500" />
-          <input data-testid="exp-search-input" className="w-full pl-9 pr-3 py-2 bg-white border border-clay-300 text-sm outline-none focus:border-terracotta" placeholder="Buscar título, descripción o proveedor…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <input data-testid="exp-search-input" className="w-full pl-9 pr-3 py-2 bg-white border border-clay-300 text-sm outline-none focus:border-terracotta" placeholder="Buscar (palabras separadas, busca en cualquier orden)…" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
-        <input data-testid="filter-country" className="bg-white border border-clay-300 px-3 py-2 text-sm" placeholder="País" value={filterCountry} onChange={(e) => setFilterCountry(e.target.value)} />
+        <select data-testid="filter-country" className="bg-white border border-clay-300 px-3 py-2 text-sm" value={filterCountry} onChange={(e) => setFilterCountry(e.target.value)}>
+          <option value="">País: todos</option>
+          {facets.countries.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select data-testid="filter-city" className="bg-white border border-clay-300 px-3 py-2 text-sm" value={filterCity} onChange={(e) => setFilterCity(e.target.value)}>
+          <option value="">Ciudad: todas</option>
+          {facets.cities.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
         <select data-testid="filter-type" className="bg-white border border-clay-300 px-3 py-2 text-sm" value={filterType} onChange={(e) => setFilterType(e.target.value)}>
           <option value="">Todos los tipos</option>
           {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}

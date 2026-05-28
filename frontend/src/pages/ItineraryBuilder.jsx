@@ -485,13 +485,15 @@ function AutocompleteInput({ value, dayCity, onTextChange, onPick }) {
 
   const search = useCallback(async (text) => {
     const t = (text || "").trim();
-    if (!t && !dayCity) { setResults([]); return; }
-    if (t.length < 2 && !dayCity) { setResults([]); return; }
+    // Smart search: trigger at 3+ chars OR when there is a day city pre-filter
+    if (t.length < 3 && !dayCity) { setResults([]); return; }
     const params = {};
     if (t) params.q = t;
     if (dayCity) params.city = dayCity;
-    const { data } = await api.get("/experiences/autocomplete", { params });
-    setResults(data); setHighlight(0);
+    try {
+      const { data } = await api.get("/experiences/autocomplete", { params });
+      setResults(data); setHighlight(0);
+    } catch (e) { setResults([]); }
   }, [dayCity]);
 
   const handleChange = (e) => {
@@ -499,7 +501,7 @@ function AutocompleteInput({ value, dayCity, onTextChange, onPick }) {
     onTextChange(v);
     setOpen(true);
     if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => search(v), 200);
+    timer.current = setTimeout(() => search(v), 220);
   };
 
   const handleKey = (e) => {
@@ -519,7 +521,7 @@ function AutocompleteInput({ value, dayCity, onTextChange, onPick }) {
         onChange={handleChange}
         onFocus={() => { setOpen(true); search(value); }}
         onKeyDown={handleKey}
-        placeholder="Empieza a escribir para sugerencias…"
+        placeholder={dayCity ? `Buscar en ${dayCity}…` : "3+ letras para sugerencias…"}
       />
       {open && results.length > 0 && (
         <div className="absolute left-0 right-0 top-full mt-1 z-40 bg-white border border-clay-300 shadow-lg max-h-72 overflow-auto" data-testid="svc-autocomplete">

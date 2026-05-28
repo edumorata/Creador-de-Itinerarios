@@ -519,13 +519,21 @@ async def list_experiences(
     provider_id: Optional[str] = None,
     limit: int = Query(500, le=2000),
 ):
+    import re as _re
     flt: dict = {}
-    if q:
-        flt["$or"] = [
-            {"title": {"$regex": q, "$options": "i"}},
-            {"description": {"$regex": q, "$options": "i"}},
-            {"provider_name": {"$regex": q, "$options": "i"}},
-        ]
+    tokens = [t for t in (q or "").strip().split() if len(t) >= 2] if q else []
+    if tokens:
+        flt["$and"] = []
+        for tok in tokens:
+            safe = _re.escape(tok)
+            flt["$and"].append({
+                "$or": [
+                    {"title": {"$regex": safe, "$options": "i"}},
+                    {"description": {"$regex": safe, "$options": "i"}},
+                    {"provider_name": {"$regex": safe, "$options": "i"}},
+                    {"city": {"$regex": safe, "$options": "i"}},
+                ]
+            })
     if country:
         flt["country"] = country
     if city:
@@ -603,6 +611,17 @@ async def experience_facets(_: Annotated[User, Depends(current_user)]):
 # ---------------------------------------------------------------------------
 # Bulk import - provider price sheet (xlsx with columns operator_name, name, price_tax_incl/price_tax_excl, currency)
 # ---------------------------------------------------------------------------
+def _clean_title(s: str) -> str:
+    """Strip leading numeric codes like '23 ', '25Priv', '24 SG ' that are year-tags."""
+    if not s:
+        return s
+    s = s.strip()
+    import re
+    # Remove leading year-token: '23 ', '2024 ' OR '25Priv' (no space, just digits before letter)
+    s = re.sub(r"^\d{2,4}(?:\s+|(?=[A-Za-z]))", "", s)
+    return s.strip()
+
+
 def _parse_provider_sheet_bytes(content: bytes, country: Optional[str], city: Optional[str], stype: ServiceType):
     """Parse a provider rate-sheet workbook and return list of (provider_name, exp_payload_dict)."""
     wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
@@ -628,7 +647,9 @@ def _parse_provider_sheet_bytes(content: bytes, country: Optional[str], city: Op
         title = ws.cell(r, name_col).value
         if not title:
             continue
-        title = str(title).strip()
+        title = _clean_title(str(title))
+        if not title:
+            continue
         op_name = (ws.cell(r, op_col).value if op_col else None) or "Proveedor sin nombre"
         op_name = str(op_name).strip()
 
@@ -720,47 +741,72 @@ async def import_provider_sheet(
 async def import_all_server(
     admin: Annotated[User, Depends(require_admin)],
     base_path: str = Query("/app/artifacts/excel_creados", description="Server-side directory to scan"),
+    wipe: bool = Query(False, description="If true, wipes all experiences and providers first"),
 ):
     """Walk the server-side directory and import every .xlsx file found.
 
     Country is inferred from the parent folder containing keywords ESPA/PORT/ITAL.
+    City is inferred from the first sub-folder after the country folder, skipping
+    administrative folders like '2025', '2026', 'REVISADOS', etc.
     """
     import pathlib
+    import re as _re
+
     base = pathlib.Path(base_path)
     if not base.exists():
         raise HTTPException(status_code=404, detail=f"Path not found: {base_path}")
 
+    if wipe:
+        await db.experiences.delete_many({})
+        await db.providers.delete_many({})
+
     files = list(base.rglob("*.xlsx"))
+
+    def infer_country_city(parts):
+        country = None
+        city = None
+        # find country
+        country_idx = None
+        for i, p in enumerate(parts):
+            up = p.upper()
+            if "ESPA" in up and country is None:
+                country = "España"
+                country_idx = i
+            elif "PORT" in up and country is None:
+                country = "Portugal"
+                country_idx = i
+            elif "ITAL" in up and country is None:
+                country = "Italia"
+                country_idx = i
+        if country_idx is not None:
+            # walk subfolders after country, skip admin/year folders
+            skip_pat = _re.compile(r"^(20\d{2}|REVISADOS.*|VARIOS|NUEVOS?)$", _re.IGNORECASE)
+            for p in parts[country_idx + 1:-1]:  # exclude the file itself
+                if skip_pat.match(p.strip()):
+                    continue
+                city = p.strip()
+                break
+        return country, city
+
     total_created = 0
     total_skipped = 0
     file_results = []
     for fp in files:
-        # infer country
-        country = None
-        for part in fp.parts:
-            up = part.upper()
-            if "ESPA" in up:
-                country = "España"
-                break
-            if "PORT" in up:
-                country = "Portugal"
-                break
-            if "ITAL" in up:
-                country = "Italia"
-                break
+        country, city = infer_country_city(fp.parts)
         try:
             content = fp.read_bytes()
-            rows = _parse_provider_sheet_bytes(content, country, None, "actividad")
+            rows = _parse_provider_sheet_bytes(content, country, city, "actividad")
             r = await _import_rows(rows, dedupe=True)
             total_created += r["created"]
             total_skipped += r["skipped"]
-            file_results.append({"file": fp.name, "country": country, **r})
+            file_results.append({"file": fp.name, "country": country, "city": city, **r})
         except Exception as e:
-            file_results.append({"file": fp.name, "country": country, "error": str(e)})
+            file_results.append({"file": fp.name, "country": country, "city": city, "error": str(e)})
     return {
         "files_scanned": len(files),
         "total_created": total_created,
         "total_skipped": total_skipped,
+        "wiped": wipe,
         "files": file_results,
     }
 
@@ -772,22 +818,35 @@ async def experience_autocomplete(
     city: Optional[str] = None,
     country: Optional[str] = None,
     type: Optional[ServiceType] = None,
-    limit: int = Query(15, le=50),
+    limit: int = Query(20, le=50),
 ):
-    """Lightweight typeahead: returns experiences matching `q`, optionally pre-filtered by city/country/type."""
+    """Smart typeahead: tokenized AND-search on title + provider_name.
+
+    Each whitespace-separated token in `q` must appear in title OR provider_name
+    (case-insensitive). Optional pre-filters: city, country, type.
+    """
+    import re as _re
     flt: dict = {}
-    if q and q.strip():
-        flt["$or"] = [
-            {"title": {"$regex": q, "$options": "i"}},
-            {"provider_name": {"$regex": q, "$options": "i"}},
-        ]
+    tokens = [t for t in (q or "").strip().split() if len(t) >= 2]
+    if tokens:
+        flt["$and"] = []
+        for tok in tokens:
+            safe = _re.escape(tok)
+            flt["$and"].append({
+                "$or": [
+                    {"title": {"$regex": safe, "$options": "i"}},
+                    {"provider_name": {"$regex": safe, "$options": "i"}},
+                ]
+            })
     if city:
         flt["city"] = {"$regex": f"^{city}$", "$options": "i"}
     if country:
         flt["country"] = country
     if type:
         flt["type"] = type
-    items = await db.experiences.find(flt, {"_id": 0}).sort("title", 1).limit(limit).to_list(limit)
+    proj = {"_id": 0, "experience_id": 1, "title": 1, "provider_name": 1, "city": 1, "country": 1,
+            "type": 1, "price_tax_excl": 1, "price_tax_incl": 1, "price": 1, "currency": 1}
+    items = await db.experiences.find(flt, proj).sort("title", 1).limit(limit).to_list(limit)
     return items
 
 
