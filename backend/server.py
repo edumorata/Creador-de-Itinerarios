@@ -1226,6 +1226,199 @@ async def delete_hotel(hotel_id: str, _: Annotated[User, Depends(current_user)])
     return {"ok": True}
 
 
+def _normalize_city(sheet_name: str) -> str:
+    """Normalize city codes/sheet names to canonical city names."""
+    s = (sheet_name or "").strip()
+    table = {
+        "MAD": "Madrid",
+        "BCN": "Barcelona",
+        "SEV": "Sevilla",
+        "DV": "Douro Valley",
+        "Oporto": "Porto",
+        "Lisboa": "Lisbon",
+        "Venecia": "Venice",
+        "Florencia": "Florence",
+        "Roma": "Rome",
+        "Toscana": "Tuscany",
+    }
+    return table.get(s, s)
+
+
+def _tier_from_category(cat: str) -> str:
+    if not cat:
+        return "standard"
+    c = str(cat).strip().replace(" ", "").replace("*", "")
+    if c == "5":
+        return "luxury"
+    if c == "4":
+        return "upscale"
+    if c == "3":
+        return "comfort"
+    if c == "2":
+        return "standard"
+    return "standard"
+
+
+def _parse_hotels_sheet(ws, country: str, city: str):
+    """Generic parser for the hotel sheets. Returns list of hotel dicts."""
+    # Identify column indexes from header row
+    headers: dict = {}
+    for c in range(1, ws.max_column + 1):
+        v = ws.cell(1, c).value
+        if v:
+            headers[str(v).strip().lower()] = c
+
+    cat_col = headers.get("categoria")
+    name_col = headers.get("nombre hotel") or headers.get("nombre")
+    reserva_col = headers.get("reserva")
+    notas_col = headers.get("notas")
+    ciudad_col = headers.get("ciudad")  # used in Marruecos file (city is per-row)
+    tipo_col = headers.get("tipo de alojamiento") or headers.get("apartamento")
+    web_col = headers.get("web")
+    car_col = headers.get("caracterísricas de alojamiento") or headers.get("caracteristicas de alojamiento") or headers.get("características de alojamiento")
+    if not name_col:
+        return []
+
+    # Extra notes columns: anything beyond the known
+    known = {cat_col, name_col, reserva_col, notas_col, ciudad_col, tipo_col, web_col, car_col}
+    extra_cols = [c for c in range(1, ws.max_column + 1) if c not in known and c is not None]
+
+    rows = []
+    for r in range(2, ws.max_row + 1):
+        name = ws.cell(r, name_col).value
+        if not name:
+            continue
+        name = str(name).strip()
+        if not name or name.lower().startswith("nombre"):
+            continue
+
+        cat = ws.cell(r, cat_col).value if cat_col else None
+        tier = _tier_from_category(str(cat) if cat else "")
+
+        # Concatenate notes from notas, reserva (skip "si"/"no"/"hotel"/"kimkim"), tipo, características, and any extra
+        note_parts = []
+        if reserva_col:
+            v = ws.cell(r, reserva_col).value
+            if v:
+                v = str(v).strip()
+                if v.lower() not in ("si", "no", "hotel", "kimkim", "yes"):
+                    note_parts.append(f"reserva: {v}")
+        if notas_col:
+            v = ws.cell(r, notas_col).value
+            if v and str(v).strip():
+                note_parts.append(str(v).strip())
+        if tipo_col:
+            v = ws.cell(r, tipo_col).value
+            if v and str(v).strip():
+                note_parts.append(f"tipo: {str(v).strip()}")
+        if car_col:
+            v = ws.cell(r, car_col).value
+            if v and str(v).strip():
+                note_parts.append(str(v).strip())
+        for c in extra_cols:
+            v = ws.cell(r, c).value
+            if v and str(v).strip():
+                note_parts.append(str(v).strip())
+
+        web = ""
+        if web_col:
+            wv = ws.cell(r, web_col).value
+            if wv:
+                web = str(wv).strip()
+
+        # Per-row city if file is Marruecos style; else use sheet-derived city
+        row_city = city
+        if ciudad_col:
+            cv = ws.cell(r, ciudad_col).value
+            if cv:
+                row_city = str(cv).strip()
+
+        rows.append({
+            "name": name,
+            "city": row_city,
+            "country": country,
+            "tier": tier,
+            "description": (note_parts[0] if note_parts else None),
+            "notes": "\n".join(note_parts[1:]) if len(note_parts) > 1 else None,
+            "contact": web or None,
+            "price_per_night_excl": 0.0,
+            "price_per_night_incl": 0.0,
+            "currency": "EUR",
+        })
+    return rows
+
+
+@api.post("/hotels/import-all-server")
+async def import_all_hotels_server(
+    admin: Annotated[User, Depends(require_admin)],
+    base_path: str = Query("/app/artifacts/hoteles_db", description="Server dir containing hotel xlsx files"),
+    wipe: bool = Query(False, description="Wipe hotels collection first"),
+):
+    """Walk the hotels directory and import every .xlsx file found.
+    Country inferred from filename (ESPA/PORT/ITAL/MARRU).
+    City inferred from sheet name (MAD→Madrid, etc.) or per-row Ciudad column.
+    """
+    import pathlib
+    base = pathlib.Path(base_path)
+    if not base.exists():
+        raise HTTPException(status_code=404, detail=f"Path not found: {base_path}")
+
+    if wipe:
+        await db.hotels.delete_many({})
+
+    files = list(base.rglob("*.xlsx"))
+    total_created = 0
+    total_skipped = 0
+    file_results = []
+    for fp in files:
+        upn = fp.name.upper()
+        country = None
+        if "ESPA" in upn:
+            country = "España"
+        elif "PORT" in upn:
+            country = "Portugal"
+        elif "ITAL" in upn:
+            country = "Italia"
+        elif "MARRU" in upn:
+            country = "Marruecos"
+        elif "ALOJAMIENTO" in upn or "APART" in upn or "FAMILI" in upn:
+            country = None  # multi-country file; city per sheet
+        try:
+            wb = openpyxl.load_workbook(fp, data_only=True)
+            file_created = 0
+            file_skipped = 0
+            for sname in wb.sheetnames:
+                ws = wb[sname]
+                if ws.max_row < 2:
+                    continue
+                city = _normalize_city(sname)
+                rows = _parse_hotels_sheet(ws, country=country, city=city)
+                for row in rows:
+                    # Dedup by (name, city)
+                    existing = await db.hotels.find_one(
+                        {"name": row["name"], "city": row["city"]}, {"_id": 0}
+                    )
+                    if existing:
+                        file_skipped += 1
+                        continue
+                    h = Hotel(**row)
+                    await db.hotels.insert_one(h.model_dump())
+                    file_created += 1
+            total_created += file_created
+            total_skipped += file_skipped
+            file_results.append({"file": fp.name, "country": country, "created": file_created, "skipped": file_skipped})
+        except Exception as e:
+            file_results.append({"file": fp.name, "error": str(e)})
+
+    return {
+        "files_scanned": len(files),
+        "total_created": total_created,
+        "total_skipped": total_skipped,
+        "wiped": wipe,
+        "files": file_results,
+    }
+
+
 # ===========================================================================
 # AI Trainer: Training examples
 # ===========================================================================

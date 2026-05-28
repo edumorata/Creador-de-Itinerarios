@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
-import { Plus, Trash2, Pencil, X, Search } from "lucide-react";
+import { Plus, Trash2, Pencil, X, Search, Server } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 
 const TIERS = ["luxury", "upscale", "comfort", "standard", "budget"];
 const TIER_COLOR = {
@@ -14,11 +15,13 @@ const TIER_COLOR = {
 const EMPTY = { name: "", city: "", country: "", tier: "upscale", description: "", price_per_night_excl: 0, price_per_night_incl: 0, currency: "EUR", contact: "", notes: "" };
 
 export default function Hotels() {
+  const { user } = useAuth();
   const [items, setItems] = useState([]);
   const [q, setQ] = useState("");
   const [filterTier, setFilterTier] = useState("");
   const [editing, setEditing] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -54,9 +57,30 @@ export default function Hotels() {
           <h1 className="font-serif text-5xl leading-none mt-3">Hoteles</h1>
           <p className="text-sm text-clay-700 mt-3 max-w-lg">Base de hoteles que el asistente de IA puede usar para construir alojamientos en los itinerarios.</p>
         </div>
-        <button data-testid="new-hotel-btn" onClick={() => setEditing({ ...EMPTY })} className="inline-flex items-center gap-2 px-4 py-2 bg-clay-900 text-white text-sm tracking-wider uppercase hover:bg-terracotta">
-          <Plus size={14}/> Nuevo hotel
-        </button>
+        <div className="flex items-center gap-2">
+          {user?.role === "admin" && (
+            <button
+              data-testid="bulk-import-hotels"
+              disabled={bulkBusy}
+              onClick={async () => {
+                if (!window.confirm("Importar TODOS los archivos de hoteles del servidor (España/Portugal/Italia/Marruecos + apartamentos)?")) return;
+                setBulkBusy(true);
+                try {
+                  const { data } = await api.post("/hotels/import-all-server");
+                  toast.success(`${data.total_created} hoteles añadidos (${data.files_scanned} archivos, ${data.total_skipped} duplicados saltados)`);
+                  load();
+                } catch (e) { toast.error(e?.response?.data?.detail || "Error en importación masiva"); }
+                finally { setBulkBusy(false); }
+              }}
+              className="inline-flex items-center gap-2 px-4 py-2 border border-clay-300 hover:bg-clay-100 text-sm disabled:opacity-50"
+            >
+              <Server size={14}/> {bulkBusy ? "Importando…" : "Importar TODO del servidor"}
+            </button>
+          )}
+          <button data-testid="new-hotel-btn" onClick={() => setEditing({ ...EMPTY })} className="inline-flex items-center gap-2 px-4 py-2 bg-clay-900 text-white text-sm tracking-wider uppercase hover:bg-terracotta">
+            <Plus size={14}/> Nuevo hotel
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-[1fr_200px] gap-3 mb-4">
