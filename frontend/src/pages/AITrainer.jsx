@@ -10,7 +10,18 @@ const OUTCOMES = [
   { v: "pending", label: "Pendiente", icon: Sparkles, cls: "bg-white text-clay-900 border-clay-300", iconCls: "text-terracotta" },
 ];
 
-const EMPTY = { client_name: "", client_request: "", itinerary_url: "", itinerary_text: "", outcome: "sold", notes: "" };
+const EMPTY = {
+  client_name: "",
+  client_request: "",
+  itinerary_url: "",
+  itinerary_text: "",
+  itinerary_structured: null,
+  itinerary_url_ops: "",
+  itinerary_text_ops: "",
+  itinerary_structured_ops: null,
+  outcome: "sold",
+  notes: "",
+};
 
 export default function AITrainer() {
   const [items, setItems] = useState([]);
@@ -123,17 +134,26 @@ export default function AITrainer() {
                 <div className="font-semibold truncate">{ex.client_name || "Sin nombre"}</div>
                 <div className="text-[11px] text-clay-700 line-clamp-2 break-words">{ex.client_request}</div>
               </div>
-              <div className="px-4 py-3 min-w-0">
-                {ex.itinerary_url ? (
-                  <a href={ex.itinerary_url} target="_blank" rel="noreferrer" className="text-terracotta hover:underline inline-flex items-center gap-1 truncate text-[12px]"><ExternalLink size={12}/><span className="truncate">{ex.itinerary_url.replace(/^https?:\/\//, "")}</span></a>
-                ) : null}
-                {ex.itinerary_structured?.days?.length > 0 ? (
-                  <div className="text-[11px] text-pine mt-0.5 font-semibold">
-                    ✓ {ex.itinerary_structured.days.length} días parseados · {ex.itinerary_structured.trip_name?.slice(0, 50) || ""}
+              <div className="px-4 py-3 min-w-0 space-y-1">
+                {ex.itinerary_url && (
+                  <div className="flex items-center gap-1 text-[11px] min-w-0">
+                    <span className={`px-1 py-0 text-[9px] tracking-widest uppercase ${ex.itinerary_structured?.days?.length ? "bg-pine text-white" : "bg-clay-200 text-clay-700"}`}>Travefy</span>
+                    {ex.itinerary_structured?.days?.length > 0 ? (
+                      <span className="text-pine font-semibold">✓ {ex.itinerary_structured.days.length}d</span>
+                    ) : <span className="text-clay-500">—</span>}
+                    <a href={ex.itinerary_url} target="_blank" rel="noreferrer" className="text-terracotta hover:underline truncate flex items-center gap-0.5"><ExternalLink size={10}/></a>
                   </div>
-                ) : ex.itinerary_text ? (
-                  <div className="text-[11px] text-clay-700 mt-0.5">{ex.itinerary_text.length.toLocaleString("es-ES")} chars de texto</div>
-                ) : <span className="text-clay-500 text-[11px]">—</span>}
+                )}
+                {ex.itinerary_url_ops && (
+                  <div className="flex items-center gap-1 text-[11px] min-w-0">
+                    <span className={`px-1 py-0 text-[9px] tracking-widest uppercase ${ex.itinerary_structured_ops?.days?.length ? "bg-pine text-white" : "bg-clay-200 text-clay-700"}`}>Ops</span>
+                    {ex.itinerary_structured_ops?.days?.length > 0 ? (
+                      <span className="text-pine font-semibold">✓ {ex.itinerary_structured_ops.days.length}d</span>
+                    ) : <span className="text-clay-500">—</span>}
+                    <a href={ex.itinerary_url_ops} target="_blank" rel="noreferrer" className="text-terracotta hover:underline truncate flex items-center gap-0.5"><ExternalLink size={10}/></a>
+                  </div>
+                )}
+                {!ex.itinerary_url && !ex.itinerary_url_ops && <span className="text-clay-500 text-[11px]">—</span>}
               </div>
               <div className="px-4 py-3 text-clay-700 tabular text-[11px]">{new Date(ex.created_at).toLocaleDateString("es-ES", { day:"2-digit", month:"short", year:"numeric" })}</div>
               <div className="px-4 py-3 flex justify-end gap-1">
@@ -165,51 +185,37 @@ export default function AITrainer() {
           <div className="mb-4">
             <div className="flex items-baseline gap-2 mb-2">
               <span className="smallcaps text-terracotta">Paso 2</span>
-              <span className="font-semibold text-sm">URL del itinerario final</span>
-            </div>
-            <div className="flex gap-2">
-              <input data-testid="trn-url" placeholder="https://travefy.com/trip/itinerary/… ó https://gestion.viajadverdad.com/trips/form/…" value={editing.itinerary_url || ""} onChange={(e) => setEditing({ ...editing, itinerary_url: e.target.value })} className="flex-1 bg-white border border-clay-300 px-3 py-2 text-sm outline-none focus:border-terracotta" />
-              <button data-testid="trn-scrape" onClick={scrape} disabled={scraping || !editing.itinerary_url} className="inline-flex items-center gap-2 px-3 py-2 border border-clay-300 hover:bg-clay-100 text-sm disabled:opacity-50">
-                {scraping ? <RotateCw size={14} className="animate-spin"/> : <RotateCw size={14}/>} Extraer
-              </button>
-            </div>
-            <div className="mt-3">
-              <div className="smallcaps mb-1">Texto extraído / pegado manualmente</div>
-              <textarea data-testid="trn-text" rows={5} placeholder="Si la URL requiere login o el scraping falla, pega aquí el contenido del itinerario." value={editing.itinerary_text || ""} onChange={(e) => setEditing({ ...editing, itinerary_text: e.target.value })} className="w-full bg-white border border-clay-300 px-3 py-2 text-sm outline-none focus:border-terracotta" />
-              {editing.itinerary_text && <div className="text-[11px] text-clay-700 mt-1">{editing.itinerary_text.length.toLocaleString("es-ES")} caracteres</div>}
+              <span className="font-semibold text-sm">Itinerario(s) final(es)</span>
+              <span className="text-[11px] text-clay-700">— una URL para cliente (Travefy) y/u otra interna (gestion). El agente aprende de ambas.</span>
             </div>
 
-            {editing.itinerary_structured?.days?.length > 0 && (
-              <div className="mt-4 border border-pine bg-pine/5 p-4" data-testid="trn-structured">
-                <div className="smallcaps text-pine mb-2">El agente ha entendido este itinerario</div>
-                <div className="text-sm font-semibold">{editing.itinerary_structured.trip_name || "Itinerario"}</div>
-                <div className="text-[11px] text-clay-700 mb-3">
-                  {editing.itinerary_structured.start_date} → {editing.itinerary_structured.end_date} · {editing.itinerary_structured.days.length} días
-                </div>
-                <div className="max-h-72 overflow-auto space-y-2">
-                  {editing.itinerary_structured.days.map((d, i) => (
-                    <div key={i} className="border border-clay-300 bg-white px-3 py-2 text-xs">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-semibold">Day {d.day} · {d.city || "—"}</span>
-                        <span className="tabular text-clay-700">{d.date || ""}</span>
-                      </div>
-                      {(d.activities || []).map((a, j) => (
-                        <div key={`a${j}`} className="text-clay-700 truncate">• {a.name}{a.time ? ` · ${a.time}` : ""}</div>
-                      ))}
-                      {(d.hotels || []).map((h, j) => (
-                        <div key={`h${j}`} className="text-terracotta font-semibold">🏨 {h.name}{h.nights ? ` · ${h.nights}n` : ""}</div>
-                      ))}
-                      {(d.transfers || []).map((t, j) => (
-                        <div key={`t${j}`} className="text-clay-500 italic">↪ {t.description}</div>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-                {editing.itinerary_structured.notes && (
-                  <div className="text-[11px] text-clay-700 italic mt-3 pl-2 border-l-2 border-pine">{editing.itinerary_structured.notes}</div>
-                )}
-              </div>
-            )}
+            <UrlBlock
+              title="A · Itinerario cliente (Travefy)"
+              placeholder="https://travefy.com/trip/itinerary/…"
+              url={editing.itinerary_url || ""}
+              onUrlChange={(v) => setEditing({ ...editing, itinerary_url: v })}
+              text={editing.itinerary_text || ""}
+              onTextChange={(v) => setEditing({ ...editing, itinerary_text: v })}
+              structured={editing.itinerary_structured}
+              scraping={scraping === "client"}
+              onScrape={() => scrape("client")}
+              tidPrefix="trn-client"
+            />
+
+            <div className="mt-4" />
+
+            <UrlBlock
+              title="B · Vista interna de operaciones (gestion.viajadverdad.com)"
+              placeholder="https://gestion.viajadverdad.com/trips/form/1/…"
+              url={editing.itinerary_url_ops || ""}
+              onUrlChange={(v) => setEditing({ ...editing, itinerary_url_ops: v })}
+              text={editing.itinerary_text_ops || ""}
+              onTextChange={(v) => setEditing({ ...editing, itinerary_text_ops: v })}
+              structured={editing.itinerary_structured_ops}
+              scraping={scraping === "ops"}
+              onScrape={() => scrape("ops")}
+              tidPrefix="trn-ops"
+            />
           </div>
 
           <div className="mb-4">
@@ -244,6 +250,70 @@ export default function AITrainer() {
             </button>
           </div>
         </Modal>
+      )}
+    </div>
+  );
+}
+
+function UrlBlock({ title, placeholder, url, onUrlChange, text, onTextChange, structured, scraping, onScrape, tidPrefix }) {
+  return (
+    <div className="border border-clay-300 bg-clay-50/40 p-3">
+      <div className="smallcaps mb-2">{title}</div>
+      <div className="flex gap-2">
+        <input
+          data-testid={`${tidPrefix}-url`}
+          placeholder={placeholder}
+          value={url}
+          onChange={(e) => onUrlChange(e.target.value)}
+          className="flex-1 bg-white border border-clay-300 px-3 py-2 text-sm outline-none focus:border-terracotta"
+        />
+        <button
+          data-testid={`${tidPrefix}-scrape`}
+          onClick={onScrape}
+          disabled={scraping || !url}
+          className="inline-flex items-center gap-2 px-3 py-2 border border-clay-300 hover:bg-clay-100 text-sm disabled:opacity-50"
+        >
+          <RotateCw size={14} className={scraping ? "animate-spin" : ""}/> {scraping ? "Extrayendo…" : "Extraer"}
+        </button>
+      </div>
+      <details className="mt-2">
+        <summary className="text-[11px] text-clay-700 cursor-pointer hover:text-terracotta">Texto extraído / pegado manualmente {text ? `(${text.length.toLocaleString("es-ES")} chars)` : ""}</summary>
+        <textarea
+          data-testid={`${tidPrefix}-text`}
+          rows={4}
+          placeholder="Si la URL requiere login o el scraping falla, pega aquí el contenido."
+          value={text}
+          onChange={(e) => onTextChange(e.target.value)}
+          className="w-full bg-white border border-clay-300 px-3 py-2 text-sm outline-none focus:border-terracotta mt-2"
+        />
+      </details>
+      {structured?.days?.length > 0 && (
+        <div className="mt-3 border border-pine bg-pine/5 p-3" data-testid={`${tidPrefix}-structured`}>
+          <div className="smallcaps text-pine mb-1">El agente entiende este itinerario</div>
+          <div className="text-sm font-semibold">{structured.trip_name || "Itinerario"}</div>
+          <div className="text-[11px] text-clay-700 mb-2">
+            {structured.start_date} → {structured.end_date} · {structured.days.length} días
+          </div>
+          <div className="max-h-60 overflow-auto space-y-1.5">
+            {structured.days.map((d, i) => (
+              <div key={i} className="border border-clay-300 bg-white px-2 py-1.5 text-[11px]">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold">Day {d.day} · {d.city || "—"}</span>
+                  <span className="tabular text-clay-700">{d.date || ""}</span>
+                </div>
+                {(d.activities || []).slice(0, 3).map((a, j) => (
+                  <div key={`a${j}`} className="text-clay-700 truncate">• {a.name}{a.time ? ` · ${a.time}` : ""}</div>
+                ))}
+                {(d.hotels || []).map((h, j) => (
+                  <div key={`h${j}`} className="text-terracotta font-semibold">🏨 {h.name}{h.nights ? ` · ${h.nights}n` : ""}</div>
+                ))}
+              </div>
+            ))}
+          </div>
+          {structured.notes && (
+            <div className="text-[11px] text-clay-700 italic mt-2 pl-2 border-l-2 border-pine">{structured.notes}</div>
+          )}
+        </div>
       )}
     </div>
   );

@@ -1430,9 +1430,14 @@ class TrainingExample(BaseModel):
     example_id: str = Field(default_factory=lambda: new_id("trn"))
     client_name: Optional[str] = None
     client_request: str
+    # Client-facing itinerary (Travefy or similar)
     itinerary_url: Optional[str] = None
-    itinerary_text: Optional[str] = None  # rendered text from browser
-    itinerary_structured: Optional[dict] = None  # LLM-parsed days/hotels/activities
+    itinerary_text: Optional[str] = None
+    itinerary_structured: Optional[dict] = None
+    # Internal operations view (gestion.viajadverdad.com) with providers, margins, real costs
+    itinerary_url_ops: Optional[str] = None
+    itinerary_text_ops: Optional[str] = None
+    itinerary_structured_ops: Optional[dict] = None
     outcome: TripOutcome = "pending"
     notes: Optional[str] = None
     created_by: Optional[str] = None
@@ -1445,6 +1450,9 @@ class TrainingExampleUpsert(BaseModel):
     itinerary_url: Optional[str] = None
     itinerary_text: Optional[str] = None
     itinerary_structured: Optional[dict] = None
+    itinerary_url_ops: Optional[str] = None
+    itinerary_text_ops: Optional[str] = None
+    itinerary_structured_ops: Optional[dict] = None
     outcome: Optional[TripOutcome] = None
     notes: Optional[str] = None
 
@@ -1703,16 +1711,23 @@ async def ai_generate(
     if examples:
         user_prompt_parts.append("PAST EXAMPLES (learn from these patterns):")
         for ex in examples:
-            # Prefer the structured representation if we have it (cleaner, smaller)
-            structured = ex.get("itinerary_structured")
-            if structured and isinstance(structured, dict) and structured.get("days"):
-                final_block = _compact_json(structured)
-            else:
-                final_block = (ex.get("itinerary_text") or "")[:3000]
+            client_struct = ex.get("itinerary_structured")
+            ops_struct = ex.get("itinerary_structured_ops")
+            blocks = []
+            if client_struct and isinstance(client_struct, dict) and client_struct.get("days"):
+                blocks.append(f"CLIENT-FACING ITINERARY (Travefy):\n{_compact_json(client_struct)}")
+            elif ex.get("itinerary_text"):
+                blocks.append(f"CLIENT-FACING ITINERARY (raw):\n{ex['itinerary_text'][:2500]}")
+            if ops_struct and isinstance(ops_struct, dict) and ops_struct.get("days"):
+                blocks.append(f"INTERNAL OPS VIEW (providers + real margins):\n{_compact_json(ops_struct)}")
+            elif ex.get("itinerary_text_ops"):
+                blocks.append(f"INTERNAL OPS VIEW (raw):\n{ex['itinerary_text_ops'][:2500]}")
+            if not blocks:
+                continue
             user_prompt_parts.append(
                 f"--- outcome={ex['outcome']} ---\n"
                 f"CLIENT REQUEST:\n{ex['client_request'][:1500]}\n\n"
-                f"FINAL ITINERARY:\n{final_block}\n"
+                + "\n\n".join(blocks)
             )
     user_prompt_parts.append("\nNow produce ONLY the JSON itinerary for the NEW CLIENT REQUEST above.")
 
