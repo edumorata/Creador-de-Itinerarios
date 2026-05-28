@@ -34,11 +34,16 @@ export default function AITrainer() {
     setScraping(true);
     try {
       const { data } = await api.post("/training-examples/scrape", { url: editing.itinerary_url });
-      if (data.ok) {
-        setEditing({ ...editing, itinerary_text: data.text });
-        toast.success(`Texto extraído (${data.text.length} chars, fuente: ${data.source})`);
-      } else {
-        toast.warning("No se pudo extraer texto automáticamente. Pégalo a mano abajo.");
+      const next = { ...editing };
+      if (data.text) next.itinerary_text = data.text;
+      if (data.structured) next.itinerary_structured = data.structured;
+      setEditing(next);
+      if (data.ok && data.structured?.days?.length) {
+        toast.success(`Itinerario parseado: ${data.structured.days.length} días, ${data.structured.trip_name || ""}`);
+      } else if (data.error === "login_failed") {
+        toast.error("Login en gestion.viajadverdad.com falló. Pega el contenido del itinerario manualmente.");
+      } else if (!data.ok) {
+        toast.warning("No se pudo extraer la información. Pégala a mano.");
       }
     } catch (e) { toast.error(e?.response?.data?.detail || "Error al hacer scrape"); }
     finally { setScraping(false); }
@@ -120,8 +125,15 @@ export default function AITrainer() {
               </div>
               <div className="px-4 py-3 min-w-0">
                 {ex.itinerary_url ? (
-                  <a href={ex.itinerary_url} target="_blank" rel="noreferrer" className="text-terracotta hover:underline inline-flex items-center gap-1 truncate"><ExternalLink size={12}/><span className="truncate">{ex.itinerary_url}</span></a>
-                ) : <span className="text-clay-700">{(ex.itinerary_text || "—").slice(0, 80)}…</span>}
+                  <a href={ex.itinerary_url} target="_blank" rel="noreferrer" className="text-terracotta hover:underline inline-flex items-center gap-1 truncate text-[12px]"><ExternalLink size={12}/><span className="truncate">{ex.itinerary_url.replace(/^https?:\/\//, "")}</span></a>
+                ) : null}
+                {ex.itinerary_structured?.days?.length > 0 ? (
+                  <div className="text-[11px] text-pine mt-0.5 font-semibold">
+                    ✓ {ex.itinerary_structured.days.length} días parseados · {ex.itinerary_structured.trip_name?.slice(0, 50) || ""}
+                  </div>
+                ) : ex.itinerary_text ? (
+                  <div className="text-[11px] text-clay-700 mt-0.5">{ex.itinerary_text.length.toLocaleString("es-ES")} chars de texto</div>
+                ) : <span className="text-clay-500 text-[11px]">—</span>}
               </div>
               <div className="px-4 py-3 text-clay-700 tabular text-[11px]">{new Date(ex.created_at).toLocaleDateString("es-ES", { day:"2-digit", month:"short", year:"numeric" })}</div>
               <div className="px-4 py-3 flex justify-end gap-1">
@@ -166,6 +178,38 @@ export default function AITrainer() {
               <textarea data-testid="trn-text" rows={5} placeholder="Si la URL requiere login o el scraping falla, pega aquí el contenido del itinerario." value={editing.itinerary_text || ""} onChange={(e) => setEditing({ ...editing, itinerary_text: e.target.value })} className="w-full bg-white border border-clay-300 px-3 py-2 text-sm outline-none focus:border-terracotta" />
               {editing.itinerary_text && <div className="text-[11px] text-clay-700 mt-1">{editing.itinerary_text.length.toLocaleString("es-ES")} caracteres</div>}
             </div>
+
+            {editing.itinerary_structured?.days?.length > 0 && (
+              <div className="mt-4 border border-pine bg-pine/5 p-4" data-testid="trn-structured">
+                <div className="smallcaps text-pine mb-2">El agente ha entendido este itinerario</div>
+                <div className="text-sm font-semibold">{editing.itinerary_structured.trip_name || "Itinerario"}</div>
+                <div className="text-[11px] text-clay-700 mb-3">
+                  {editing.itinerary_structured.start_date} → {editing.itinerary_structured.end_date} · {editing.itinerary_structured.days.length} días
+                </div>
+                <div className="max-h-72 overflow-auto space-y-2">
+                  {editing.itinerary_structured.days.map((d, i) => (
+                    <div key={i} className="border border-clay-300 bg-white px-3 py-2 text-xs">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="font-semibold">Day {d.day} · {d.city || "—"}</span>
+                        <span className="tabular text-clay-700">{d.date || ""}</span>
+                      </div>
+                      {(d.activities || []).map((a, j) => (
+                        <div key={`a${j}`} className="text-clay-700 truncate">• {a.name}{a.time ? ` · ${a.time}` : ""}</div>
+                      ))}
+                      {(d.hotels || []).map((h, j) => (
+                        <div key={`h${j}`} className="text-terracotta font-semibold">🏨 {h.name}{h.nights ? ` · ${h.nights}n` : ""}</div>
+                      ))}
+                      {(d.transfers || []).map((t, j) => (
+                        <div key={`t${j}`} className="text-clay-500 italic">↪ {t.description}</div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+                {editing.itinerary_structured.notes && (
+                  <div className="text-[11px] text-clay-700 italic mt-3 pl-2 border-l-2 border-pine">{editing.itinerary_structured.notes}</div>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="mb-4">

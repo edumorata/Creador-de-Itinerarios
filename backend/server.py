@@ -1431,7 +1431,8 @@ class TrainingExample(BaseModel):
     client_name: Optional[str] = None
     client_request: str
     itinerary_url: Optional[str] = None
-    itinerary_text: Optional[str] = None  # scraped / pasted
+    itinerary_text: Optional[str] = None  # rendered text from browser
+    itinerary_structured: Optional[dict] = None  # LLM-parsed days/hotels/activities
     outcome: TripOutcome = "pending"
     notes: Optional[str] = None
     created_by: Optional[str] = None
@@ -1443,6 +1444,7 @@ class TrainingExampleUpsert(BaseModel):
     client_request: Optional[str] = None
     itinerary_url: Optional[str] = None
     itinerary_text: Optional[str] = None
+    itinerary_structured: Optional[dict] = None
     outcome: Optional[TripOutcome] = None
     notes: Optional[str] = None
 
@@ -1501,52 +1503,20 @@ async def scrape_itinerary_url(
     payload: dict = Body(...),
     _: User = Depends(current_user),
 ):
-    """Fetch a URL and return cleaned text content.
+    """Render a URL with a real headless browser and parse it into structured JSON.
 
-    Handles two known sources:
-    - Public URLs (travefy.com, etc.) — anonymous fetch.
-    - gestion.viajadverdad.com — uses stored agent credentials (env vars).
-    Returns {"text": "...", "ok": bool, "source": "anonymous"|"gestion"|"failed"}.
+    Returns {"ok", "source", "text", "structured": {days, hotels, ...}, "error"}.
     """
     url = (payload.get("url") or "").strip()
     if not url:
         raise HTTPException(status_code=400, detail="URL es obligatoria")
-
-    text = ""
-    source = "anonymous"
-    ok = False
+    from scraper import scrape_and_parse
     try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as http:
-            if "gestion.viajadverdad.com" in url:
-                user_g = os.environ.get("GESTION_VIAJADVERDAD_USER")
-                pass_g = os.environ.get("GESTION_VIAJADVERDAD_PASS")
-                source = "gestion"
-                if user_g and pass_g:
-                    # Best-effort form login: try posting to /login
-                    try:
-                        await http.post(
-                            "https://gestion.viajadverdad.com/login",
-                            data={"username": user_g, "password": pass_g, "email": user_g},
-                        )
-                    except Exception:
-                        pass
-                r = await http.get(url)
-            else:
-                r = await http.get(url, headers={"User-Agent": "Mozilla/5.0 ItineraryBot"})
-            if r.status_code == 200:
-                soup = BeautifulSoup(r.text, "lxml")
-                for tag in soup(["script", "style", "noscript", "iframe"]):
-                    tag.decompose()
-                text = soup.get_text("\n", strip=True)
-                # Compact whitespace
-                lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-                text = "\n".join(lines)[:20000]
-                ok = bool(text and len(text) > 50)
+        result = await scrape_and_parse(url)
     except Exception as e:
-        logger.warning("scrape error: %s", e)
-        source = "failed"
-
-    return {"ok": ok, "source": source, "text": text}
+        logger.exception("scrape failed")
+        raise HTTPException(status_code=500, detail=f"Scrape error: {e}")
+    return result
 
 
 # ===========================================================================
@@ -1716,7 +1686,7 @@ async def ai_generate(
 
     hotels = await db.hotels.find({}, {"_id": 0}).limit(150).to_list(150)
     examples = await db.training_examples.find(
-        {"itinerary_text": {"$ne": None}, "outcome": {"$in": ["sold", "not_sold"]}},
+        {"outcome": {"$in": ["sold", "not_sold"]}},
         {"_id": 0},
     ).sort("created_at", -1).limit(20).to_list(20)
 
@@ -1733,10 +1703,16 @@ async def ai_generate(
     if examples:
         user_prompt_parts.append("PAST EXAMPLES (learn from these patterns):")
         for ex in examples:
+            # Prefer the structured representation if we have it (cleaner, smaller)
+            structured = ex.get("itinerary_structured")
+            if structured and isinstance(structured, dict) and structured.get("days"):
+                final_block = _compact_json(structured)
+            else:
+                final_block = (ex.get("itinerary_text") or "")[:3000]
             user_prompt_parts.append(
                 f"--- outcome={ex['outcome']} ---\n"
                 f"CLIENT REQUEST:\n{ex['client_request'][:1500]}\n\n"
-                f"FINAL ITINERARY:\n{(ex.get('itinerary_text') or '')[:3000]}\n"
+                f"FINAL ITINERARY:\n{final_block}\n"
             )
     user_prompt_parts.append("\nNow produce ONLY the JSON itinerary for the NEW CLIENT REQUEST above.")
 
