@@ -1,12 +1,17 @@
 import React from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { Compass, LayoutDashboard, MapPinned, Sparkles, Building2, Users, LogOut } from "lucide-react";
+import { Compass, LayoutDashboard, MapPinned, Sparkles, Building2, Users, LogOut, Hotel as HotelIcon, Brain, Wand2 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 
 const navItems = [
   { to: "/dashboard", label: "Itinerarios", icon: LayoutDashboard, tid: "nav-itineraries" },
   { to: "/experiences", label: "Experiencias", icon: Sparkles, tid: "nav-experiences" },
+  { to: "/hotels", label: "Hoteles", icon: HotelIcon, tid: "nav-hotels" },
   { to: "/providers", label: "Proveedores", icon: Building2, tid: "nav-providers" },
+];
+const aiItems = [
+  { to: "/ai/generate", label: "Crear desde request", icon: Wand2, tid: "nav-ai-generate" },
+  { to: "/ai/trainer", label: "Entrenador del agente", icon: Brain, tid: "nav-ai-trainer" },
 ];
 const adminItems = [
   { to: "/admin/users", label: "Usuarios & Acceso", icon: Users, tid: "nav-admin" },
@@ -34,6 +39,25 @@ export default function AppLayout() {
         <nav className="flex-1 py-4">
           <div className="smallcaps px-5 mb-2">Trabajo</div>
           {navItems.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              data-testid={item.tid}
+              className={({ isActive }) =>
+                `flex items-center gap-3 px-5 py-2.5 text-sm transition-colors border-l-2 ${
+                  isActive
+                    ? "border-terracotta bg-clay-100 text-clay-900 font-semibold"
+                    : "border-transparent text-clay-700 hover:bg-clay-100 hover:text-clay-900"
+                }`
+              }
+            >
+              <item.icon size={16} />
+              <span>{item.label}</span>
+            </NavLink>
+          ))}
+
+          <div className="smallcaps px-5 mt-6 mb-2">Asistente IA</div>
+          {aiItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}

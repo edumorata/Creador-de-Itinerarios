@@ -9,6 +9,9 @@ import Dashboard from "@/pages/Dashboard";
 import ItineraryBuilder from "@/pages/ItineraryBuilder";
 import Experiences from "@/pages/Experiences";
 import Providers from "@/pages/Providers";
+import Hotels from "@/pages/Hotels";
+import AITrainer from "@/pages/AITrainer";
+import AIGenerate from "@/pages/AIGenerate";
 import AdminUsers from "@/pages/AdminUsers";
 import "@/App.css";
 
@@ -23,6 +26,9 @@ function HashRouter() {
         <Route path="/itineraries/:id" element={<ItineraryBuilder />} />
         <Route path="/experiences" element={<Experiences />} />
         <Route path="/providers" element={<Providers />} />
+        <Route path="/hotels" element={<Hotels />} />
+        <Route path="/ai/trainer" element={<AITrainer />} />
+        <Route path="/ai/generate" element={<AIGenerate />} />
         <Route path="/admin/users" element={<ProtectedRoute adminOnly><AdminUsers /></ProtectedRoute>} />
       </Route>
       <Route path="/" element={<Navigate to="/dashboard" replace />} />

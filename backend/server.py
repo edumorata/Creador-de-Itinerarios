@@ -16,6 +16,7 @@ from typing import Annotated, List, Literal, Optional
 
 import httpx
 import openpyxl
+from bs4 import BeautifulSoup
 from bson import ObjectId
 from dotenv import load_dotenv
 from fastapi import (
@@ -1121,7 +1122,516 @@ async def stats(_: Annotated[User, Depends(current_user)]):
         "experiences": await db.experiences.count_documents({}),
         "itineraries": await db.itineraries.count_documents({}),
         "users": await db.users.count_documents({}),
+        "hotels": await db.hotels.count_documents({}),
+        "training_examples": await db.training_examples.count_documents({}),
     }
+
+
+# ===========================================================================
+# Hotels library (separate from experiences)
+# ===========================================================================
+HotelTier = Literal["luxury", "upscale", "comfort", "standard", "budget"]
+
+
+class Hotel(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    hotel_id: str = Field(default_factory=lambda: new_id("htl"))
+    name: str
+    city: Optional[str] = None
+    country: Optional[str] = None
+    tier: HotelTier = "upscale"
+    description: Optional[str] = None
+    price_per_night_excl: float = 0.0
+    price_per_night_incl: float = 0.0
+    currency: str = "EUR"
+    contact: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+
+
+class HotelCreate(BaseModel):
+    name: str
+    city: Optional[str] = None
+    country: Optional[str] = None
+    tier: HotelTier = "upscale"
+    description: Optional[str] = None
+    price_per_night_excl: float = 0.0
+    price_per_night_incl: float = 0.0
+    currency: str = "EUR"
+    contact: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class HotelUpdate(BaseModel):
+    name: Optional[str] = None
+    city: Optional[str] = None
+    country: Optional[str] = None
+    tier: Optional[HotelTier] = None
+    description: Optional[str] = None
+    price_per_night_excl: Optional[float] = None
+    price_per_night_incl: Optional[float] = None
+    currency: Optional[str] = None
+    contact: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@api.get("/hotels", response_model=List[Hotel])
+async def list_hotels(
+    _: Annotated[User, Depends(current_user)],
+    q: Optional[str] = None,
+    city: Optional[str] = None,
+    country: Optional[str] = None,
+    tier: Optional[HotelTier] = None,
+):
+    flt: dict = {}
+    if q:
+        flt["$or"] = [
+            {"name": {"$regex": q, "$options": "i"}},
+            {"city": {"$regex": q, "$options": "i"}},
+            {"description": {"$regex": q, "$options": "i"}},
+        ]
+    if city:
+        flt["city"] = {"$regex": f"^{city}$", "$options": "i"}
+    if country:
+        flt["country"] = country
+    if tier:
+        flt["tier"] = tier
+    items = await db.hotels.find(flt, {"_id": 0}).sort("name", 1).to_list(2000)
+    return items
+
+
+@api.post("/hotels", response_model=Hotel)
+async def create_hotel(payload: HotelCreate, _: Annotated[User, Depends(current_user)]):
+    h = Hotel(**payload.model_dump())
+    await db.hotels.insert_one(h.model_dump())
+    return h
+
+
+@api.patch("/hotels/{hotel_id}", response_model=Hotel)
+async def update_hotel(hotel_id: str, payload: HotelUpdate, _: Annotated[User, Depends(current_user)]):
+    patch = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if patch:
+        await db.hotels.update_one({"hotel_id": hotel_id}, {"$set": patch})
+    doc = await db.hotels.find_one({"hotel_id": hotel_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    return doc
+
+
+@api.delete("/hotels/{hotel_id}")
+async def delete_hotel(hotel_id: str, _: Annotated[User, Depends(current_user)]):
+    res = await db.hotels.delete_one({"hotel_id": hotel_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"ok": True}
+
+
+# ===========================================================================
+# AI Trainer: Training examples
+# ===========================================================================
+TripOutcome = Literal["sold", "not_sold", "pending"]
+
+
+class TrainingExample(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    example_id: str = Field(default_factory=lambda: new_id("trn"))
+    client_name: Optional[str] = None
+    client_request: str
+    itinerary_url: Optional[str] = None
+    itinerary_text: Optional[str] = None  # scraped / pasted
+    outcome: TripOutcome = "pending"
+    notes: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+
+
+class TrainingExampleUpsert(BaseModel):
+    client_name: Optional[str] = None
+    client_request: Optional[str] = None
+    itinerary_url: Optional[str] = None
+    itinerary_text: Optional[str] = None
+    outcome: Optional[TripOutcome] = None
+    notes: Optional[str] = None
+
+
+@api.get("/training-examples", response_model=List[TrainingExample])
+async def list_training_examples(_: Annotated[User, Depends(current_user)]):
+    items = await db.training_examples.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return items
+
+
+@api.post("/training-examples", response_model=TrainingExample)
+async def create_training_example(
+    payload: TrainingExampleUpsert,
+    user: Annotated[User, Depends(current_user)],
+):
+    if not payload.client_request:
+        raise HTTPException(status_code=400, detail="client_request es obligatorio")
+    ex = TrainingExample(
+        client_name=payload.client_name,
+        client_request=payload.client_request,
+        itinerary_url=payload.itinerary_url,
+        itinerary_text=payload.itinerary_text,
+        outcome=payload.outcome or "pending",
+        notes=payload.notes,
+        created_by=user.email,
+    )
+    await db.training_examples.insert_one(ex.model_dump())
+    return ex
+
+
+@api.patch("/training-examples/{example_id}", response_model=TrainingExample)
+async def update_training_example(
+    example_id: str,
+    payload: TrainingExampleUpsert,
+    _: Annotated[User, Depends(current_user)],
+):
+    patch = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if patch:
+        await db.training_examples.update_one({"example_id": example_id}, {"$set": patch})
+    doc = await db.training_examples.find_one({"example_id": example_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    return doc
+
+
+@api.delete("/training-examples/{example_id}")
+async def delete_training_example(example_id: str, _: Annotated[User, Depends(current_user)]):
+    res = await db.training_examples.delete_one({"example_id": example_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"ok": True}
+
+
+@api.post("/training-examples/scrape")
+async def scrape_itinerary_url(
+    payload: dict = Body(...),
+    _: User = Depends(current_user),
+):
+    """Fetch a URL and return cleaned text content.
+
+    Handles two known sources:
+    - Public URLs (travefy.com, etc.) — anonymous fetch.
+    - gestion.viajadverdad.com — uses stored agent credentials (env vars).
+    Returns {"text": "...", "ok": bool, "source": "anonymous"|"gestion"|"failed"}.
+    """
+    url = (payload.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL es obligatoria")
+
+    text = ""
+    source = "anonymous"
+    ok = False
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as http:
+            if "gestion.viajadverdad.com" in url:
+                user_g = os.environ.get("GESTION_VIAJADVERDAD_USER")
+                pass_g = os.environ.get("GESTION_VIAJADVERDAD_PASS")
+                source = "gestion"
+                if user_g and pass_g:
+                    # Best-effort form login: try posting to /login
+                    try:
+                        await http.post(
+                            "https://gestion.viajadverdad.com/login",
+                            data={"username": user_g, "password": pass_g, "email": user_g},
+                        )
+                    except Exception:
+                        pass
+                r = await http.get(url)
+            else:
+                r = await http.get(url, headers={"User-Agent": "Mozilla/5.0 ItineraryBot"})
+            if r.status_code == 200:
+                soup = BeautifulSoup(r.text, "lxml")
+                for tag in soup(["script", "style", "noscript", "iframe"]):
+                    tag.decompose()
+                text = soup.get_text("\n", strip=True)
+                # Compact whitespace
+                lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+                text = "\n".join(lines)[:20000]
+                ok = bool(text and len(text) > 50)
+    except Exception as e:
+        logger.warning("scrape error: %s", e)
+        source = "failed"
+
+    return {"ok": ok, "source": source, "text": text}
+
+
+# ===========================================================================
+# AI generation
+# ===========================================================================
+EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+
+
+SYSTEM_PROMPT_GENERATE = """You are an expert travel-itinerary designer for a Spanish luxury-travel agency.
+
+You build itineraries for the destinations Spain, Portugal and Italy. You work in English.
+
+You will be given:
+1) A new client trip request.
+2) A library of available EXPERIENCES (curated activities + transport with real prices) that you MUST pick from when possible.
+3) A library of HOTELS (with tier + price) that you MUST pick from for accommodations when possible.
+4) A set of PAST EXAMPLES tagged "sold" (the itinerary the client accepted) and "not_sold" (the itinerary the client rejected). Learn the patterns: pacing, daily density, hotel tier choices, kinds of activities, regional flow.
+
+Your output MUST be a single JSON object matching exactly this schema (no markdown, no commentary):
+{
+  "name": "...",                   // short trip name in English
+  "main_traveler": "...",          // primary traveler name if mentioned, else ""
+  "num_travelers": 2,
+  "start_date": "YYYY-MM-DD",      // best guess from request
+  "end_date": "YYYY-MM-DD",
+  "markup_pct": 15,                // leave default 15 unless request suggests otherwise
+  "summary": "1-3 sentence rationale referencing past sold patterns",
+  "days": [
+    {
+      "label": "Day 1",
+      "date": "YYYY-MM-DD",
+      "city": "Lisbon",
+      "services": [
+        {
+          "experience_id": "exp_xxx",   // REQUIRED if picked from library
+          "type": "actividad",          // one of: alojamiento, actividad, transporte, restaurante, transfer, vuelo, otro
+          "name": "Tile museum private tour",
+          "provider_name": "Provider X",
+          "quantity": 2,
+          "unit_price_tax_excl": 100.0,
+          "unit_price_tax_incl": 121.0,
+          "currency": "EUR"
+        }
+      ]
+    }
+  ],
+  "accommodations": [
+    {
+      "hotel_id": "htl_xxx",          // REQUIRED if picked from hotel library
+      "name": "Bairro Alto Hotel",
+      "date_from": "YYYY-MM-DD",
+      "date_to": "YYYY-MM-DD",
+      "price_tax_excl": 0,
+      "price_tax_incl": 0,
+      "currency": "EUR"
+    }
+  ]
+}
+
+Rules:
+- ALWAYS prefer experiences from the library. Use their experience_id, exact title, provider_name, currency, and BOTH prices unchanged.
+- ALWAYS prefer hotels from the library. Use their hotel_id, exact name, and the nightly price multiplied by nights, splitting excl/incl.
+- If a needed service or hotel is not in the library, you may add a free-form item with name only and prices=0, so the human agent can fill it in.
+- Respect dietary, mobility, occasion (anniversary etc.) and tier preferences expressed in the request.
+- Aim for the pacing seen in SOLD examples; avoid the over-/under-packing patterns of NOT_SOLD examples.
+- Distribute activities sensibly across days. 1-3 services per day is typical.
+- Output ONLY the JSON object. No prose before or after."""
+
+
+async def _call_claude_json(system_prompt: str, user_prompt: str) -> dict:
+    """Call Claude Sonnet 4.6 and parse JSON output."""
+    import json as _json
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(status_code=500, detail="EMERGENT_LLM_KEY no configurada")
+
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=f"gen-{uuid.uuid4().hex[:8]}",
+        system_message=system_prompt,
+    ).with_model("anthropic", "claude-sonnet-4-6")
+    msg = UserMessage(text=user_prompt)
+    raw = await chat.send_message(msg)
+    text = (raw or "").strip()
+    # Strip optional markdown fences
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+    # Try to locate first JSON object
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1:
+        raise HTTPException(status_code=502, detail=f"AI no devolvió JSON: {text[:200]}")
+    try:
+        return _json.loads(text[start:end + 1])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"JSON inválido del modelo: {e}")
+
+
+def _summ_experience(e: dict) -> dict:
+    return {
+        "experience_id": e.get("experience_id"),
+        "title": e.get("title"),
+        "provider_name": e.get("provider_name"),
+        "city": e.get("city"),
+        "country": e.get("country"),
+        "type": e.get("type"),
+        "price_tax_excl": e.get("price_tax_excl") or e.get("price") or 0,
+        "price_tax_incl": e.get("price_tax_incl") or e.get("price") or 0,
+        "currency": e.get("currency") or "EUR",
+    }
+
+
+def _summ_hotel(h: dict) -> dict:
+    return {
+        "hotel_id": h.get("hotel_id"),
+        "name": h.get("name"),
+        "city": h.get("city"),
+        "country": h.get("country"),
+        "tier": h.get("tier"),
+        "price_per_night_excl": h.get("price_per_night_excl") or 0,
+        "price_per_night_incl": h.get("price_per_night_incl") or 0,
+        "currency": h.get("currency") or "EUR",
+    }
+
+
+@api.post("/ai/generate-itinerary")
+async def ai_generate(
+    payload: dict = Body(...),
+    user: User = Depends(current_user),
+):
+    """Generate an itinerary draft from a client request.
+
+    payload = {"client_request": "...", "client_name": "...optional", "save": true}
+    Returns the parsed JSON. If save=true (default), also stores it as an Itinerary draft.
+    """
+    request_text = (payload.get("client_request") or "").strip()
+    if not request_text:
+        raise HTTPException(status_code=400, detail="client_request es obligatorio")
+    client_name = (payload.get("client_name") or "").strip()
+    save = bool(payload.get("save", True))
+
+    # Build context: library subsets and training examples
+    # 1) Pull relevant experiences (limit by tokens). We pass a focused subset
+    #    inferred by simple keyword matching from the request.
+    keywords = {w.lower() for w in request_text.split() if len(w) > 4}
+    # First pass: try to fetch experiences whose city/title matches keywords
+    exp_flt: dict = {}
+    if keywords:
+        terms = list(keywords)[:25]
+        exp_flt["$or"] = [
+            {"title": {"$regex": "|".join(map(_re_escape, terms)), "$options": "i"}},
+            {"city": {"$regex": "|".join(map(_re_escape, terms)), "$options": "i"}},
+        ]
+    exps = await db.experiences.find(exp_flt, {"_id": 0}).limit(200).to_list(200)
+    if len(exps) < 30:
+        # widen
+        more = await db.experiences.find({}, {"_id": 0}).limit(150).to_list(150)
+        seen = {e["experience_id"] for e in exps}
+        for e in more:
+            if e["experience_id"] not in seen:
+                exps.append(e)
+                if len(exps) >= 200:
+                    break
+
+    hotels = await db.hotels.find({}, {"_id": 0}).limit(150).to_list(150)
+    examples = await db.training_examples.find(
+        {"itinerary_text": {"$ne": None}, "outcome": {"$in": ["sold", "not_sold"]}},
+        {"_id": 0},
+    ).sort("created_at", -1).limit(20).to_list(20)
+
+    user_prompt_parts = [
+        f"NEW CLIENT REQUEST:\n{request_text}",
+        "",
+        "EXPERIENCE LIBRARY (pick from these whenever possible):",
+        _compact_json([_summ_experience(e) for e in exps]),
+        "",
+        "HOTEL LIBRARY (pick from these for accommodations):",
+        _compact_json([_summ_hotel(h) for h in hotels]),
+        "",
+    ]
+    if examples:
+        user_prompt_parts.append("PAST EXAMPLES (learn from these patterns):")
+        for ex in examples:
+            user_prompt_parts.append(
+                f"--- outcome={ex['outcome']} ---\n"
+                f"CLIENT REQUEST:\n{ex['client_request'][:1500]}\n\n"
+                f"FINAL ITINERARY:\n{(ex.get('itinerary_text') or '')[:3000]}\n"
+            )
+    user_prompt_parts.append("\nNow produce ONLY the JSON itinerary for the NEW CLIENT REQUEST above.")
+
+    data = await _call_claude_json(SYSTEM_PROMPT_GENERATE, "\n".join(user_prompt_parts))
+
+    # Build itinerary draft from AI output
+    draft = _itinerary_from_ai(data, client_name or data.get("main_traveler", ""), user.email)
+    if save:
+        await db.itineraries.insert_one(dict(draft))  # avoid mutating draft with _id
+    draft.pop("_id", None)
+    return {"itinerary": draft, "ai_summary": data.get("summary", "")}
+
+
+def _re_escape(s: str) -> str:
+    import re
+    return re.escape(s)
+
+
+def _compact_json(obj) -> str:
+    import json as _json
+    return _json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+
+def _itinerary_from_ai(data: dict, client_name: str, created_by: str) -> dict:
+    """Map AI JSON to our Itinerary schema, generating IDs and syncing legacy fields."""
+    name = data.get("name") or "AI draft"
+    days_in = data.get("days") or []
+    days = []
+    for d in days_in:
+        services = []
+        for s in d.get("services") or []:
+            excl = float(s.get("unit_price_tax_excl") or 0)
+            incl = float(s.get("unit_price_tax_incl") or 0)
+            services.append({
+                "service_id": new_id("svc"),
+                "experience_id": s.get("experience_id"),
+                "type": s.get("type") or "actividad",
+                "name": s.get("name") or "",
+                "provider_name": s.get("provider_name") or "",
+                "quantity": float(s.get("quantity") or 1),
+                "unit_price_tax_excl": excl,
+                "unit_price_tax_incl": incl,
+                "unit_price": incl,
+                "currency": s.get("currency") or "EUR",
+            })
+        days.append({
+            "day_id": new_id("day"),
+            "date": d.get("date"),
+            "label": d.get("label") or "Day",
+            "city": d.get("city") or "",
+            "services": services,
+        })
+    accs = []
+    for a in data.get("accommodations") or []:
+        incl = float(a.get("price_tax_incl") or 0)
+        excl = float(a.get("price_tax_excl") or 0)
+        accs.append({
+            "acc_id": new_id("acc"),
+            "date_from": a.get("date_from"),
+            "date_to": a.get("date_to"),
+            "name": a.get("name") or "",
+            "price_tax_excl": excl,
+            "price_tax_incl": incl,
+            "price": incl,
+            "currency": a.get("currency") or "EUR",
+        })
+
+    itn = {
+        "itinerary_id": new_id("itn"),
+        "name": name,
+        "main_traveler": client_name or data.get("main_traveler") or "",
+        "start_date": data.get("start_date"),
+        "end_date": data.get("end_date"),
+        "duration_days": len(days),
+        "num_travelers": int(data.get("num_travelers") or 2),
+        "travelers": [],
+        "days": days,
+        "accommodations": accs,
+        "markup_pct": float(data.get("markup_pct") or 15),
+        "currency": "EUR",
+        "status": "draft",
+        "created_by": created_by,
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+        "ai_generated": True,
+        "ai_summary": data.get("summary", ""),
+    }
+    return itn
 
 
 # ---------------------------------------------------------------------------
