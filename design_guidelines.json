@@ -1,0 +1,86 @@
+{
+  "theme": "light",
+  "archetype": "1 (Organic & Earthy)",
+  "design_philosophy": "Fast, dense, and trustworthy like an airline CRM tool, but infused with Mediterranean luxury and heritage. Uses a 'Control Room' grid layout for the builder. Avoids generic SaaS aesthetics in favor of a warm, tactile, and technical look.",
+  "colors": {
+    "background": "#FDFBF7",
+    "surface": "#F5F2EB",
+    "surface_hover": "#EAE5D9",
+    "primary": "#E07A5F",
+    "primary_hover": "#D1664A",
+    "primary_foreground": "#FFFFFF",
+    "secondary": "#3A5A40",
+    "secondary_hover": "#2C4430",
+    "secondary_foreground": "#FFFFFF",
+    "text_primary": "#2B2D2B",
+    "text_secondary": "#5C605C",
+    "border": "#E8E3D9",
+    "border_focus": "#E07A5F",
+    "destructive": "#D9534F"
+  },
+  "typography": {
+    "heading_font": "Cormorant Garamond, serif",
+    "body_font": "Manrope, sans-serif",
+    "font_imports": [
+      "@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Manrope:wght@400;500;600;700&display=swap');"
+    ],
+    "hierarchy": {
+      "h1": "font-serif text-4xl tracking-tight leading-none font-medium text-[#2B2D2B]",
+      "h2": "font-serif text-2xl tracking-tight leading-tight font-medium text-[#2B2D2B]",
+      "h3": "font-sans text-xl tracking-tight leading-snug font-semibold text-[#2B2D2B]",
+      "h4": "font-sans text-lg tracking-tight font-semibold text-[#2B2D2B]",
+      "body": "font-sans text-sm leading-relaxed text-[#2B2D2B]",
+      "body_large": "font-sans text-base leading-relaxed text-[#2B2D2B]",
+      "small_label": "font-sans text-xs tracking-[0.2em] uppercase text-[#5C605C] font-semibold",
+      "data_dense": "font-sans text-sm font-medium tabular-nums text-[#2B2D2B]"
+    }
+  },
+  "spacing_and_layout": {
+    "container_padding": "p-6 md:p-8",
+    "grid_gap": "gap-4 md:gap-6",
+    "card_padding": "p-4 md:p-6",
+    "layout_strategy": "Control Room Grid (Dense & Functional). Left rail for global navigation. Main center column for itinerary timeline. Right panel for experience search and sticky cost summary. Use Grid Borders (Technical look) to structure data without excessive cards."
+  },
+  "components": {
+    "buttons": "Square or slightly rounded (rounded-sm). Solid primary for main CTA, outline with warm border for secondary. High contrast on hover. ALWAYS explicitly set hover text color.",
+    "inputs": "Flat surfaces with 1px border. Focus state must use primary color ring. Use Manrope for input text. No soft drop shadows.",
+    "tables_and_lists": "Dense, tabular-nums for prices, sticky headers. Distinctive styling/badges for experience types (alojamiento, actividad, transporte, restaurante, transfer).",
+    "cards": "Cardless or flat with 1px border (#E8E3D9). No shadow. Use Grid Borders to separate days in the itinerary to expose the skeleton.",
+    "sidebar": "Collapsible left sidebar for navigation. Right sidebar for experience search/filtering.",
+    "shadcn_overrides": "Override Shadcn's default Vercel look (rounded-md, gray borders). Enforce sharp edges (rounded-none or rounded-sm) and the earthy color palette. Remove default box-shadows."
+  },
+  "motion": {
+    "hover": "Subtle background color shifts (transition-colors duration-200).",
+    "panels": "Slide in from right for experience details or filters.",
+    "drag_drop": "Scale up slightly (scale-105) when dragging an experience to a day. Highlight valid drop zones with a dashed border (#E07A5F)."
+  },
+  "media": {
+    "login_background": {
+      "url": "https://static.prod-images.emergentagent.com/jobs/d5b8c859-ab07-4947-a9d6-0adb76aa4491/images/97abf255189a56b30012d66281b0928f1d394943d6b4289e61bbfc8c0e23e5af.png",
+      "description": "Abstract topographic map lines overlaying a warm sand and terracotta watercolor background. Used for full-bleed login screen background."
+    },
+    "placeholders": [
+      {
+        "url": "https://images.unsplash.com/photo-1592396355679-1e2a094e8bf1?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzF8MHwxfHNlYXJjaHwyfHxtZWRpdGVycmFuZWFuJTIwbHV4dXJ5JTIwdHJhdmVsfGVufDB8fHx8MTc3OTk2Mzg2Mnww&ixlib=rb-4.1.0&q=85",
+        "category": "accommodations",
+        "description": "Mediterranean coastal houses - Use as default image for Accommodations/Locations without photos"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1607614372586-72d399dc57b6?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzF8MHwxfHNlYXJjaHwxfHxtZWRpdGVycmFuZWFuJTIwbHV4dXJ5JTIwdHJhdmVsfGVufDB8fHx8MTc3OTk2Mzg2Mnww&ixlib=rb-4.1.0&q=85",
+        "category": "experiences",
+        "description": "Luxury beach setup - Use for experiences/activities default"
+      }
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Build a 3-column layout for the Itinerary Builder: Nav Sidebar (Left), Itinerary Timeline (Center), Experience Search & Cost Summary (Right).",
+    "Use Shadcn UI components but heavily customize them. Enforce sharp edges (rounded-none or rounded-sm) and the earthy color palette.",
+    "Implement the 'Grid Borders' surface strategy for the timeline: days and activities should be separated by crisp 1px borders (#E8E3D9) rather than floating in cards. Expose the skeleton.",
+    "Typography: Use Cormorant Garamond for the Itinerary Title and main section headers. Use Manrope for everything else (dense data, tables, inputs). Ensure tabular-nums are used for all pricing displays.",
+    "Add 'data-testid' to all interactive elements (buttons, inputs, drag-handles). Format: kebab-case, role-based.",
+    "The right panel must include a persistent Cost Summary showing subtotal, markup %, and final selling price.",
+    "For the login page, use the provided login_background image as a full-bleed background with a frosted glassmorphism (backdrop-blur-xl bg-[#FDFBF7]/70 backdrop-saturate-150) login card.",
+    "Experiences must have a visual badge or color-coding based on type (alojamiento, actividad, transporte, restaurante, transfer).",
+    "Use lucide-react for icons. DO NOT use emojis."
+  ]
+}
