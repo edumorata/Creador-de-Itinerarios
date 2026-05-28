@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
-import { Plus, Search, Trash2, Pencil, Upload, X } from "lucide-react";
+import { Plus, Search, Trash2, Pencil, Upload, X, Server } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 
 const TYPE_BADGE = {
   alojamiento: "bg-pine text-white",
@@ -14,9 +15,10 @@ const TYPE_BADGE = {
 };
 const TYPES = ["alojamiento", "actividad", "transporte", "restaurante", "transfer", "vuelo", "otro"];
 
-const EMPTY = { title: "", description: "", provider_id: "", country: "", city: "", type: "actividad", price: 0, currency: "EUR" };
+const EMPTY = { title: "", description: "", provider_id: "", country: "", city: "", type: "actividad", price_tax_excl: 0, price_tax_incl: 0, currency: "EUR" };
 
 export default function Experiences() {
+  const { user } = useAuth();
   const [items, setItems] = useState([]);
   const [providers, setProviders] = useState([]);
   const [q, setQ] = useState("");
@@ -25,6 +27,7 @@ export default function Experiences() {
   const [editing, setEditing] = useState(null);
   const [importOpen, setImportOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -70,6 +73,25 @@ export default function Experiences() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {user?.role === "admin" && (
+            <button
+              data-testid="bulk-import-btn"
+              disabled={bulkBusy}
+              onClick={async () => {
+                if (!window.confirm("Importar TODOS los Excel de proveedores almacenados en el servidor (~94 archivos)?")) return;
+                setBulkBusy(true);
+                try {
+                  const { data } = await api.post("/experiences/import-all-server");
+                  toast.success(`${data.total_created} experiencias añadidas (${data.files_scanned} archivos, ${data.total_skipped} duplicadas saltadas)`);
+                  load();
+                } catch (e) { toast.error(e?.response?.data?.detail || "Error en la importación masiva"); }
+                finally { setBulkBusy(false); }
+              }}
+              className="inline-flex items-center gap-2 px-4 py-2 border border-clay-300 hover:bg-clay-100 text-sm disabled:opacity-50"
+            >
+              <Server size={14}/> {bulkBusy ? "Importando…" : "Importar TODO del servidor"}
+            </button>
+          )}
           <button data-testid="import-btn" onClick={() => setImportOpen(true)} className="inline-flex items-center gap-2 px-4 py-2 border border-clay-300 hover:bg-clay-100 text-sm">
             <Upload size={14}/> Importar desde Excel
           </button>
@@ -93,12 +115,13 @@ export default function Experiences() {
       </div>
 
       <div className="border border-clay-300 bg-white">
-        <div className="grid grid-cols-[1.5fr_1fr_0.7fr_1fr_0.7fr_auto] bg-clay-100 text-[11px] tracking-[0.2em] uppercase text-clay-700 font-semibold">
+        <div className="grid grid-cols-[1.5fr_1fr_0.7fr_1fr_0.6fr_0.6fr_auto] bg-clay-100 text-[11px] tracking-[0.2em] uppercase text-clay-700 font-semibold">
           <div className="px-4 py-3">Título</div>
           <div className="px-4 py-3">Proveedor</div>
           <div className="px-4 py-3">Tipo</div>
           <div className="px-4 py-3">Ciudad / País</div>
-          <div className="px-4 py-3 text-right">Precio</div>
+          <div className="px-4 py-3 text-right">Sin IVA</div>
+          <div className="px-4 py-3 text-right">Con IVA</div>
           <div className="px-4 py-3 text-right">Acciones</div>
         </div>
         {loading ? (
@@ -106,7 +129,7 @@ export default function Experiences() {
         ) : items.length === 0 ? (
           <div className="p-10 text-center text-sm text-clay-700" data-testid="exp-empty">No hay experiencias. Crea una nueva o importa un Excel de proveedor.</div>
         ) : items.map((e) => (
-          <div key={e.experience_id} className="grid grid-cols-[1.5fr_1fr_0.7fr_1fr_0.7fr_auto] border-t border-clay-300 text-sm hover:bg-clay-50 transition-colors" data-testid={`exp-row-${e.experience_id}`}>
+          <div key={e.experience_id} className="grid grid-cols-[1.5fr_1fr_0.7fr_1fr_0.6fr_0.6fr_auto] border-t border-clay-300 text-sm hover:bg-clay-50 transition-colors" data-testid={`exp-row-${e.experience_id}`}>
             <div className="px-4 py-3">
               <div className="font-semibold truncate">{e.title}</div>
               {e.description && <div className="text-[11px] text-clay-700 truncate">{e.description}</div>}
@@ -114,7 +137,8 @@ export default function Experiences() {
             <div className="px-4 py-3 text-clay-700 truncate">{e.provider_name}</div>
             <div className="px-4 py-3"><span className={`inline-block px-1.5 py-0.5 text-[9px] tracking-widest uppercase ${TYPE_BADGE[e.type] || TYPE_BADGE.otro}`}>{e.type}</span></div>
             <div className="px-4 py-3 text-clay-700">{[e.city, e.country].filter(Boolean).join(" · ") || "—"}</div>
-            <div className="px-4 py-3 text-right tabular font-semibold">{e.currency} {Number(e.price).toLocaleString("es-ES")}</div>
+            <div className="px-4 py-3 text-right tabular text-clay-700">{Number(e.price_tax_excl || 0).toLocaleString("es-ES")}</div>
+            <div className="px-4 py-3 text-right tabular font-semibold">{Number(e.price_tax_incl || e.price || 0).toLocaleString("es-ES")}</div>
             <div className="px-4 py-3 flex items-center justify-end gap-1">
               <button onClick={() => setEditing({ ...e })} className="p-1.5 hover:bg-clay-200" data-testid={`edit-${e.experience_id}`}><Pencil size={14}/></button>
               <button onClick={() => del(e.experience_id)} className="p-1.5 hover:bg-clay-200 text-destructive"><Trash2 size={14}/></button>
@@ -134,10 +158,9 @@ export default function Experiences() {
             <Select label="Tipo" value={editing.type} onChange={(v) => setEditing({ ...editing, type: v })} tid="exp-type">
               {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
             </Select>
-            <div className="grid grid-cols-2 gap-2">
-              <NumberInput label="Precio" value={editing.price} onChange={(v) => setEditing({ ...editing, price: v })} tid="exp-price" />
-              <Input label="Moneda" value={editing.currency} onChange={(v) => setEditing({ ...editing, currency: v })} />
-            </div>
+            <Input label="Moneda" value={editing.currency} onChange={(v) => setEditing({ ...editing, currency: v })} />
+            <NumberInput label="Precio sin IVA" value={editing.price_tax_excl} onChange={(v) => setEditing({ ...editing, price_tax_excl: v })} tid="exp-price-excl" />
+            <NumberInput label="Precio con IVA" value={editing.price_tax_incl} onChange={(v) => setEditing({ ...editing, price_tax_incl: v, price: v })} tid="exp-price-incl" />
             <Input label="País" value={editing.country || ""} onChange={(v) => setEditing({ ...editing, country: v })} />
             <Input label="Ciudad" value={editing.city || ""} onChange={(v) => setEditing({ ...editing, city: v })} />
             <div className="col-span-2">

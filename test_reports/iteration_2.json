@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 2 backend testing complete. 25/25 pytest cases green. Verified backward compat (admin Bearer auth, CRUD on providers/experiences/itineraries, cascade rename, facets, stats, single-file bulk import). Verified all iteration 2 features: (a) 3-tier pricing on Experience (price_tax_excl, price_tax_incl, legacy price all stored and synced; PATCH price_tax_incl=200 syncs price=200); (b) ItineraryService unit_price_tax_excl/incl persisted on create + PATCH; (c) Accommodation price_tax_excl/incl persisted; (d) ItineraryDay.city persists on POST and PATCH; (e) GET /api/experiences/autocomplete works with q='tour', q='wine', city=Madrid only, and empty (fallback up to 15); (f) Excel export row 15 headers exactly [Day, Date, City, Type, Name, Quantity, Precio sin IVA, Precio con IVA, PVP], day header row contains city, service line values match (unit_excl=100, unit_incl=121, qty=2, markup=15%) → 200/242/278.30; totals rows for 'Subtotal sin IVA', 'Subtotal con IVA' and 'PVP (markup 15.0% sobre IVA)' present with correct numerical values; (g) POST /api/experiences/import-all-server returns 403 for non-admin and 200 with {files_scanned, total_created, total_skipped, files[]} for admin; second call yields total_skipped > 0 (dedupe); (h) country inferred from folder name into {España, Portugal, Italia} (verified via /experiences/facets); (i) import-provider-sheet dedupe works on second upload of same file (skipped >= 2, created = 0); (j) /experiences/facets remains sorted + distinct.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/experiences/autocomplete", "issue": "When 'q' is provided but very short (1-2 chars), regex hits ~all rows; consider min length=2 server-side OR add a Mongo text index on title+provider_name. Non-blocking."},
+      {"endpoint": "POST /api/experiences/import-all-server", "issue": "Runs synchronously on the event loop and re-reads/parses all 94 xlsx files on every call. Even with full dedupe a re-run can take several seconds and can monopolise the worker. Consider run_in_threadpool or a background task with progress endpoint."},
+      {"endpoint": "POST /api/experiences", "issue": "If client sends only 'price' (legacy) and not price_tax_incl, sync logic sets price_tax_incl=price but price_tax_excl stays 0. Acceptable for back-compat, but may surprise UI showing 'sin IVA' = 0."},
+      {"endpoint": "GET /api/experiences/autocomplete", "issue": "Results are not sorted (uses .limit without .sort); ordering is by Mongo insertion order. Add .sort('title', 1) for stable UX."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 1030 lines — past the 700 LOC threshold. Strongly recommend splitting into routers/{auth,admin,providers,experiences,itineraries,export,import}.py before adding more features.",
+    "import_all_server walks 94 .xlsx files synchronously in the request loop. Even with dedupe a single call takes seconds and blocks one uvicorn worker. Wrap _parse_provider_sheet_bytes + _import_rows in starlette's run_in_threadpool, or move to a background task with a progress endpoint.",
+    "Dedupe key in _import_rows is (provider_id, title, price_tax_incl). If the same provider re-issues a sheet with a tiny price tweak, you'll get duplicates with slightly different prices. Consider (provider_id+title) and treat price as 'last-write-wins' upsert.",
+    "experience_autocomplete returns full Experience docs (15 items × all fields including description). For a typeahead, project only {experience_id,title,provider_name,city,price_tax_incl} to cut payload ~5x.",
+    "PATCH /api/experiences/{id} sync logic: if caller sends BOTH price and price_tax_incl with different values, the patch dict is applied as-is without reconciling — the stored values can drift. Add an explicit consistency rule or pick a winner.",
+    "Export builds the workbook synchronously; openpyxl is CPU heavy. For large itineraries (>50 services) offload to a thread pool.",
+    "@app.on_event('shutdown') still uses the deprecated FastAPI event API — migrate to lifespan handler.",
+    "user_sessions.session_token still un-indexed; with 2.5k+ experiences in same DB the auth lookup will degrade once sessions grow.",
+    "CORS allow_origin_regex='.*' + allow_credentials=True is permissive; restrict to the frontend origin for prod."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (updated for iteration 2: new 3-tier pricing + autocomplete + city + import-all-server + dedupe tests, export assertions rewritten for 9-column header and Subtotal/PVP rows)",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "success_rate": {"backend": "100% (25/25)", "frontend": "n/a (backend-only request)"},
+  "test_credentials": "Bearer test_admin_session_token (admin) already seeded. Tests also seed/cleanup test.agent@example.com with Bearer test_agent_session_token for 403 test.",
+  "seed_data_creation": "Re-seeded admin + agent users/sessions at session start (idempotent). All TEST_-prefixed providers/experiences/itineraries are cleaned up after each test. Real bulk-imported provider data (≈2514 experiences, 82 providers across España/Portugal/Italia) left intact per instructions.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend is fully green for iteration 2. /api/experiences/autocomplete, ItineraryDay.city, 3-tier pricing on Experience/ItineraryService/Accommodation, and the new 9-column Sofi export with Subtotal sin IVA / Subtotal con IVA / PVP totals all verified. POST /api/experiences/import-all-server has been called twice during testing — DB still contains the bulk-imported real data; calling it again will continue to dedupe. Frontend not yet tested. When frontend testing comes up: autocomplete UI should debounce, ItineraryDay.city should be a top-level field (not nested in services), and the export viewer should expect 9 columns starting at row 15."
+}

@@ -17,15 +17,19 @@ function fmt(d) {
 }
 
 function calcTotals(itn) {
-  let subtotal = 0;
+  let excl = 0, incl = 0;
   (itn.days || []).forEach((day) => {
     (day.services || []).forEach((s) => {
-      subtotal += (s.unit_price || 0) * (s.quantity || 0);
+      excl += (s.unit_price_tax_excl || 0) * (s.quantity || 0);
+      incl += (s.unit_price_tax_incl || s.unit_price || 0) * (s.quantity || 0);
     });
   });
-  (itn.accommodations || []).forEach((a) => { subtotal += a.price || 0; });
-  const markup = subtotal * (itn.markup_pct || 0) / 100.0;
-  return { subtotal, final: subtotal + markup };
+  (itn.accommodations || []).forEach((a) => {
+    excl += a.price_tax_excl || 0;
+    incl += a.price_tax_incl || a.price || 0;
+  });
+  const pvp = incl * (1 + (itn.markup_pct || 0) / 100);
+  return { subtotal: incl, final: pvp, excl };
 }
 
 export default function Dashboard() {

@@ -138,7 +138,10 @@ class Experience(BaseModel):
     country: Optional[str] = None
     city: Optional[str] = None
     type: ServiceType = "actividad"
-    price: float = 0.0
+    # Three-tier pricing: precio sin IVA, precio con IVA, PVP (calculated on top)
+    price_tax_excl: float = 0.0
+    price_tax_incl: float = 0.0
+    price: float = 0.0  # legacy alias = price_tax_incl, kept for back-compat
     currency: str = "EUR"
     notes: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
@@ -151,7 +154,9 @@ class ExperienceCreate(BaseModel):
     country: Optional[str] = None
     city: Optional[str] = None
     type: ServiceType = "actividad"
-    price: float = 0.0
+    price_tax_excl: float = 0.0
+    price_tax_incl: float = 0.0
+    price: Optional[float] = None  # legacy
     currency: str = "EUR"
     notes: Optional[str] = None
 
@@ -163,6 +168,8 @@ class ExperienceUpdate(BaseModel):
     country: Optional[str] = None
     city: Optional[str] = None
     type: Optional[ServiceType] = None
+    price_tax_excl: Optional[float] = None
+    price_tax_incl: Optional[float] = None
     price: Optional[float] = None
     currency: Optional[str] = None
     notes: Optional[str] = None
@@ -176,7 +183,9 @@ class ItineraryService(BaseModel):
     name: str
     provider_name: Optional[str] = None
     quantity: float = 1
-    unit_price: float = 0.0
+    unit_price_tax_excl: float = 0.0
+    unit_price_tax_incl: float = 0.0
+    unit_price: float = 0.0  # legacy alias = unit_price_tax_incl
     currency: str = "EUR"
     notes: Optional[str] = None
 
@@ -185,6 +194,7 @@ class ItineraryDay(BaseModel):
     day_id: str = Field(default_factory=lambda: new_id("day"))
     date: Optional[str] = None  # ISO date string
     label: Optional[str] = None  # e.g. "Day 1"
+    city: Optional[str] = None  # destination for the day, used as pre-filter
     services: List[ItineraryService] = Field(default_factory=list)
 
 
@@ -193,7 +203,9 @@ class Accommodation(BaseModel):
     date_from: Optional[str] = None
     date_to: Optional[str] = None
     name: str
-    price: float = 0.0
+    price_tax_excl: float = 0.0
+    price_tax_incl: float = 0.0
+    price: float = 0.0  # legacy
     currency: str = "EUR"
 
 
@@ -531,7 +543,13 @@ async def create_experience(payload: ExperienceCreate, _: Annotated[User, Depend
     prov = await db.providers.find_one({"provider_id": payload.provider_id}, {"_id": 0})
     if not prov:
         raise HTTPException(status_code=400, detail="Proveedor no encontrado")
-    exp = Experience(**payload.model_dump(), provider_name=prov["name"])
+    data = payload.model_dump()
+    # Sync legacy 'price' with price_tax_incl
+    if data.get("price") is None:
+        data["price"] = data.get("price_tax_incl") or 0.0
+    if not data.get("price_tax_incl"):
+        data["price_tax_incl"] = data.get("price") or 0.0
+    exp = Experience(**data, provider_name=prov["name"])
     await db.experiences.insert_one(exp.model_dump())
     return exp
 
@@ -548,6 +566,11 @@ async def update_experience(
         if not prov:
             raise HTTPException(status_code=400, detail="Proveedor no encontrado")
         patch["provider_name"] = prov["name"]
+    # keep price tiers in sync
+    if "price_tax_incl" in patch and "price" not in patch:
+        patch["price"] = patch["price_tax_incl"]
+    if "price" in patch and "price_tax_incl" not in patch:
+        patch["price_tax_incl"] = patch["price"]
     if patch:
         await db.experiences.update_one({"experience_id": experience_id}, {"$set": patch})
     doc = await db.experiences.find_one({"experience_id": experience_id}, {"_id": 0})
@@ -580,6 +603,97 @@ async def experience_facets(_: Annotated[User, Depends(current_user)]):
 # ---------------------------------------------------------------------------
 # Bulk import - provider price sheet (xlsx with columns operator_name, name, price_tax_incl/price_tax_excl, currency)
 # ---------------------------------------------------------------------------
+def _parse_provider_sheet_bytes(content: bytes, country: Optional[str], city: Optional[str], stype: ServiceType):
+    """Parse a provider rate-sheet workbook and return list of (provider_name, exp_payload_dict)."""
+    wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+    ws = wb.active
+
+    headers_map: dict = {}
+    for col in range(1, ws.max_column + 1):
+        val = ws.cell(1, col).value
+        if val:
+            headers_map[str(val).strip().lower()] = col
+
+    name_col = headers_map.get("name")
+    op_col = headers_map.get("operator_name") or headers_map.get("operator")
+    price_inc = headers_map.get("price_tax_incl")
+    price_exc = headers_map.get("price_tax_excl")
+    cur_col = headers_map.get("currency")
+
+    if not name_col or not (price_inc or price_exc):
+        raise ValueError("El Excel debe tener columnas 'name' y 'price_tax_incl' (o 'price_tax_excl')")
+
+    rows = []
+    for r in range(2, ws.max_row + 1):
+        title = ws.cell(r, name_col).value
+        if not title:
+            continue
+        title = str(title).strip()
+        op_name = (ws.cell(r, op_col).value if op_col else None) or "Proveedor sin nombre"
+        op_name = str(op_name).strip()
+
+        def _num(c):
+            if not c:
+                return 0.0
+            v = ws.cell(r, c).value
+            if v in (None, ""):
+                return 0.0
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return 0.0
+
+        p_excl = _num(price_exc)
+        p_incl = _num(price_inc) or p_excl
+
+        currency = "EUR"
+        if cur_col:
+            v = ws.cell(r, cur_col).value
+            if v:
+                currency = str(v).strip() or "EUR"
+
+        rows.append((op_name, {
+            "title": title,
+            "country": country,
+            "city": city,
+            "type": stype,
+            "price_tax_excl": p_excl,
+            "price_tax_incl": p_incl,
+            "price": p_incl,
+            "currency": currency,
+        }))
+    return rows
+
+
+async def _import_rows(rows, dedupe: bool = True):
+    """Insert experiences from parsed rows, creating providers if needed."""
+    created = 0
+    skipped = 0
+    provider_cache: dict = {}
+    for op_name, payload in rows:
+        if op_name not in provider_cache:
+            prov = await db.providers.find_one({"name": op_name}, {"_id": 0})
+            if not prov:
+                prov = Provider(name=op_name, country=payload.get("country")).model_dump()
+                await db.providers.insert_one(dict(prov))
+            provider_cache[op_name] = prov
+        prov = provider_cache[op_name]
+
+        if dedupe:
+            existing = await db.experiences.find_one(
+                {"provider_id": prov["provider_id"], "title": payload["title"], "price_tax_incl": payload["price_tax_incl"]},
+                {"_id": 0},
+            )
+            if existing:
+                skipped += 1
+                continue
+
+        exp = Experience(provider_id=prov["provider_id"], provider_name=prov["name"], **payload)
+        await db.experiences.insert_one(exp.model_dump())
+        created += 1
+    return {"created": created, "skipped": skipped, "providers": len(provider_cache)}
+
+
 @api.post("/experiences/import-provider-sheet")
 async def import_provider_sheet(
     file: UploadFile = File(...),
@@ -588,88 +702,93 @@ async def import_provider_sheet(
     type: ServiceType = "actividad",
     _: User = Depends(current_user),
 ):
-    """Import a provider rate sheet. Expected columns (case insensitive):
-    operator_name, name, price_tax_incl OR price_tax_excl, currency.
-    Creates the provider if it doesn't exist. Each row becomes an experience.
-    """
+    """Import a provider rate sheet."""
     if not file.filename.lower().endswith((".xlsx", ".xlsm")):
         raise HTTPException(status_code=400, detail="Sube un .xlsx")
     content = await file.read()
     try:
-        wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+        rows = _parse_provider_sheet_bytes(content, country, city, type)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Excel inválido: {e}")
-    ws = wb.active
+    result = await _import_rows(rows, dedupe=True)
+    return result
 
-    headers_map = {}
-    for col in range(1, ws.max_column + 1):
-        val = ws.cell(1, col).value
-        if val:
-            headers_map[str(val).strip().lower()] = col
 
-    def col(name):
-        return headers_map.get(name)
+@api.post("/experiences/import-all-server")
+async def import_all_server(
+    admin: Annotated[User, Depends(require_admin)],
+    base_path: str = Query("/app/artifacts/excel_creados", description="Server-side directory to scan"),
+):
+    """Walk the server-side directory and import every .xlsx file found.
 
-    name_col = col("name")
-    op_col = col("operator_name") or col("operator")
-    price_inc = col("price_tax_incl")
-    price_exc = col("price_tax_excl")
-    cur_col = col("currency")
+    Country is inferred from the parent folder containing keywords ESPA/PORT/ITAL.
+    """
+    import pathlib
+    base = pathlib.Path(base_path)
+    if not base.exists():
+        raise HTTPException(status_code=404, detail=f"Path not found: {base_path}")
 
-    if not name_col or not (price_inc or price_exc):
-        raise HTTPException(
-            status_code=400,
-            detail="El Excel debe tener columnas 'name' y 'price_tax_incl' (o 'price_tax_excl')",
-        )
+    files = list(base.rglob("*.xlsx"))
+    total_created = 0
+    total_skipped = 0
+    file_results = []
+    for fp in files:
+        # infer country
+        country = None
+        for part in fp.parts:
+            up = part.upper()
+            if "ESPA" in up:
+                country = "España"
+                break
+            if "PORT" in up:
+                country = "Portugal"
+                break
+            if "ITAL" in up:
+                country = "Italia"
+                break
+        try:
+            content = fp.read_bytes()
+            rows = _parse_provider_sheet_bytes(content, country, None, "actividad")
+            r = await _import_rows(rows, dedupe=True)
+            total_created += r["created"]
+            total_skipped += r["skipped"]
+            file_results.append({"file": fp.name, "country": country, **r})
+        except Exception as e:
+            file_results.append({"file": fp.name, "country": country, "error": str(e)})
+    return {
+        "files_scanned": len(files),
+        "total_created": total_created,
+        "total_skipped": total_skipped,
+        "files": file_results,
+    }
 
-    provider_cache: dict = {}
-    created = 0
-    for r in range(2, ws.max_row + 1):
-        title = ws.cell(r, name_col).value
-        if not title:
-            continue
-        title = str(title).strip()
-        op_name = (ws.cell(r, op_col).value if op_col else None) or "Proveedor sin nombre"
-        op_name = str(op_name).strip()
-        if op_name not in provider_cache:
-            prov = await db.providers.find_one({"name": op_name}, {"_id": 0})
-            if not prov:
-                prov = Provider(name=op_name, country=country).model_dump()
-                await db.providers.insert_one(dict(prov))
-            provider_cache[op_name] = prov
 
-        prov = provider_cache[op_name]
-
-        price = 0.0
-        for c in (price_inc, price_exc):
-            if c:
-                v = ws.cell(r, c).value
-                if v not in (None, ""):
-                    try:
-                        price = float(v)
-                        break
-                    except (TypeError, ValueError):
-                        continue
-        currency = "EUR"
-        if cur_col:
-            v = ws.cell(r, cur_col).value
-            if v:
-                currency = str(v).strip() or "EUR"
-
-        exp = Experience(
-            title=title,
-            provider_id=prov["provider_id"],
-            provider_name=prov["name"],
-            country=country,
-            city=city,
-            type=type,
-            price=price,
-            currency=currency,
-        )
-        await db.experiences.insert_one(exp.model_dump())
-        created += 1
-
-    return {"created": created, "providers": len(provider_cache)}
+@api.get("/experiences/autocomplete")
+async def experience_autocomplete(
+    _: Annotated[User, Depends(current_user)],
+    q: str = Query("", min_length=0),
+    city: Optional[str] = None,
+    country: Optional[str] = None,
+    type: Optional[ServiceType] = None,
+    limit: int = Query(15, le=50),
+):
+    """Lightweight typeahead: returns experiences matching `q`, optionally pre-filtered by city/country/type."""
+    flt: dict = {}
+    if q and q.strip():
+        flt["$or"] = [
+            {"title": {"$regex": q, "$options": "i"}},
+            {"provider_name": {"$regex": q, "$options": "i"}},
+        ]
+    if city:
+        flt["city"] = {"$regex": f"^{city}$", "$options": "i"}
+    if country:
+        flt["country"] = country
+    if type:
+        flt["type"] = type
+    items = await db.experiences.find(flt, {"_id": 0}).limit(limit).to_list(limit)
+    return items
 
 
 # ---------------------------------------------------------------------------
@@ -784,28 +903,38 @@ async def export_itinerary(itinerary_id: str, _: Annotated[User, Depends(current
     ws.cell(14, 1, "Activities and transportation").font = section_font
     ws.cell(14, 1).fill = section_fill
     head_row = 15
-    headers = ["Day", "Date", "", "Type", "Name", "Quantity", "Price"]
+    headers = ["Day", "Date", "City", "Type", "Name", "Quantity", "Precio sin IVA", "Precio con IVA", "PVP"]
     for i, h in enumerate(headers, start=1):
         c = ws.cell(head_row, i, h)
         c.font = bold
         c.fill = header_fill
         c.border = box
 
+    mk = (itn.markup_pct or 0) / 100.0
     r = head_row + 1
-    activities_total = 0.0
+    activities_excl = 0.0
+    activities_incl = 0.0
     for idx, day in enumerate(itn.days or [], start=1):
         ws.cell(r, 1, f"Day {idx}").font = bold
         ws.cell(r, 2, _fmt_date(day.date))
-        for col_i in range(1, 8):
+        ws.cell(r, 3, day.city or "")
+        for col_i in range(1, len(headers) + 1):
             ws.cell(r, col_i).fill = header_fill
         r += 1
         for s in day.services:
             ws.cell(r, 4, s.type)
             ws.cell(r, 5, s.name)
             ws.cell(r, 6, s.quantity)
-            line_total = (s.unit_price or 0) * (s.quantity or 0)
-            ws.cell(r, 7, line_total)
-            activities_total += line_total
+            unit_excl = s.unit_price_tax_excl or 0
+            unit_incl = s.unit_price_tax_incl or s.unit_price or 0
+            line_excl = unit_excl * (s.quantity or 0)
+            line_incl = unit_incl * (s.quantity or 0)
+            line_pvp = line_incl * (1 + mk)
+            ws.cell(r, 7, round(line_excl, 2))
+            ws.cell(r, 8, round(line_incl, 2))
+            ws.cell(r, 9, round(line_pvp, 2))
+            activities_excl += line_excl
+            activities_incl += line_incl
             r += 1
 
     # Accommodations
@@ -813,40 +942,45 @@ async def export_itinerary(itinerary_id: str, _: Annotated[User, Depends(current
     ws.cell(acc_section, 1, "Accommodations").font = section_font
     ws.cell(acc_section, 1).fill = section_fill
     acc_head = acc_section + 1
-    acc_headers = ["Day", "Date", "Name", "", "Price", "Currency"]
+    acc_headers = ["", "Date", "Name", "", "Currency", "", "Precio sin IVA", "Precio con IVA", "PVP"]
     for i, h in enumerate(acc_headers, start=1):
         c = ws.cell(acc_head, i, h)
         c.font = bold
         c.fill = header_fill
     r2 = acc_head + 1
-    acc_total = 0.0
+    acc_excl = 0.0
+    acc_incl = 0.0
     for a in itn.accommodations or []:
         date_range = f"{_fmt_date(a.date_from)} - {_fmt_date(a.date_to)}"
         ws.cell(r2, 2, date_range)
         ws.cell(r2, 3, a.name)
-        ws.cell(r2, 5, a.price)
-        ws.cell(r2, 6, a.currency)
-        acc_total += a.price or 0
+        ws.cell(r2, 5, a.currency)
+        p_excl = a.price_tax_excl or 0
+        p_incl = a.price_tax_incl or a.price or 0
+        ws.cell(r2, 7, round(p_excl, 2))
+        ws.cell(r2, 8, round(p_incl, 2))
+        ws.cell(r2, 9, round(p_incl * (1 + mk), 2))
+        acc_excl += p_excl
+        acc_incl += p_incl
         r2 += 1
 
     # Totals
     total_row = r2 + 2
-    subtotal = activities_total + acc_total
-    markup_amount = subtotal * (itn.markup_pct or 0) / 100.0
-    final_price = subtotal + markup_amount
-    ws.cell(total_row, 4, "Subtotal").font = bold
-    ws.cell(total_row, 7, subtotal)
-    ws.cell(total_row + 1, 4, f"Markup ({itn.markup_pct or 0}%)").font = bold
-    ws.cell(total_row + 1, 7, markup_amount)
-    ws.cell(total_row + 2, 4, "Final price").font = bold
-    ws.cell(total_row + 2, 7, final_price)
-    ws.cell(total_row + 2, 4).fill = section_fill
-    ws.cell(total_row + 2, 4).font = section_font
-    ws.cell(total_row + 2, 7).fill = section_fill
-    ws.cell(total_row + 2, 7).font = section_font
+    sub_excl = activities_excl + acc_excl
+    sub_incl = activities_incl + acc_incl
+    pvp = sub_incl * (1 + mk)
+    ws.cell(total_row, 6, "Subtotal sin IVA").font = bold
+    ws.cell(total_row, 7, round(sub_excl, 2))
+    ws.cell(total_row + 1, 6, "Subtotal con IVA").font = bold
+    ws.cell(total_row + 1, 8, round(sub_incl, 2))
+    ws.cell(total_row + 2, 6, f"PVP (markup {itn.markup_pct or 0}% sobre IVA)").font = bold
+    ws.cell(total_row + 2, 9, round(pvp, 2))
+    for col_i in range(6, 10):
+        ws.cell(total_row + 2, col_i).fill = section_fill
+        ws.cell(total_row + 2, col_i).font = section_font
 
     # Column widths
-    widths = [14, 14, 4, 18, 50, 12, 14]
+    widths = [10, 14, 14, 16, 50, 10, 14, 14, 14]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
 
