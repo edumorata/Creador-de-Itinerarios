@@ -787,8 +787,17 @@ async def experience_autocomplete(
         flt["country"] = country
     if type:
         flt["type"] = type
-    items = await db.experiences.find(flt, {"_id": 0}).limit(limit).to_list(limit)
+    items = await db.experiences.find(flt, {"_id": 0}).sort("title", 1).limit(limit).to_list(limit)
     return items
+
+
+@api.get("/experiences/import-all-status")
+async def import_all_status(_: Annotated[User, Depends(require_admin)]):
+    """Quick stats for the admin panel."""
+    return {
+        "providers": await db.providers.count_documents({}),
+        "experiences": await db.experiences.count_documents({}),
+    }
 
 
 # ---------------------------------------------------------------------------

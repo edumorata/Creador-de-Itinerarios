@@ -6,60 +6,49 @@
 > - Dashboard simple para elegir actividades, ver coste total + markup (comisión agencia)
 > - Fase 2: agente de IA entrenado en itinerarios vendidos/no vendidos
 > - Exportar a Excel para cargar en Sofi (sistema interno, sin API por ahora)
-> Adjunto formatos Excel actuales (helensmith, terrylin, viajes directos) y zip con 94 hojas de tarifas de proveedores (España/Portugal/Italia 2025).
 
 ## Architecture
 - **Backend**: FastAPI + Motor (MongoDB). Single `server.py` with `/api` router, Emergent Google Auth + whitelist.
-- **Frontend**: React 19 + Tailwind 3 + Shadcn primitives + sonner toasts + lucide-react icons. Auth context with cookie-based session.
-- **Auth**: Emergent-managed Google Auth. Whitelist enforced; first user is bootstrap admin. Session token stored as httpOnly cookie (7 days) and supports `Authorization: Bearer` fallback.
+- **Frontend**: React 19 + Tailwind + Shadcn primitives + sonner + lucide.
+- **Auth**: Emergent-managed Google Auth + whitelist (first user = bootstrap admin).
 
 ## User personas
-- **Admin (owner / lead)**: manages allowed emails, sees everything.
-- **Travel specialist (agent)**: builds itineraries, manages experiences and providers, exports to Excel.
+- **Admin (owner / lead)**: manages whitelist, can trigger bulk-import-all, sees everything.
+- **Travel specialist (agent)**: builds itineraries, manages experiences & providers, exports to Excel.
 
-## Core requirements (static)
-1. Library of experiences linked to providers
-2. Itinerary builder with day-by-day services + accommodations
-3. Real-time cost summary with global markup → final selling price
-4. Excel export matching the Sofi-import format used today
-5. Bulk import of provider rate sheets
-6. Access control via whitelist of Google accounts
+## Implemented features
 
-## Implemented (2026-05-28)
-- Login + Google OAuth + AuthCallback + whitelist enforcement (bootstrap admin = first user)
-- Admin > Users page: add/remove allowed emails, view registered users
-- Providers CRUD page
-- Experiences CRUD page with search/country/type filters + bulk import from provider xlsx
-- Dashboard: itineraries list with status, totals, edit/export/delete
-- Itinerary Builder: 3-column layout (sidebar nav | timeline | search + cost summary)
-  - Trip metadata (traveler, dates, pax) with auto-adjust day list
-  - Per-day service rows: type, name, qty, unit price, line total
-  - Accommodations sub-block
-  - Markup input + live final price calc
-  - Click-to-add experiences from library into the active day
-  - Auto-save (debounced 600ms)
-- Excel export endpoint generating Sofi-format xlsx (Trip Prices sheet with traveler section, activities by day, accommodations, subtotal/markup/final)
-- Tested end-to-end: 13/13 backend tests green; UI loads cleanly
+### Iteration 1 (2026-05-28)
+- Login + AuthCallback + whitelist (bootstrap admin)
+- Admin > Users page (whitelist + registered users)
+- Providers CRUD
+- Experiences CRUD + filter + single-file bulk import
+- Dashboard with itineraries list, status, totals, export
+- Itinerary Builder (3 columns): metadata, day-by-day services, accommodations, markup, cost summary, auto-save
+- Excel export in Sofi format
 
-## Demo data
-- 1 provider + 13 Italian experiences (Roman Road Tours) seeded by the testing agent for visual demo
+### Iteration 2 (2026-05-28)
+- **3-tier pricing**: every Experience, ItineraryService and Accommodation now stores `price_tax_excl`, `price_tax_incl`, and the UI computes `PVP = price_tax_incl × (1 + markup%)`. Cost summary shows Subtotal sin IVA + Subtotal con IVA + Markup + PVP final.
+- **Excel export updated**: 9 columns (Day | Date | City | Type | Name | Quantity | Sin IVA | Con IVA | PVP) and three subtotals at the bottom.
+- **City per day**: each ItineraryDay has a `city` field used as a pre-filter and emitted in the Excel export.
+- **Service autocomplete**: typing in any service-name row triggers a typeahead `GET /api/experiences/autocomplete?q=…&city=…` and pre-fills the row (type, name, provider, both prices) on selection.
+- **Bulk-import-all-server**: admin-only endpoint that walks `/app/artifacts/excel_creados` and imports the 94 provider Excel files. Currently 2514 experiences across 82 providers (España, Portugal, Italia). Dedup key = (provider_id, title, price_tax_incl).
 
 ## P1 backlog (next iterations)
-- Drag-and-drop experiences between days (currently click-to-add)
-- Bulk import wizard with column mapping (instead of fixed `name`/`operator_name`/`price_tax_incl`)
-- Itinerary duplication / templates
-- Sold/Not-sold dataset capture → feed Phase-2 AI
-- Reports: monthly margin, top providers
-- Multiple Excel export templates (one per agent/brand)
+- Drag-and-drop reordering of services across days
+- Itinerary duplication / templates by destination
+- Sold/Not-sold tagging + dataset capture → Phase 2 AI
+- Per-provider margin dashboard
+- Wizard for bulk import with column mapping
+- Multiple Excel templates per agent/brand
 
 ## P2 backlog
 - Phase 2: AI itinerary suggestion (LLM trained on historical sold itineraries)
-- Direct Sofi sync (web automation since no API)
-- Currency conversion (multi-currency providers)
+- Sofi sync via browser automation (no API)
+- Multi-currency conversion
 - Per-line markup overrides
-- Versioning / change history on itineraries
 
-## Known minor items (from testing)
-- Bulk import doesn't dedupe re-uploads (creates duplicates)
-- CORS regex `.*` is permissive; tighten before production
-- session_token cookie requires HTTPS (works in preview/prod; not on plain HTTP local)
+## Known minor items
+- Bulk-import runs in the request loop (synchronous) — should be moved to a thread pool for very large catalogues
+- Autocomplete payload returns full Experience docs (could be slimmed)
+- CORS regex `.*` is permissive (lock down to frontend origin for production)
