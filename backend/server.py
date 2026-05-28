@@ -863,9 +863,35 @@ async def import_all_status(_: Annotated[User, Depends(require_admin)]):
 # Itineraries
 # ---------------------------------------------------------------------------
 @api.get("/itineraries", response_model=List[Itinerary])
-async def list_itineraries(user: Annotated[User, Depends(current_user)]):
-    items = await db.itineraries.find({}, {"_id": 0}).sort("updated_at", -1).to_list(500)
+async def list_itineraries(
+    user: Annotated[User, Depends(current_user)],
+    agent: Optional[str] = None,
+    traveler: Optional[str] = None,
+):
+    """Agents see only their own itineraries.
+    Admins see everything and can filter by agent (created_by email) or traveler name.
+    """
+    flt: dict = {}
+    if user.role == "admin":
+        if agent:
+            flt["created_by"] = agent
+        if traveler:
+            flt["main_traveler"] = {"$regex": traveler, "$options": "i"}
+    else:
+        flt["created_by"] = user.email
+        if traveler:
+            flt["main_traveler"] = {"$regex": traveler, "$options": "i"}
+    items = await db.itineraries.find(flt, {"_id": 0}).sort("updated_at", -1).to_list(500)
     return items
+
+
+@api.get("/itineraries/agents")
+async def list_itinerary_agents(user: Annotated[User, Depends(current_user)]):
+    """Distinct list of agents who have created itineraries (admin-only)."""
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    emails = await db.itineraries.distinct("created_by")
+    return {"agents": sorted([e for e in emails if e])}
 
 
 @api.post("/itineraries", response_model=Itinerary)
@@ -877,11 +903,19 @@ async def create_itinerary(payload: ItineraryUpsert, user: Annotated[User, Depen
     return itn
 
 
+def _can_access(itn_doc: dict, user: User) -> bool:
+    if user.role == "admin":
+        return True
+    return itn_doc.get("created_by") == user.email
+
+
 @api.get("/itineraries/{itinerary_id}", response_model=Itinerary)
-async def get_itinerary(itinerary_id: str, _: Annotated[User, Depends(current_user)]):
+async def get_itinerary(itinerary_id: str, user: Annotated[User, Depends(current_user)]):
     doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
+    if not _can_access(doc, user):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este itinerario")
     return doc
 
 
@@ -889,22 +923,28 @@ async def get_itinerary(itinerary_id: str, _: Annotated[User, Depends(current_us
 async def update_itinerary(
     itinerary_id: str,
     payload: ItineraryUpsert,
-    _: Annotated[User, Depends(current_user)],
+    user: Annotated[User, Depends(current_user)],
 ):
+    doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not _can_access(doc, user):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este itinerario")
     patch = payload.model_dump(exclude_unset=True)
     patch["updated_at"] = now_iso()
-    res = await db.itineraries.update_one({"itinerary_id": itinerary_id}, {"$set": patch})
-    if res.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Not found")
+    await db.itineraries.update_one({"itinerary_id": itinerary_id}, {"$set": patch})
     doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
     return doc
 
 
 @api.delete("/itineraries/{itinerary_id}")
-async def delete_itinerary(itinerary_id: str, _: Annotated[User, Depends(current_user)]):
-    res = await db.itineraries.delete_one({"itinerary_id": itinerary_id})
-    if res.deleted_count == 0:
+async def delete_itinerary(itinerary_id: str, user: Annotated[User, Depends(current_user)]):
+    doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+    if not doc:
         raise HTTPException(status_code=404, detail="Not found")
+    if not _can_access(doc, user):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este itinerario")
+    await db.itineraries.delete_one({"itinerary_id": itinerary_id})
     return {"ok": True}
 
 
@@ -921,10 +961,12 @@ def _fmt_date(s: Optional[str]) -> str:
 
 
 @api.get("/itineraries/{itinerary_id}/export")
-async def export_itinerary(itinerary_id: str, _: Annotated[User, Depends(current_user)]):
+async def export_itinerary(itinerary_id: str, user: Annotated[User, Depends(current_user)]):
     itn_doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
     if not itn_doc:
         raise HTTPException(status_code=404, detail="Not found")
+    if not _can_access(itn_doc, user):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este itinerario")
     itn = Itinerary(**itn_doc)
 
     wb = openpyxl.Workbook()
