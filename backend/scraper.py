@@ -35,7 +35,6 @@ async def _render_url(url: str) -> dict:
 
             if is_gestion:
                 source = "gestion"
-                # Login form (Joomla style)
                 try:
                     await page.goto("https://gestion.viajadverdad.com/login", wait_until="networkidle", timeout=30000)
                     await page.fill('input[name="username"]', GESTION_USER)
@@ -53,7 +52,6 @@ async def _render_url(url: str) -> dict:
                 error = error or f"goto_error: {e}"
 
             if is_travefy:
-                # Wait for itinerary content to render
                 try:
                     await page.wait_for_selector("text=/Day|Jun|Jan|Feb|Mar|Apr|May|Jul|Aug|Sep|Oct|Nov|Dec/", timeout=15000)
                 except Exception:
@@ -64,14 +62,38 @@ async def _render_url(url: str) -> dict:
             try:
                 text = await page.evaluate("document.body.innerText")
                 text = "\n".join(line.strip() for line in (text or "").splitlines() if line.strip())
-                if len(text) > 200 and not (is_gestion and error == "login_failed"):
-                    ok = True
             except Exception as e:
                 error = error or f"extract_error: {e}"
+
+            # For gestion: the /trips/form/{type}/{tripId} page only shows the lead form;
+            # the actual bookings/services live in /reservas/list/3?app_bookings___trip_id_raw={tripId}
+            # Travelers in /trips/list/2?app_travelers___trip_id_raw={tripId}. Fetch both and concat.
+            if is_gestion and not error:
+                m = re.search(r"/trips/form/\d+/(\d+)", url)
+                if m:
+                    trip_id = m.group(1)
+                    extra_chunks = []
+                    for label, sub in [
+                        ("TRAVELERS", f"/trips/list/2?app_travelers___trip_id_raw={trip_id}&limitstart2=0&resetfilters=1"),
+                        ("BOOKINGS", f"/reservas/list/3?app_bookings___trip_id_raw={trip_id}&limitstart3=0&resetfilters=1"),
+                    ]:
+                        full = "https://gestion.viajadverdad.com" + sub
+                        try:
+                            await page.goto(full, wait_until="networkidle", timeout=30000)
+                            await page.wait_for_timeout(2000)
+                            t2 = await page.evaluate("document.body.innerText")
+                            t2 = "\n".join(line.strip() for line in (t2 or "").splitlines() if line.strip())
+                            extra_chunks.append(f"=== {label} ({full}) ===\n{t2}")
+                        except Exception as e:
+                            extra_chunks.append(f"=== {label} (error: {e}) ===")
+                    text = (text or "") + "\n\n" + "\n\n".join(extra_chunks)
+
+            if len(text) > 200 and not (is_gestion and error == "login_failed"):
+                ok = True
         finally:
             await browser.close()
 
-    return {"ok": ok, "source": source, "text": text[:60000], "error": error}
+    return {"ok": ok, "source": source, "text": text[:80000], "error": error}
 
 
 PARSE_SYSTEM = """You are a travel itinerary parser. You receive the rendered text of a published itinerary page (Travefy, Sofi, or similar) and must extract a structured JSON.
