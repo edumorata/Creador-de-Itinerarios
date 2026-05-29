@@ -116,6 +116,18 @@ export default function AITrainer() {
     }
   };
 
+  const cancelBulk = async () => {
+    if (!activeJob?.job_id) return;
+    if (!window.confirm("¿Cancelar la importación? Los viajes ya listados se procesarán igual.")) return;
+    try {
+      const { data } = await api.post(`/training-examples/bulk-import-jobs/${activeJob.job_id}/cancel`);
+      setActiveJob(data);
+      toast.info("Cancelación solicitada. El worker se detendrá tras la operación actual.");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Error al cancelar");
+    }
+  };
+
   const startNew = () => { setEditing({ ...EMPTY }); setShowForm(true); };
   const startEdit = (ex) => { setEditing({ ...ex }); setShowForm(true); };
 
@@ -199,6 +211,7 @@ export default function AITrainer() {
         bulkForm={bulkForm}
         setBulkForm={setBulkForm}
         onStart={startBulk}
+        onCancel={cancelBulk}
         activeJob={activeJob}
         jobsHistory={jobsHistory}
       />
@@ -361,7 +374,7 @@ export default function AITrainer() {
 /* =========================================================================
  *  BULK IMPORT CARD
  * =======================================================================*/
-function BulkImportCard({ bulkForm, setBulkForm, onStart, activeJob, jobsHistory }) {
+function BulkImportCard({ bulkForm, setBulkForm, onStart, onCancel, activeJob, jobsHistory }) {
   const [showHistory, setShowHistory] = useState(false);
   const isRunning = activeJob && (activeJob.status === "running" || activeJob.status === "queued");
   const totalDone = (activeJob?.scraped || 0) + (activeJob?.skipped || 0) + (activeJob?.failed || 0);
@@ -479,6 +492,15 @@ function BulkImportCard({ bulkForm, setBulkForm, onStart, activeJob, jobsHistory
           {isRunning ? <RotateCw size={14} className="animate-spin" /> : <Download size={14} />}
           {isRunning ? "Importando…" : "Iniciar importación"}
         </button>
+        {isRunning && (
+          <button
+            data-testid="bulk-cancel-btn"
+            onClick={onCancel}
+            className="ml-2 inline-flex items-center gap-2 px-4 py-2.5 border border-clay-300 text-clay-900 hover:bg-clay-100 text-sm tracking-wider uppercase"
+          >
+            <X size={14} /> Cancelar
+          </button>
+        )}
       </div>
 
       {activeJob && (

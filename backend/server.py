@@ -1784,6 +1784,24 @@ async def get_bulk_import_job(job_id: str, _: Annotated[User, Depends(current_us
     return doc
 
 
+@api.post("/training-examples/bulk-import-jobs/{job_id}/cancel", response_model=BulkImportJob)
+async def cancel_bulk_import_job(job_id: str, _: Annotated[User, Depends(current_user)]):
+    """Mark a running job as cancelled. The background worker polls this status
+    between actions and stops cleanly, scraping whatever it has already listed."""
+    doc = await db.bulk_import_jobs.find_one({"job_id": job_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    if doc["status"] in ("completed", "failed", "cancelled", "interrupted"):
+        return doc
+    await _update_job(
+        job_id,
+        status="cancelled",
+        last_message="Cancelado por el usuario. Procesando viajes ya listados…",
+    )
+    fresh = await db.bulk_import_jobs.find_one({"job_id": job_id}, {"_id": 0})
+    return fresh
+
+
 @api.post("/training-examples", response_model=TrainingExample)
 async def create_training_example(
     payload: TrainingExampleUpsert,
@@ -1861,6 +1879,11 @@ async def _update_job(job_id: str, **fields):
     await db.bulk_import_jobs.update_one({"job_id": job_id}, {"$set": fields})
 
 
+async def _is_cancelled(job_id: str) -> bool:
+    doc = await db.bulk_import_jobs.find_one({"job_id": job_id}, {"status": 1})
+    return bool(doc and doc.get("status") == "cancelled")
+
+
 def _extract_client_name(text: str) -> str:
     if not text:
         return ""
@@ -1929,9 +1952,11 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
     await _update_job(job_id, status="running",
                       last_message="Iniciando navegador y login en gestion…")
 
-    all_trip_ids: list[str] = []
-    trip_names: dict[str, str] = {}   # trip_id -> client_name from listing link
-    seen: set[str] = set()
+    # Recover any previously listed trip_ids if the same job is resumed
+    job_doc = await db.bulk_import_jobs.find_one({"job_id": job_id}, {"_id": 0}) or {}
+    all_trip_ids: list[str] = list(job_doc.get("pending_trip_ids") or [])
+    trip_names: dict[str, str] = dict(job_doc.get("trip_names") or {})
+    seen: set[str] = set(all_trip_ids)
 
     try:
         async with async_playwright() as pw:
@@ -1939,15 +1964,18 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
             try:
                 ctx = await browser.new_context(user_agent="Mozilla/5.0")
                 page = await ctx.new_page()
+                page.set_default_timeout(20000)
+                page.set_default_navigation_timeout(25000)
 
                 # ---------- LOGIN ----------
                 try:
                     await page.goto("https://gestion.viajadverdad.com/login",
-                                    wait_until="networkidle", timeout=30000)
+                                    wait_until="domcontentloaded", timeout=25000)
                     await page.fill('input[name="username"]', GESTION_USER)
                     await page.fill('input[name="password"]', GESTION_PASS)
                     await page.click('button[type="submit"], input[type="submit"]')
-                    await page.wait_for_load_state("networkidle", timeout=20000)
+                    await page.wait_for_load_state("domcontentloaded", timeout=20000)
+                    await page.wait_for_timeout(1500)
                     if "/login" in page.url:
                         await _update_job(job_id, status="failed",
                                           last_message="Login en gestion falló (revisa GESTION_VIAJADVERDAD_USER/PASS)",
@@ -1973,25 +2001,25 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
                     # Agent — select by visible label (e.g. "Beatriz")
                     if agent:
                         try:
-                            await page.select_option('#app_trips___agentvalue', label=agent)
+                            await page.select_option('#app_trips___agentvalue', label=agent, timeout=5000)
                         except Exception:
                             try:
-                                await page.select_option('#app_trips___agentvalue', value=agent)
+                                await page.select_option('#app_trips___agentvalue', value=agent, timeout=5000)
                             except Exception:
                                 pass
                     # Source — select by value (matches the visible label too in this Fabrik config)
                     if source:
                         try:
-                            await page.select_option('#app_trips___sourcevalue', value=source)
+                            await page.select_option('#app_trips___sourcevalue', value=source, timeout=5000)
                         except Exception:
                             try:
-                                await page.select_option('#app_trips___sourcevalue', label=source)
+                                await page.select_option('#app_trips___sourcevalue', label=source, timeout=5000)
                             except Exception:
                                 pass
                     # Status — lowercase value
                     if status_value:
                         try:
-                            await page.select_option('#app_trips___statusvalue', value=status_value)
+                            await page.select_option('#app_trips___statusvalue', value=status_value, timeout=5000)
                         except Exception:
                             pass
                     # Booking date range. Dot inside the ID requires attribute selector.
@@ -1999,7 +2027,7 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
                         try:
                             await page.fill(
                                 'input[id="app_trips___booking_date_1_com_fabrik_1_filter_range_0_.0"]',
-                                date_from,
+                                date_from, timeout=5000,
                             )
                         except Exception:
                             pass
@@ -2007,7 +2035,7 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
                         try:
                             await page.fill(
                                 'input[id="app_trips___booking_date_1_com_fabrik_1_filter_range_1_.0"]',
-                                date_to,
+                                date_to, timeout=5000,
                             )
                         except Exception:
                             pass
@@ -2015,49 +2043,66 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
                     try:
                         btn = await page.query_selector('button[name="filter"], input[name="filter"]')
                         if btn:
-                            await btn.click()
+                            await btn.click(timeout=5000)
                         else:
-                            # Fallback: submit the filter form directly
                             await page.evaluate(
                                 "document.querySelector('form[name=\"listform_1_com_fabrik_1\"], form.fabrikForm, .fabrik_filter')?.form?.submit()"
                             )
                     except Exception:
                         pass
-                    await page.wait_for_load_state("networkidle", timeout=25000)
-                    await page.wait_for_timeout(2500)
+                    # Wait for the post-submit reload using DOM-content (much more reliable
+                    # than networkidle on Fabrik pages, which keep firing AJAX in background).
+                    try:
+                        await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                    except Exception:
+                        pass
+                    await page.wait_for_timeout(2000)
 
-                for st_idx, st in enumerate(statuses):
-                    if len(all_trip_ids) >= limit:
-                        break
+                async def _process_status(st: str) -> None:
+                    """Drive a single status through filter→limit→pagination→collect."""
                     status_label = {"open": "abierto", "closed": "cerrado", "terminado": "terminado"}.get(st, st)
                     await _update_job(
                         job_id, matched=len(all_trip_ids),
                         last_message=f"Aplicando filtros (estado={status_label})…",
                     )
-                    try:
-                        await page.goto("https://gestion.viajadverdad.com/trips",
-                                        wait_until="networkidle", timeout=30000)
-                        await page.wait_for_timeout(1500)
-                    except Exception as e:
-                        await _update_job(job_id, last_message=f"No se pudo abrir /trips: {e}")
-                        continue
-
+                    await page.goto("https://gestion.viajadverdad.com/trips",
+                                    wait_until="domcontentloaded", timeout=20000)
+                    await page.wait_for_timeout(1500)
                     await fabrik_apply_filters(status_label)
+
+                    # Maximise page size so we minimise pagination hops (Fabrik default = 100).
+                    try:
+                        opts = await page.evaluate("""() => {
+                            const s = document.querySelector('#limit1');
+                            if (!s) return [];
+                            return Array.from(s.options).map(o => parseInt(o.value, 10)).filter(n => !isNaN(n));
+                        }""")
+                        if opts:
+                            target = str(max(opts))     # typically "500"
+                            current = await page.eval_on_selector('#limit1', 'e => e.value')
+                            if current != target:
+                                try:
+                                    async with page.expect_navigation(wait_until="domcontentloaded", timeout=15000):
+                                        await page.select_option('#limit1', value=target, timeout=5000)
+                                except Exception:
+                                    pass
+                                await page.wait_for_timeout(1500)
+                    except Exception as e:
+                        logger.info("page-size selector skipped: %s", e)
 
                     # Paginate and harvest IDs
                     page_count = 0
                     while page_count < 50:  # hard cap to avoid infinite loops
+                        if await _is_cancelled(job_id):
+                            return
                         page_count += 1
                         rows = await page.evaluate("""() => {
-                            // Collect (trip_id, link_text) pairs from anchors that point at a specific trip.
-                            // Prefer "form" anchors that contain the human-readable trip title.
                             const map = new Map();
                             document.querySelectorAll('a[href*="/trips/form/"], a[href*="/trips/details/"]').forEach(a => {
                                 const m = a.href.match(/\\/trips\\/(?:form|details)\\/\\d+\\/(\\d+)/);
                                 if (!m) return;
                                 const id = m[1];
                                 const text = (a.innerText || '').trim();
-                                // Keep the longest text we've seen for this id (the title link is verbose)
                                 if (!map.has(id) || (text && text.length > (map.get(id) || '').length)) {
                                     map.set(id, text);
                                 }
@@ -2076,15 +2121,17 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
                                 new_added += 1
                                 if len(all_trip_ids) >= limit:
                                     break
+                        # Persist progress so a crash mid-listing doesn't lose IDs.
                         await _update_job(
                             job_id, matched=len(all_trip_ids),
+                            pending_trip_ids=all_trip_ids[:],
+                            trip_names=trip_names,
                             last_message=f"Listando viajes (estado={status_label}) · página {page_count} · +{new_added}",
                         )
-                        if len(all_trip_ids) >= limit or new_added == 0:
-                            # If no new IDs surfaced on this page, the listing is exhausted
-                            # (a "Next" click that loops back to the same data would otherwise spin forever).
-                            if new_added == 0 and page_count > 1:
-                                break
+                        if len(all_trip_ids) >= limit:
+                            return
+                        if new_added == 0 and page_count > 1:
+                            return
                         # Try to advance pagination
                         try:
                             nxt = await page.query_selector(
@@ -2093,16 +2140,36 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
                                 '.pagination li.next a, a:has-text("›"), a:has-text("→")'
                             )
                             if not nxt:
-                                break
+                                return
                             href = await nxt.get_attribute("href")
                             cls = (await nxt.get_attribute("class") or "").lower()
                             if "disabled" in cls or href in (None, "", "#"):
-                                break
-                            await nxt.click()
-                            await page.wait_for_load_state("networkidle", timeout=15000)
+                                return
+                            await nxt.click(timeout=5000)
+                            await page.wait_for_load_state("domcontentloaded", timeout=15000)
                             await page.wait_for_timeout(1500)
                         except Exception:
-                            break
+                            return
+
+                for st_idx, st in enumerate(statuses):
+                    if len(all_trip_ids) >= limit:
+                        break
+                    if await _is_cancelled(job_id):
+                        break
+                    try:
+                        # Hard 180s cap per status so a hung filter never blocks the next status.
+                        await asyncio.wait_for(_process_status(st), timeout=180)
+                    except asyncio.TimeoutError:
+                        await _update_job(
+                            job_id, matched=len(all_trip_ids),
+                            last_message=f"Timeout listando estado={st} tras 180s · sigo con el siguiente",
+                        )
+                    except Exception as e:
+                        await _update_job(
+                            job_id, matched=len(all_trip_ids),
+                            last_message=f"Error listando estado={st}: {str(e)[:140]} · sigo con el siguiente",
+                        )
+                        logger.warning("listing error for status %s: %s", st, e)
 
                 await page.close()
             finally:
@@ -2137,6 +2204,8 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
         f"estado={','.join(statuses)} · fechas={date_from or '—'}→{date_to or '—'} · outcome={outcome})"
     )
     for i, tid in enumerate(trip_ids):
+        if await _is_cancelled(job_id):
+            break
         url = f"https://gestion.viajadverdad.com/trips/form/1/{tid}"
         existing = await db.training_examples.find_one(
             {"itinerary_url_ops": url}, {"_id": 0}
@@ -2185,16 +2254,18 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
             )
             logger.warning("bulk import trip %s failed: %s", tid, e)
 
+    was_cancelled = await _is_cancelled(job_id)
     await _update_job(
         job_id,
-        status="completed",
+        status="cancelled" if was_cancelled else "completed",
         scraped=created,
         skipped=skipped,
         failed=failed,
         errors=errors[-50:],   # keep only last 50 to avoid bloat
         finished_at=now_iso(),
         last_message=(
-            f"Completado · {created} creados · {skipped} saltados · {failed} con error"
+            ("Cancelado por el usuario · " if was_cancelled else "Completado · ")
+            + f"{created} creados · {skipped} saltados · {failed} con error"
         ),
     )
 
