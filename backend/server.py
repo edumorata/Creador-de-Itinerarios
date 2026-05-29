@@ -264,6 +264,33 @@ async def shutdown_db_client():
 
 
 @app.on_event("startup")
+async def ensure_playwright_browser():
+    """Pods sometimes lose the Playwright Chromium binary after image recycling.
+    Run `playwright install chromium` on every startup — it's idempotent and
+    only downloads the version the *current* SDK requires (older 1208/1223
+    folders may exist but be unusable after an SDK upgrade)."""
+    logger.info("Verifying Playwright browser is up-to-date…")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "playwright", "install", "chromium",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=180)
+            tail = stdout_bytes.decode(errors="ignore")[-300:].strip()
+            if proc.returncode == 0:
+                logger.info("Playwright browser ready · %s", tail.splitlines()[-1] if tail else "ok")
+            else:
+                logger.error("playwright install exit=%s · %s", proc.returncode, tail)
+        except asyncio.TimeoutError:
+            proc.kill()
+            logger.error("playwright install timed out after 180s")
+    except Exception as e:
+        logger.error("Could not auto-install Playwright browser: %s", e)
+
+
+@app.on_event("startup")
 async def reap_orphan_bulk_jobs():
     """Any bulk_import_job left as queued/running from a previous process is
     orphaned — the in-memory asyncio task died with the restart. Mark them
