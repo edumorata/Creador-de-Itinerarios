@@ -1883,13 +1883,17 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
 
     agent = (params.get("agent") or "").strip()
     source = (params.get("source") or "").strip()
-    raw_status = (params.get("status") or "both").strip().lower()
-    if raw_status in ("all", "both", "ambos", "todos", ""):
+    raw_status = (params.get("status") or "all_sold").strip().lower()
+    if raw_status in ("all_sold", "todos_vendidos"):
+        statuses = ["open", "closed", "terminado"]
+    elif raw_status in ("all", "both", "ambos", "todos", ""):
         statuses = ["open", "closed"]
     elif raw_status in ("open", "abierto"):
         statuses = ["open"]
     elif raw_status in ("closed", "cerrado"):
         statuses = ["closed"]
+    elif raw_status in ("terminado", "finished"):
+        statuses = ["terminado"]
     else:
         statuses = [raw_status]
     date_from = (params.get("date_from") or "").strip()
@@ -2004,7 +2008,7 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
                 for st_idx, st in enumerate(statuses):
                     if len(all_trip_ids) >= limit:
                         break
-                    status_label = {"open": "abierto", "closed": "cerrado"}.get(st, st)
+                    status_label = {"open": "abierto", "closed": "cerrado", "terminado": "terminado"}.get(st, st)
                     await _update_job(
                         job_id, matched=len(all_trip_ids),
                         last_message=f"Aplicando filtros (estado={status_label})…",

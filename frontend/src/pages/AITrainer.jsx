@@ -29,7 +29,7 @@ const EMPTY = {
 const DEFAULT_BULK = {
   agent: "",
   source: "KimKim",
-  status: "both",
+  status: "all_sold",
   outcome: "sold",
   date_from: "01/01/2025",
   date_to: "29/05/2026",
@@ -401,9 +401,11 @@ function BulkImportCard({ bulkForm, setBulkForm, onStart, activeJob, jobsHistory
             disabled={isRunning}
             className="w-full bg-white border border-clay-300 px-3 py-2 text-sm outline-none focus:border-terracotta disabled:opacity-50"
           >
+            <option value="all_sold">Abierto + Cerrado + Terminado</option>
             <option value="both">Abierto + Cerrado</option>
             <option value="open">Solo Abierto</option>
             <option value="closed">Solo Cerrado</option>
+            <option value="terminado">Solo Terminado</option>
           </select>
         </Field>
         <Field label="Marcar como" hint="resultado venta">
