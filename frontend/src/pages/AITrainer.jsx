@@ -70,6 +70,13 @@ export default function AITrainer() {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
 
+  // When a job is running or just resumed elsewhere, attach polling automatically.
+  useEffect(() => {
+    if (!activeJob) return;
+    const live = ["queued", "running"].includes(activeJob.status);
+    if (live && !pollRef.current) startPolling(activeJob.job_id);
+  }, [activeJob?.job_id, activeJob?.status]);
+
   const startPolling = (jobId) => {
     if (pollRef.current) clearInterval(pollRef.current);
     const tick = async () => {
@@ -113,6 +120,17 @@ export default function AITrainer() {
       startPolling(data.job_id);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Error al lanzar el import");
+    }
+  };
+
+  const resumeBulk = async (jobId) => {
+    try {
+      const { data } = await api.post(`/training-examples/bulk-import-jobs/${jobId}/resume`);
+      toast.success("Job reanudado");
+      setActiveJob(data);
+      startPolling(data.job_id);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Error al reanudar");
     }
   };
 
@@ -212,6 +230,7 @@ export default function AITrainer() {
         setBulkForm={setBulkForm}
         onStart={startBulk}
         onCancel={cancelBulk}
+        onResume={resumeBulk}
         activeJob={activeJob}
         jobsHistory={jobsHistory}
       />
@@ -374,9 +393,17 @@ export default function AITrainer() {
 /* =========================================================================
  *  BULK IMPORT CARD
  * =======================================================================*/
-function BulkImportCard({ bulkForm, setBulkForm, onStart, onCancel, activeJob, jobsHistory }) {
+function BulkImportCard({ bulkForm, setBulkForm, onStart, onCancel, onResume, activeJob, jobsHistory }) {
   const [showHistory, setShowHistory] = useState(false);
   const isRunning = activeJob && (activeJob.status === "running" || activeJob.status === "queued");
+  // A job is "resumable" when it stopped early but has trips still to process.
+  const isResumable = activeJob && (
+    ["interrupted", "failed", "cancelled"].includes(activeJob.status)
+    && (
+      !activeJob.listing_done ||
+      ((activeJob.pending_trip_ids || []).length > (activeJob.processed_trip_ids || []).length)
+    )
+  );
   const totalDone = (activeJob?.scraped || 0) + (activeJob?.skipped || 0) + (activeJob?.failed || 0);
   const progressPct = activeJob?.matched > 0
     ? Math.min(100, Math.round((totalDone / activeJob.matched) * 100))
@@ -501,6 +528,20 @@ function BulkImportCard({ bulkForm, setBulkForm, onStart, onCancel, activeJob, j
             <X size={14} /> Cancelar
           </button>
         )}
+        {isResumable && (
+          <button
+            data-testid="bulk-resume-btn"
+            onClick={() => onResume(activeJob.job_id)}
+            className="ml-2 inline-flex items-center gap-2 px-4 py-2.5 bg-pine text-white text-sm tracking-wider uppercase hover:bg-pine-hover"
+          >
+            <RotateCw size={14} /> Reanudar
+            {activeJob.pending_trip_ids && (
+              <span className="ml-1 text-[11px] opacity-80">
+                ({(activeJob.pending_trip_ids || []).length - (activeJob.processed_trip_ids || []).length} pendientes)
+              </span>
+            )}
+          </button>
+        )}
       </div>
 
       {activeJob && (
@@ -555,21 +596,39 @@ function BulkImportCard({ bulkForm, setBulkForm, onStart, onCancel, activeJob, j
                   <th className="text-center py-1.5">Importados</th>
                   <th className="text-center py-1.5">Errores</th>
                   <th className="text-left py-1.5">Estado</th>
+                  <th className="text-right py-1.5">Acciones</th>
                 </tr>
               </thead>
               <tbody>
-                {jobsHistory.slice(0, 10).map((j) => (
-                  <tr key={j.job_id} className="border-t border-clay-200">
-                    <td className="py-1 tabular">{new Date(j.started_at).toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" })}</td>
-                    <td className="py-1 text-clay-700 truncate max-w-[280px]">
-                      {[j.params?.agent || "Todos", j.params?.source, j.params?.status, j.params?.outcome || "sold", `${j.params?.date_from}→${j.params?.date_to}`].filter(Boolean).join(" · ")}
-                    </td>
-                    <td className="py-1 text-center tabular">{j.matched}</td>
-                    <td className="py-1 text-center tabular text-pine font-semibold">{j.scraped}</td>
-                    <td className="py-1 text-center tabular text-destructive">{j.failed}</td>
-                    <td className="py-1 uppercase tracking-widest text-[10px]">{j.status}</td>
-                  </tr>
-                ))}
+                {jobsHistory.slice(0, 10).map((j) => {
+                  const procCount = (j.processed_trip_ids || []).length;
+                  const pendCount = (j.pending_trip_ids || []).length;
+                  const canResume = ["interrupted", "failed", "cancelled"].includes(j.status)
+                    && (!j.listing_done || pendCount > procCount);
+                  return (
+                    <tr key={j.job_id} className="border-t border-clay-200">
+                      <td className="py-1 tabular">{new Date(j.started_at).toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" })}</td>
+                      <td className="py-1 text-clay-700 truncate max-w-[280px]">
+                        {[j.params?.agent || "Todos", j.params?.source, j.params?.status, j.params?.outcome || "sold", `${j.params?.date_from}→${j.params?.date_to}`].filter(Boolean).join(" · ")}
+                      </td>
+                      <td className="py-1 text-center tabular">{j.matched}</td>
+                      <td className="py-1 text-center tabular text-pine font-semibold">{j.scraped}</td>
+                      <td className="py-1 text-center tabular text-destructive">{j.failed}</td>
+                      <td className="py-1 uppercase tracking-widest text-[10px]">{j.status}</td>
+                      <td className="py-1 text-right">
+                        {canResume && (
+                          <button
+                            onClick={() => onResume(j.job_id)}
+                            className="inline-flex items-center gap-1 px-2 py-1 bg-pine text-white text-[10px] tracking-widest uppercase hover:bg-pine-hover"
+                            data-testid={`bulk-resume-row-${j.job_id}`}
+                          >
+                            <RotateCw size={10}/> Reanudar
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

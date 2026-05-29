@@ -275,13 +275,56 @@ async def reap_orphan_bulk_jobs():
             {"$set": {
                 "status": "interrupted",
                 "finished_at": now_iso(),
-                "last_message": "Job interrumpido por reinicio del backend. Los viajes que ya se importaron están en la base; relánzalo con los mismos filtros — la deduplicación por URL evita duplicados.",
+                "last_message": "Job interrumpido por reinicio del backend. Pulsa 'Reanudar' para continuar desde donde quedó (los viajes ya importados no se vuelven a procesar).",
             }},
         )
         if res.modified_count:
             logger.warning("Marked %d orphan bulk-import job(s) as interrupted", res.modified_count)
     except Exception as e:
         logger.warning("orphan bulk-job reaper failed: %s", e)
+
+
+@app.on_event("startup")
+async def auto_resume_interrupted_jobs():
+    """After the orphan reaper runs, kick off a background watcher that auto-resumes
+    any interrupted job which still has unprocessed trips. Survives sleep/restart
+    of the backend so long-running imports always reach completion."""
+    async def _watcher():
+        # Initial small delay so the rest of startup can finish.
+        await asyncio.sleep(8)
+        while True:
+            try:
+                cursor = db.bulk_import_jobs.find(
+                    {"status": "interrupted"},
+                    {"_id": 0, "job_id": 1, "params": 1, "pending_trip_ids": 1,
+                     "processed_trip_ids": 1, "listing_done": 1, "created_by": 1},
+                )
+                async for job in cursor:
+                    pending = job.get("pending_trip_ids") or []
+                    processed = set(job.get("processed_trip_ids") or [])
+                    remaining = [t for t in pending if t not in processed]
+                    # Resume if: listing not done yet OR there are unprocessed trips
+                    if (not job.get("listing_done")) or remaining:
+                        logger.info("auto-resuming interrupted job %s (remaining=%d)",
+                                    job["job_id"], len(remaining))
+                        await db.bulk_import_jobs.update_one(
+                            {"job_id": job["job_id"]},
+                            {"$set": {
+                                "status": "running",
+                                "finished_at": None,
+                                "last_message": "Reanudación automática tras reinicio del servidor…",
+                                "last_heartbeat": now_iso(),
+                            }},
+                        )
+                        asyncio.create_task(_run_bulk_import_gestion(
+                            job["job_id"], job.get("params") or {}, job.get("created_by") or ""
+                        ))
+            except Exception as e:
+                logger.warning("auto_resume_interrupted_jobs watcher tick failed: %s", e)
+            # Re-check every 60s. Cheap query, only matches `interrupted`.
+            await asyncio.sleep(60)
+
+    asyncio.create_task(_watcher())
 
 
 # ---------------------------------------------------------------------------
@@ -1752,6 +1795,12 @@ class BulkImportJob(BaseModel):
     started_at: str = Field(default_factory=now_iso)
     finished_at: Optional[str] = None
     created_by: Optional[str] = None
+    # Persistence for resumability
+    pending_trip_ids: List[str] = Field(default_factory=list)   # all IDs discovered
+    processed_trip_ids: List[str] = Field(default_factory=list) # IDs already attempted
+    trip_names: dict = Field(default_factory=dict)              # tid -> client name from listing
+    listing_done: bool = False                                  # listing phase finished?
+    last_heartbeat: str = Field(default_factory=now_iso)        # updated each loop tick
 
 
 @api.get("/training-examples", response_model=List[TrainingExample])
@@ -1798,6 +1847,31 @@ async def cancel_bulk_import_job(job_id: str, _: Annotated[User, Depends(current
         status="cancelled",
         last_message="Cancelado por el usuario. Procesando viajes ya listados…",
     )
+    fresh = await db.bulk_import_jobs.find_one({"job_id": job_id}, {"_id": 0})
+    return fresh
+
+
+@api.post("/training-examples/bulk-import-jobs/{job_id}/resume", response_model=BulkImportJob)
+async def resume_bulk_import_job(job_id: str, user: User = Depends(current_user)):
+    """Pick up an interrupted/failed/cancelled job exactly where it stopped.
+    Listing IDs already discovered are kept; only un-processed trip_ids will be
+    re-scraped. URL-level dedup also prevents duplicates if any race occurs."""
+    doc = await db.bulk_import_jobs.find_one({"job_id": job_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    if doc["status"] == "running":
+        return doc
+    if doc["status"] == "completed":
+        # Nothing to do — explicitly tell the caller.
+        return doc
+    await _update_job(
+        job_id,
+        status="running",
+        finished_at=None,
+        last_message="Reanudando…",
+        last_heartbeat=now_iso(),
+    )
+    asyncio.create_task(_run_bulk_import_gestion(job_id, doc.get("params") or {}, user.email))
     fresh = await db.bulk_import_jobs.find_one({"job_id": job_id}, {"_id": 0})
     return fresh
 
@@ -1950,13 +2024,16 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
         limit = 500
 
     await _update_job(job_id, status="running",
-                      last_message="Iniciando navegador y login en gestion…")
+                      last_message="Iniciando navegador y login en gestion…",
+                      last_heartbeat=now_iso())
 
     # Recover any previously listed trip_ids if the same job is resumed
     job_doc = await db.bulk_import_jobs.find_one({"job_id": job_id}, {"_id": 0}) or {}
     all_trip_ids: list[str] = list(job_doc.get("pending_trip_ids") or [])
     trip_names: dict[str, str] = dict(job_doc.get("trip_names") or {})
+    processed_set: set[str] = set(job_doc.get("processed_trip_ids") or [])
     seen: set[str] = set(all_trip_ids)
+    listing_done: bool = bool(job_doc.get("listing_done"))
 
     try:
         async with async_playwright() as pw:
@@ -2152,6 +2229,14 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
                             return
 
                 for st_idx, st in enumerate(statuses):
+                    if listing_done:
+                        # Listing previously completed — skip to scraping phase.
+                        await _update_job(
+                            job_id, matched=len(all_trip_ids),
+                            last_message=f"Reanudando · saltando listado (ya hecho, {len(all_trip_ids)} viajes)",
+                            last_heartbeat=now_iso(),
+                        )
+                        break
                     if len(all_trip_ids) >= limit:
                         break
                     if await _is_cancelled(job_id):
@@ -2181,11 +2266,17 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
         logger.exception("bulk-import listing phase failed")
         return
 
+    # Listing phase done — record this so a resume jumps straight to scraping.
+    if not listing_done:
+        await _update_job(
+            job_id, listing_done=True,
+            pending_trip_ids=all_trip_ids[:],
+            trip_names=trip_names,
+            matched=len(all_trip_ids),
+            last_heartbeat=now_iso(),
+        )
+
     trip_ids = all_trip_ids[:limit]
-    await _update_job(
-        job_id, matched=len(trip_ids),
-        last_message=f"{len(trip_ids)} viajes encontrados. Iniciando scraping…",
-    )
 
     if not trip_ids:
         await _update_job(
@@ -2195,15 +2286,40 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
         return
 
     # ---------- SCRAPE EACH TRIP ----------
-    created = 0
-    skipped = 0
-    failed = 0
-    errors: list[str] = []
+    # Start counters from whatever the resumed job already has, so progress is cumulative.
+    job_doc2 = await db.bulk_import_jobs.find_one({"job_id": job_id}, {"_id": 0}) or {}
+    created = int(job_doc2.get("scraped") or 0)
+    skipped = int(job_doc2.get("skipped") or 0)
+    failed = int(job_doc2.get("failed") or 0)
+    errors: list[str] = list(job_doc2.get("errors") or [])
     notes_tag = (
         f"Auto-import gestion (agente={agent or 'Todos'} · source={source or '—'} · "
         f"estado={','.join(statuses)} · fechas={date_from or '—'}→{date_to or '—'} · outcome={outcome})"
     )
-    for i, tid in enumerate(trip_ids):
+
+    # Pick trips that haven't been processed yet (resumability).
+    remaining = [tid for tid in trip_ids if tid not in processed_set]
+    await _update_job(
+        job_id, matched=len(trip_ids),
+        last_message=(
+            f"{len(trip_ids)} viajes en cola · {len(processed_set)} ya procesados · "
+            f"{len(remaining)} pendientes. Iniciando scraping…"
+        ),
+        last_heartbeat=now_iso(),
+    )
+
+    if not remaining:
+        await _update_job(
+            job_id, status="completed", finished_at=now_iso(),
+            last_message=(
+                f"Completado · {created} creados (sesiones anteriores) · "
+                f"nada que hacer ahora."
+            ),
+        )
+        return
+
+    # ---------- SCRAPE EACH TRIP ----------
+    for i, tid in enumerate(remaining):
         if await _is_cancelled(job_id):
             break
         url = f"https://gestion.viajadverdad.com/trips/form/1/{tid}"
@@ -2212,9 +2328,12 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
         )
         if existing:
             skipped += 1
+            processed_set.add(tid)
             await _update_job(
                 job_id, skipped=skipped,
-                last_message=f"[{i + 1}/{len(trip_ids)}] saltado (ya importado) · trip {tid}",
+                processed_trip_ids=list(processed_set),
+                last_heartbeat=now_iso(),
+                last_message=f"[{i + 1}/{len(remaining)}] saltado (ya importado) · trip {tid}",
             )
             continue
         try:
@@ -2239,18 +2358,25 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
             )
             await db.training_examples.insert_one(ex.model_dump())
             created += 1
+            processed_set.add(tid)
             label = client_name or structured.get("trip_name") or tid
             await _update_job(
                 job_id, scraped=created,
-                last_message=f"[{i + 1}/{len(trip_ids)}] OK · {label}",
+                processed_trip_ids=list(processed_set),
+                last_heartbeat=now_iso(),
+                last_message=f"[{i + 1}/{len(remaining)}] OK · {label}",
             )
         except Exception as e:
             failed += 1
             short = str(e)[:160]
             errors.append(f"trip {tid}: {short}")
+            processed_set.add(tid)   # don't retry hard failures next resume
             await _update_job(
                 job_id, failed=failed,
-                last_message=f"[{i + 1}/{len(trip_ids)}] ERROR trip {tid}: {short}",
+                processed_trip_ids=list(processed_set),
+                errors=errors[-50:],
+                last_heartbeat=now_iso(),
+                last_message=f"[{i + 1}/{len(remaining)}] ERROR trip {tid}: {short}",
             )
             logger.warning("bulk import trip %s failed: %s", tid, e)
 
