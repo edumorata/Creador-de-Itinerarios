@@ -447,6 +447,7 @@ function ServiceRow({ service, markup, dayCity, onChange, onRemove, onPickExperi
         <AutocompleteInput
           value={service.name}
           dayCity={dayCity}
+          serviceType={service.type}
           onTextChange={(v) => onChange({ name: v })}
           onPick={onPickExperience}
         />
@@ -470,7 +471,7 @@ function ServiceRow({ service, markup, dayCity, onChange, onRemove, onPickExperi
   );
 }
 
-function AutocompleteInput({ value, dayCity, onTextChange, onPick }) {
+function AutocompleteInput({ value, dayCity, serviceType, onTextChange, onPick }) {
   const [open, setOpen] = useState(false);
   const [results, setResults] = useState([]);
   const [highlight, setHighlight] = useState(0);
@@ -485,16 +486,23 @@ function AutocompleteInput({ value, dayCity, onTextChange, onPick }) {
 
   const search = useCallback(async (text) => {
     const t = (text || "").trim();
-    // Smart search: trigger at 3+ chars OR when there is a day city pre-filter
-    if (t.length < 3 && !dayCity) { setResults([]); return; }
+    // Smart search: trigger at 3+ chars OR when there is a day city or a service type pre-filter
+    if (t.length < 3 && !dayCity && !serviceType) { setResults([]); return; }
     const params = {};
     if (t) params.q = t;
     if (dayCity) params.city = dayCity;
+    if (serviceType) params.type = serviceType;
     try {
       const { data } = await api.get("/experiences/autocomplete", { params });
       setResults(data); setHighlight(0);
     } catch (e) { setResults([]); }
-  }, [dayCity]);
+  }, [dayCity, serviceType]);
+
+  // Auto-refresh dropdown when user changes type or city pre-filter while it's open
+  useEffect(() => {
+    if (open) search(value);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serviceType, dayCity]);
 
   const handleChange = (e) => {
     const v = e.target.value;

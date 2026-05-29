@@ -809,8 +809,7 @@ async def import_catalog_from_trips_csv(
 
     def classify(name: str) -> str:
         n = name.lower()
-        if any(k in n for k in HOTEL_KW):
-            return "hotel"
+        # Order matters: transfer/flight/train check first, otherwise "Transfer to Hotel X" gets miscategorized as hotel
         if any(k in n for k in TRANSFER_KW):
             return "transfer"
         if any(k in n for k in FLIGHT_KW):
@@ -819,6 +818,8 @@ async def import_catalog_from_trips_csv(
             return "transporte"
         if any(k in n for k in RESTAURANT_KW):
             return "restaurante"
+        if any(k in n for k in HOTEL_KW):
+            return "hotel"
         return "actividad"
 
     def tier_from_name(name: str) -> str:
@@ -1035,14 +1036,55 @@ async def experience_autocomplete(
     type: Optional[ServiceType] = None,
     limit: int = Query(20, le=50),
 ):
-    """Smart typeahead: tokenized AND-search on title + provider_name.
+    """Smart typeahead across the catalog.
 
-    Each whitespace-separated token in `q` must appear in title OR provider_name
-    (case-insensitive). Optional pre-filters: city, country, type.
+    If type='alojamiento' → search HOTELS collection.
+    Else → search EXPERIENCES collection with that type filter (if set).
+    Tokenized AND-search on title/name + provider_name (+ hotel.city). Optional pre-filters: city, country.
     """
     import re as _re
-    flt: dict = {}
     tokens = [t for t in (q or "").strip().split() if len(t) >= 2]
+
+    if type == "alojamiento":
+        # Search hotels
+        flt: dict = {}
+        if tokens:
+            flt["$and"] = []
+            for tok in tokens:
+                safe = _re.escape(tok)
+                flt["$and"].append({
+                    "$or": [
+                        {"name": {"$regex": safe, "$options": "i"}},
+                        {"city": {"$regex": safe, "$options": "i"}},
+                    ]
+                })
+        if city:
+            flt["city"] = {"$regex": f"^{city}$", "$options": "i"}
+        if country:
+            flt["country"] = country
+        proj = {"_id": 0, "hotel_id": 1, "name": 1, "city": 1, "country": 1, "tier": 1,
+                "price_per_night_excl": 1, "price_per_night_incl": 1, "currency": 1}
+        items = await db.hotels.find(flt, proj).sort("name", 1).limit(limit).to_list(limit)
+        # Adapt to a service-compatible shape so the frontend can map it uniformly
+        return [
+            {
+                "experience_id": None,
+                "hotel_id": h["hotel_id"],
+                "title": h["name"],
+                "provider_name": None,
+                "city": h.get("city"),
+                "country": h.get("country"),
+                "type": "alojamiento",
+                "price_tax_excl": h.get("price_per_night_excl") or 0,
+                "price_tax_incl": h.get("price_per_night_incl") or 0,
+                "currency": h.get("currency") or "EUR",
+                "tier": h.get("tier"),
+            }
+            for h in items
+        ]
+
+    # Default: search experiences
+    flt: dict = {}
     if tokens:
         flt["$and"] = []
         for tok in tokens:
