@@ -47,6 +47,9 @@ export default function ItineraryBuilder() {
   const [facets, setFacets] = useState({ countries: [], cities: [], types: [] });
   const [activeDayId, setActiveDayId] = useState(null);
 
+  // Drag & drop ref must be declared unconditionally (before any early return).
+  const dragRef = useRef(null);
+
   useEffect(() => {
     (async () => {
       const { data } = await api.get(`/itineraries/${id}`);
@@ -178,6 +181,37 @@ export default function ItineraryBuilder() {
     const next = { ...itn, days: itn.days.map((d) => d.day_id === dayId ? { ...d, services: d.services.map((s) => s.service_id === sid ? { ...s, ...synced } : s) } : d) };
     schedSave(next);
   };
+
+  // Drag & drop: move a service between days or reorder within a day.
+  // targetIndex = -1 means "append at end".
+  const onDragStart = (srcDayId, srcServiceId) => { dragRef.current = { srcDayId, srcServiceId }; };
+  const onDropService = (targetDayId, targetIndex) => {
+    const src = dragRef.current;
+    dragRef.current = null;
+    if (!src) return;
+    const { srcDayId, srcServiceId } = src;
+    if (srcDayId === targetDayId && targetIndex === -1) return;
+    let dragged = null;
+    const days = itn.days.map((d) => {
+      if (d.day_id !== srcDayId) return d;
+      const services = [];
+      for (const s of d.services || []) {
+        if (s.service_id === srcServiceId) dragged = s;
+        else services.push(s);
+      }
+      return { ...d, services };
+    });
+    if (!dragged) return;
+    const finalDays = days.map((d) => {
+      if (d.day_id !== targetDayId) return d;
+      const services = [...(d.services || [])];
+      if (targetIndex < 0 || targetIndex >= services.length) services.push(dragged);
+      else services.splice(targetIndex, 0, dragged);
+      return { ...d, services };
+    });
+    schedSave({ ...itn, days: finalDays });
+    setActiveDayId(targetDayId);
+  };
   const removeService = (dayId, sid) => {
     schedSave({ ...itn, days: itn.days.map((d) => d.day_id === dayId ? { ...d, services: d.services.filter((s) => s.service_id !== sid) } : d) });
   };
@@ -279,6 +313,8 @@ export default function ItineraryBuilder() {
               onRemoveDay={() => removeDay(day.day_id)}
               onUpdateService={(sid, patch) => updateService(day.day_id, sid, patch)}
               onRemoveService={(sid) => removeService(day.day_id, sid)}
+              onDragStart={onDragStart}
+              onDropService={onDropService}
             />
           ))}
           <button onClick={addDay} data-testid="add-day-btn" className="w-full border border-dashed border-clay-300 py-3 text-sm text-clay-700 hover:border-terracotta hover:text-terracotta transition-colors">
@@ -368,10 +404,14 @@ export default function ItineraryBuilder() {
   );
 }
 
-function DayBlock({ day, idx, active, numTravelers, cityFacets, markup, onActivate, onUpdateDay, onAddBlank, onAddExperience, onRemoveDay, onUpdateService, onRemoveService }) {
+function DayBlock({ day, idx, active, numTravelers, cityFacets, markup, onActivate, onUpdateDay, onAddBlank, onAddExperience, onRemoveDay, onUpdateService, onRemoveService, onDragStart, onDropService }) {
+  const [dragOverIdx, setDragOverIdx] = useState(null);
   return (
     <div className={`border ${active ? "border-terracotta" : "border-clay-300"} bg-white transition-colors`} data-testid={`day-${idx}`} onClick={onActivate}>
-      <div className="px-4 py-3 bg-clay-100 flex items-center justify-between border-b border-clay-300">
+      <div className="px-4 py-3 bg-clay-100 flex items-center justify-between border-b border-clay-300"
+        onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
+        onDrop={(e) => { e.preventDefault(); onDropService(day.day_id, -1); setDragOverIdx(null); }}
+      >
         <div className="flex items-center gap-4 flex-1 min-w-0">
           <div className="smallcaps shrink-0">Día {idx + 1}</div>
           <div className="flex items-center gap-1 text-sm text-clay-700 shrink-0"><Calendar size={13}/>{fmt(day.date)}</div>
@@ -410,22 +450,43 @@ function DayBlock({ day, idx, active, numTravelers, cityFacets, markup, onActiva
       )}
 
       {(day.services || []).length === 0 ? (
-        <div className="p-6 text-center text-sm text-clay-700">
+        <div
+          className="p-6 text-center text-sm text-clay-700"
+          onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOverIdx(0); }}
+          onDragLeave={() => setDragOverIdx(null)}
+          onDrop={(e) => { e.preventDefault(); onDropService(day.day_id, 0); setDragOverIdx(null); }}
+        >
           <p>Selecciona experiencias en el panel derecho o pulsa <span className="font-semibold text-clay-900">+ servicio en blanco</span> para escribir manualmente con autocompletado.</p>
         </div>
       ) : (
         <div className="grid-borders">
-          {day.services.map((s) => (
-            <ServiceRow key={s.service_id} service={s} markup={markup} dayCity={day.city} numTravelers={numTravelers}
-              onChange={(patch) => onUpdateService(s.service_id, patch)}
-              onRemove={() => onRemoveService(s.service_id)}
-              onPickExperience={(exp) => onUpdateService(s.service_id, {
-                experience_id: exp.experience_id, name: exp.title, type: exp.type, provider_name: exp.provider_name,
-                unit_price_tax_excl: exp.price_tax_excl ?? 0, unit_price_tax_incl: exp.price_tax_incl ?? exp.price ?? 0,
-                unit_price: exp.price_tax_incl ?? exp.price ?? 0, currency: exp.currency || "EUR",
-              })}
-            />
+          {day.services.map((s, sIdx) => (
+            <div
+              key={s.service_id}
+              draggable
+              onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", s.service_id); onDragStart(day.day_id, s.service_id); }}
+              onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOverIdx(sIdx); }}
+              onDragLeave={() => setDragOverIdx((cur) => (cur === sIdx ? null : cur))}
+              onDrop={(e) => { e.preventDefault(); e.stopPropagation(); onDropService(day.day_id, sIdx); setDragOverIdx(null); }}
+              className={dragOverIdx === sIdx ? "border-t-2 border-terracotta -mt-px" : ""}
+            >
+              <ServiceRow service={s} markup={markup} dayCity={day.city} numTravelers={numTravelers}
+                onChange={(patch) => onUpdateService(s.service_id, patch)}
+                onRemove={() => onRemoveService(s.service_id)}
+                onPickExperience={(exp) => onUpdateService(s.service_id, {
+                  experience_id: exp.experience_id, name: exp.title, type: exp.type, provider_name: exp.provider_name,
+                  unit_price_tax_excl: exp.price_tax_excl ?? 0, unit_price_tax_incl: exp.price_tax_incl ?? exp.price ?? 0,
+                  unit_price: exp.price_tax_incl ?? exp.price ?? 0, currency: exp.currency || "EUR",
+                })}
+              />
+            </div>
           ))}
+          <div
+            className={`h-2 ${dragOverIdx === day.services.length ? "border-t-2 border-terracotta" : ""}`}
+            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOverIdx(day.services.length); }}
+            onDragLeave={() => setDragOverIdx(null)}
+            onDrop={(e) => { e.preventDefault(); onDropService(day.day_id, -1); setDragOverIdx(null); }}
+          />
         </div>
       )}
     </div>
@@ -439,7 +500,7 @@ function ServiceRow({ service, markup, dayCity, onChange, onRemove, onPickExperi
 
   return (
     <div className="grid grid-cols-[28px_110px_1fr_60px_100px_100px_100px_30px] gap-2 items-center px-3 py-2.5 text-sm hover:bg-clay-50 transition-colors">
-      <GripVertical size={14} className="text-clay-400" />
+      <GripVertical size={14} className="text-clay-400 cursor-grab active:cursor-grabbing" title="Arrastra para reordenar o mover de día" />
       <select className={`text-[10px] tracking-widest uppercase px-1.5 py-1 ${TYPE_BADGE[service.type] || TYPE_BADGE.otro} border-none outline-none`} value={service.type} onChange={(e) => onChange({ type: e.target.value })}>
         {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
       </select>
