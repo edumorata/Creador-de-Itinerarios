@@ -35,20 +35,34 @@
 - **Bulk-import-all-server**: admin-only endpoint that walks `/app/artifacts/excel_creados` and imports the 94 provider Excel files. Currently 2514 experiences across 82 providers (España, Portugal, Italia). Dedup key = (provider_id, title, price_tax_incl).
 
 ## P1 backlog (next iterations)
-- Drag-and-drop reordering of services across days
 - Itinerary duplication / templates by destination
-- Sold/Not-sold tagging + dataset capture → Phase 2 AI
 - Per-provider margin dashboard
 - Wizard for bulk import with column mapping
 - Multiple Excel templates per agent/brand
+- Phase 3: Automate Itinerary push into Sofi via Playwright (no API available)
 
 ## P2 backlog
-- Phase 2: AI itinerary suggestion (LLM trained on historical sold itineraries)
-- Sofi sync via browser automation (no API)
 - Multi-currency conversion
 - Per-line markup overrides
 
+### Iteration 3 (2026-05-29) — Bulk training import from gestion
+- **`POST /api/training-examples/bulk-import-gestion`** now spawns an async background `BulkImportJob` (collection `bulk_import_jobs`) and returns immediately with a `job_id`.
+- The job logs in once with `GESTION_VIAJADVERDAD_USER/PASS`, then for each requested status (`open`, `closed`, or both) applies the verified Fabrik filters via element IDs:
+  - `#app_trips___agentvalue` (select by visible label)
+  - `#app_trips___sourcevalue` (e.g. `KimKim`)
+  - `#app_trips___statusvalue` (`abierto`/`cerrado`)
+  - `#app_trips___booking_date_..._filter_range_0/1_.0` (Fecha de Venta range)
+- It clicks `button[name="filter"]`, paginates the result, harvests every trip ID + its visible link text (used as client_name once cleaned of the `_facturado…` suffix), then scrapes each trip with the existing Playwright + LLM parser. Dedup on `itinerary_url_ops`.
+- Each result is stored as a `TrainingExample` with `client_request=""` (pending) and `outcome="sold"`.
+- New endpoints:
+  - `GET /api/training-examples/pending-request`
+  - `GET /api/training-examples/bulk-import-jobs` (+ `/{job_id}` polling)
+- AI Trainer page (`/ai/trainer`) gained:
+  - "Importación masiva" card (agent/source/status/date_from/date_to/limit) with live progress bar and per-line message.
+  - "Entrenamientos pendientes de solicitud" section with one card per pending example: link to gestion, optional structured-day summary, free textarea for the original client request, and a "Guardar y marcar entrenado" button.
+- Verified end-to-end: 2 trips imported in ~85s (`Karen Hutton`, `Eileen Zanardi` with 10 / 9 day itineraries parsed), client_request flow tested.
+
 ## Known minor items
-- Bulk-import runs in the request loop (synchronous) — should be moved to a thread pool for very large catalogues
 - Autocomplete payload returns full Experience docs (could be slimmed)
 - CORS regex `.*` is permissive (lock down to frontend origin for production)
+- LLM parser sometimes echoes example trip_name from the system prompt; not blocking since real client_name is captured from the listing link.

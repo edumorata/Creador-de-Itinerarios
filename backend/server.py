@@ -6,6 +6,7 @@ All routes are mounted under /api.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import os
@@ -1713,10 +1714,53 @@ class TrainingExampleUpsert(BaseModel):
     notes: Optional[str] = None
 
 
+BulkJobStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
+
+
+class BulkImportJob(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    job_id: str = Field(default_factory=lambda: new_id("job"))
+    status: BulkJobStatus = "queued"
+    params: dict = Field(default_factory=dict)
+    matched: int = 0          # total trip IDs found in listings (across statuses)
+    scraped: int = 0          # successfully scraped & saved
+    skipped: int = 0          # already existed in DB
+    failed: int = 0           # scrape/parse errors
+    errors: List[str] = Field(default_factory=list)
+    last_message: str = ""
+    started_at: str = Field(default_factory=now_iso)
+    finished_at: Optional[str] = None
+    created_by: Optional[str] = None
+
+
 @api.get("/training-examples", response_model=List[TrainingExample])
 async def list_training_examples(_: Annotated[User, Depends(current_user)]):
     items = await db.training_examples.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
     return items
+
+
+@api.get("/training-examples/pending-request", response_model=List[TrainingExample])
+async def list_pending_request_examples(_: Annotated[User, Depends(current_user)]):
+    """Training examples imported from gestion that still need a client request."""
+    items = await db.training_examples.find(
+        {"$or": [{"client_request": ""}, {"client_request": None}]},
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(1000)
+    return items
+
+
+@api.get("/training-examples/bulk-import-jobs", response_model=List[BulkImportJob])
+async def list_bulk_import_jobs(_: Annotated[User, Depends(current_user)]):
+    docs = await db.bulk_import_jobs.find({}, {"_id": 0}).sort("started_at", -1).to_list(30)
+    return docs
+
+
+@api.get("/training-examples/bulk-import-jobs/{job_id}", response_model=BulkImportJob)
+async def get_bulk_import_job(job_id: str, _: Annotated[User, Depends(current_user)]):
+    doc = await db.bulk_import_jobs.find_one({"job_id": job_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    return doc
 
 
 @api.post("/training-examples", response_model=TrainingExample)
@@ -1762,7 +1806,372 @@ async def delete_training_example(example_id: str, _: Annotated[User, Depends(cu
     return {"ok": True}
 
 
-@api.post("/training-examples/scrape")
+@api.post("/training-examples/bulk-import-gestion", response_model=BulkImportJob)
+async def bulk_import_gestion(
+    payload: dict = Body(...),
+    user: User = Depends(current_user),
+):
+    """Kick off a background job that logs in to gestion.viajadverdad.com, lists
+    /trips matching the given filters and scrapes each one into a TrainingExample.
+
+    payload accepts:
+        agent      str | ""   filter "Agente de Ventas" (empty = all)
+        source     str        filter "Source" (e.g. "KimKim")
+        status     "open" | "closed" | "both" | "all"
+        date_from  "DD/MM/YYYY" filter Fecha de Venta lower bound
+        date_to    "DD/MM/YYYY" filter Fecha de Venta upper bound
+        limit      int        safety cap on number of trips (default 500)
+
+    Returns the queued BulkImportJob immediately; poll
+    GET /training-examples/bulk-import-jobs/{job_id} for progress.
+    """
+    job = BulkImportJob(params=payload, created_by=user.email, status="queued",
+                        last_message="En cola…")
+    await db.bulk_import_jobs.insert_one(job.model_dump())
+    asyncio.create_task(_run_bulk_import_gestion(job.job_id, payload, user.email))
+    return job
+
+
+async def _update_job(job_id: str, **fields):
+    """Patch a BulkImportJob document."""
+    if not fields:
+        return
+    await db.bulk_import_jobs.update_one({"job_id": job_id}, {"$set": fields})
+
+
+def _extract_client_name(text: str) -> str:
+    if not text:
+        return ""
+    if "Lead Name" in text:
+        chunks = text.split("Lead Name", 1)[1].split("\n")
+        for ln in chunks[1:6]:
+            ln = ln.strip()
+            if ln and ln.lower() not in ("teléfono", "telefono", "phone", "email", "agente", "agent"):
+                return ln[:80]
+    return ""
+
+
+def _clean_trip_name(raw: str) -> str:
+    """Strip Fabrik link decorations and the ubiquitous "_facturado…" suffix."""
+    import re as _re
+    s = (raw or "").replace("\t", " ")
+    # Collapse whitespace
+    s = " ".join(s.split())
+    # Drop UI prefixes added by Fabrik in the row link text
+    for prefix in ("Edit", "View", "Add"):
+        if s.startswith(prefix):
+            s = s[len(prefix):].strip()
+    # Cut at "_facturado" / "_INCIDENCIA" / opening parenthesis with notes
+    s = _re.split(r"_facturado|_INCIDENCIA|_pendiente|_no facturado", s, maxsplit=1, flags=_re.IGNORECASE)[0]
+    s = s.strip(" _-")
+    return s[:80]
+
+
+async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
+    """Background coroutine that drives the full bulk-import workflow.
+
+    1. Login once into gestion.viajadverdad.com
+    2. For each requested status (open / closed), apply filters on /trips,
+       paginate and harvest every trip ID.
+    3. For each unique trip ID, scrape the ops view + LLM-parse it and
+       create a TrainingExample (client_request stays empty so the user
+       can fill it later from the AI Trainer UI).
+    """
+    from playwright.async_api import async_playwright
+    from scraper import _render_url, _parse_with_llm, GESTION_USER, GESTION_PASS
+
+    agent = (params.get("agent") or "").strip()
+    source = (params.get("source") or "").strip()
+    raw_status = (params.get("status") or "both").strip().lower()
+    if raw_status in ("all", "both", "ambos", "todos", ""):
+        statuses = ["open", "closed"]
+    elif raw_status in ("open", "abierto"):
+        statuses = ["open"]
+    elif raw_status in ("closed", "cerrado"):
+        statuses = ["closed"]
+    else:
+        statuses = [raw_status]
+    date_from = (params.get("date_from") or "").strip()
+    date_to = (params.get("date_to") or "").strip()
+    try:
+        limit = max(1, min(int(params.get("limit") or 500), 2000))
+    except Exception:
+        limit = 500
+
+    await _update_job(job_id, status="running",
+                      last_message="Iniciando navegador y login en gestion…")
+
+    all_trip_ids: list[str] = []
+    trip_names: dict[str, str] = {}   # trip_id -> client_name from listing link
+    seen: set[str] = set()
+
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+            try:
+                ctx = await browser.new_context(user_agent="Mozilla/5.0")
+                page = await ctx.new_page()
+
+                # ---------- LOGIN ----------
+                try:
+                    await page.goto("https://gestion.viajadverdad.com/login",
+                                    wait_until="networkidle", timeout=30000)
+                    await page.fill('input[name="username"]', GESTION_USER)
+                    await page.fill('input[name="password"]', GESTION_PASS)
+                    await page.click('button[type="submit"], input[type="submit"]')
+                    await page.wait_for_load_state("networkidle", timeout=20000)
+                    if "/login" in page.url:
+                        await _update_job(job_id, status="failed",
+                                          last_message="Login en gestion falló (revisa GESTION_VIAJADVERDAD_USER/PASS)",
+                                          finished_at=now_iso())
+                        return
+                except Exception as e:
+                    await _update_job(job_id, status="failed",
+                                      last_message=f"Error de login: {e}",
+                                      finished_at=now_iso())
+                    return
+
+                # ---------- COLLECT TRIP IDS PER STATUS ----------
+                async def fabrik_apply_filters(status_value: str) -> None:
+                    """Apply Fabrik /trips filters using the verified element IDs.
+
+                    Selectors discovered on gestion.viajadverdad.com/trips:
+                      - select#app_trips___agentvalue    (label = "All"/"Beatriz"/…)
+                      - select#app_trips___sourcevalue   (value = "KimKim"/…)
+                      - select#app_trips___statusvalue   (value = "abierto"/"cerrado"/…)
+                      - input#app_trips___booking_date_1_com_fabrik_1_filter_range_0_\\.0  (Fecha de Venta desde)
+                      - input#app_trips___booking_date_1_com_fabrik_1_filter_range_1_\\.0  (Fecha de Venta hasta)
+                    """
+                    # Agent — select by visible label (e.g. "Beatriz")
+                    if agent:
+                        try:
+                            await page.select_option('#app_trips___agentvalue', label=agent)
+                        except Exception:
+                            try:
+                                await page.select_option('#app_trips___agentvalue', value=agent)
+                            except Exception:
+                                pass
+                    # Source — select by value (matches the visible label too in this Fabrik config)
+                    if source:
+                        try:
+                            await page.select_option('#app_trips___sourcevalue', value=source)
+                        except Exception:
+                            try:
+                                await page.select_option('#app_trips___sourcevalue', label=source)
+                            except Exception:
+                                pass
+                    # Status — lowercase value
+                    if status_value:
+                        try:
+                            await page.select_option('#app_trips___statusvalue', value=status_value)
+                        except Exception:
+                            pass
+                    # Booking date range. Dot inside the ID requires attribute selector.
+                    if date_from:
+                        try:
+                            await page.fill(
+                                'input[id="app_trips___booking_date_1_com_fabrik_1_filter_range_0_.0"]',
+                                date_from,
+                            )
+                        except Exception:
+                            pass
+                    if date_to:
+                        try:
+                            await page.fill(
+                                'input[id="app_trips___booking_date_1_com_fabrik_1_filter_range_1_.0"]',
+                                date_to,
+                            )
+                        except Exception:
+                            pass
+                    # Submit (Fabrik filter "Go" button is `name="filter"`)
+                    try:
+                        btn = await page.query_selector('button[name="filter"], input[name="filter"]')
+                        if btn:
+                            await btn.click()
+                        else:
+                            # Fallback: submit the filter form directly
+                            await page.evaluate(
+                                "document.querySelector('form[name=\"listform_1_com_fabrik_1\"], form.fabrikForm, .fabrik_filter')?.form?.submit()"
+                            )
+                    except Exception:
+                        pass
+                    await page.wait_for_load_state("networkidle", timeout=25000)
+                    await page.wait_for_timeout(2500)
+
+                for st_idx, st in enumerate(statuses):
+                    if len(all_trip_ids) >= limit:
+                        break
+                    status_label = {"open": "abierto", "closed": "cerrado"}.get(st, st)
+                    await _update_job(
+                        job_id, matched=len(all_trip_ids),
+                        last_message=f"Aplicando filtros (estado={status_label})…",
+                    )
+                    try:
+                        await page.goto("https://gestion.viajadverdad.com/trips",
+                                        wait_until="networkidle", timeout=30000)
+                        await page.wait_for_timeout(1500)
+                    except Exception as e:
+                        await _update_job(job_id, last_message=f"No se pudo abrir /trips: {e}")
+                        continue
+
+                    await fabrik_apply_filters(status_label)
+
+                    # Paginate and harvest IDs
+                    page_count = 0
+                    while page_count < 50:  # hard cap to avoid infinite loops
+                        page_count += 1
+                        rows = await page.evaluate("""() => {
+                            // Collect (trip_id, link_text) pairs from anchors that point at a specific trip.
+                            // Prefer "form" anchors that contain the human-readable trip title.
+                            const map = new Map();
+                            document.querySelectorAll('a[href*="/trips/form/"], a[href*="/trips/details/"]').forEach(a => {
+                                const m = a.href.match(/\\/trips\\/(?:form|details)\\/\\d+\\/(\\d+)/);
+                                if (!m) return;
+                                const id = m[1];
+                                const text = (a.innerText || '').trim();
+                                // Keep the longest text we've seen for this id (the title link is verbose)
+                                if (!map.has(id) || (text && text.length > (map.get(id) || '').length)) {
+                                    map.set(id, text);
+                                }
+                            });
+                            return [...map.entries()].map(([id, text]) => ({id, text}));
+                        }""")
+                        new_added = 0
+                        for row in rows:
+                            tid = row["id"]
+                            if tid not in seen:
+                                seen.add(tid)
+                                all_trip_ids.append(tid)
+                                cleaned = _clean_trip_name(row.get("text") or "")
+                                if cleaned:
+                                    trip_names[tid] = cleaned
+                                new_added += 1
+                                if len(all_trip_ids) >= limit:
+                                    break
+                        await _update_job(
+                            job_id, matched=len(all_trip_ids),
+                            last_message=f"Listando viajes (estado={status_label}) · página {page_count} · +{new_added}",
+                        )
+                        if len(all_trip_ids) >= limit or new_added == 0:
+                            # If no new IDs surfaced on this page, the listing is exhausted
+                            # (a "Next" click that loops back to the same data would otherwise spin forever).
+                            if new_added == 0 and page_count > 1:
+                                break
+                        # Try to advance pagination
+                        try:
+                            nxt = await page.query_selector(
+                                'a[title="Next"], a[title="Siguiente"], '
+                                'li.pagination-next a:not(.disabled), '
+                                '.pagination li.next a, a:has-text("›"), a:has-text("→")'
+                            )
+                            if not nxt:
+                                break
+                            href = await nxt.get_attribute("href")
+                            cls = (await nxt.get_attribute("class") or "").lower()
+                            if "disabled" in cls or href in (None, "", "#"):
+                                break
+                            await nxt.click()
+                            await page.wait_for_load_state("networkidle", timeout=15000)
+                            await page.wait_for_timeout(1500)
+                        except Exception:
+                            break
+
+                await page.close()
+            finally:
+                await browser.close()
+    except Exception as e:
+        await _update_job(job_id, status="failed",
+                          last_message=f"Fallo en la fase de listado: {e}",
+                          finished_at=now_iso())
+        logger.exception("bulk-import listing phase failed")
+        return
+
+    trip_ids = all_trip_ids[:limit]
+    await _update_job(
+        job_id, matched=len(trip_ids),
+        last_message=f"{len(trip_ids)} viajes encontrados. Iniciando scraping…",
+    )
+
+    if not trip_ids:
+        await _update_job(
+            job_id, status="completed", finished_at=now_iso(),
+            last_message="No se encontró ningún viaje con esos filtros.",
+        )
+        return
+
+    # ---------- SCRAPE EACH TRIP ----------
+    created = 0
+    skipped = 0
+    failed = 0
+    errors: list[str] = []
+    notes_tag = (
+        f"Auto-import gestion (agente={agent or 'Todos'} · source={source or '—'} · "
+        f"estado={','.join(statuses)} · fechas={date_from or '—'}→{date_to or '—'})"
+    )
+    for i, tid in enumerate(trip_ids):
+        url = f"https://gestion.viajadverdad.com/trips/form/1/{tid}"
+        existing = await db.training_examples.find_one(
+            {"itinerary_url_ops": url}, {"_id": 0}
+        )
+        if existing:
+            skipped += 1
+            await _update_job(
+                job_id, skipped=skipped,
+                last_message=f"[{i + 1}/{len(trip_ids)}] saltado (ya importado) · trip {tid}",
+            )
+            continue
+        try:
+            rendered = await _render_url(url)
+            text = rendered.get("text", "")
+            structured = (
+                await _parse_with_llm(text)
+                if rendered.get("ok") else
+                {"days": [], "notes": rendered.get("error") or "scrape_failed"}
+            )
+            client_name = trip_names.get(tid) or _extract_client_name(text)
+            ex = TrainingExample(
+                client_name=client_name,
+                client_request="",  # pending — user fills later
+                itinerary_url=None,
+                itinerary_url_ops=url,
+                itinerary_text_ops=text,
+                itinerary_structured_ops=structured,
+                outcome="sold",     # bulk = sold trips
+                notes=notes_tag,
+                created_by=user_email,
+            )
+            await db.training_examples.insert_one(ex.model_dump())
+            created += 1
+            label = client_name or structured.get("trip_name") or tid
+            await _update_job(
+                job_id, scraped=created,
+                last_message=f"[{i + 1}/{len(trip_ids)}] OK · {label}",
+            )
+        except Exception as e:
+            failed += 1
+            short = str(e)[:160]
+            errors.append(f"trip {tid}: {short}")
+            await _update_job(
+                job_id, failed=failed,
+                last_message=f"[{i + 1}/{len(trip_ids)}] ERROR trip {tid}: {short}",
+            )
+            logger.warning("bulk import trip %s failed: %s", tid, e)
+
+    await _update_job(
+        job_id,
+        status="completed",
+        scraped=created,
+        skipped=skipped,
+        failed=failed,
+        errors=errors[-50:],   # keep only last 50 to avoid bloat
+        finished_at=now_iso(),
+        last_message=(
+            f"Completado · {created} creados · {skipped} saltados · {failed} con error"
+        ),
+    )
+
+
+
 async def scrape_itinerary_url(
     payload: dict = Body(...),
     _: User = Depends(current_user),
