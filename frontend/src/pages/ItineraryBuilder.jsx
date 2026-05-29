@@ -463,14 +463,13 @@ function DayBlock({ day, idx, active, numTravelers, cityFacets, markup, onActiva
           {day.services.map((s, sIdx) => (
             <div
               key={s.service_id}
-              draggable
-              onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", s.service_id); onDragStart(day.day_id, s.service_id); }}
               onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOverIdx(sIdx); }}
               onDragLeave={() => setDragOverIdx((cur) => (cur === sIdx ? null : cur))}
               onDrop={(e) => { e.preventDefault(); e.stopPropagation(); onDropService(day.day_id, sIdx); setDragOverIdx(null); }}
               className={dragOverIdx === sIdx ? "border-t-2 border-terracotta -mt-px" : ""}
             >
               <ServiceRow service={s} markup={markup} dayCity={day.city} numTravelers={numTravelers}
+                onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", s.service_id); onDragStart(day.day_id, s.service_id); }}
                 onChange={(patch) => onUpdateService(s.service_id, patch)}
                 onRemove={() => onRemoveService(s.service_id)}
                 onPickExperience={(exp) => onUpdateService(s.service_id, {
@@ -493,14 +492,21 @@ function DayBlock({ day, idx, active, numTravelers, cityFacets, markup, onActiva
   );
 }
 
-function ServiceRow({ service, markup, dayCity, onChange, onRemove, onPickExperience }) {
+function ServiceRow({ service, markup, dayCity, onChange, onRemove, onPickExperience, onDragStart }) {
   const totalExcl = (service.unit_price_tax_excl || 0) * (service.quantity || 0);
   const totalIncl = (service.unit_price_tax_incl || service.unit_price || 0) * (service.quantity || 0);
   const totalPVP = totalIncl * (1 + (markup || 0) / 100);
 
   return (
     <div className="grid grid-cols-[28px_110px_1fr_60px_100px_100px_100px_30px] gap-2 items-center px-3 py-2.5 text-sm hover:bg-clay-50 transition-colors">
-      <GripVertical size={14} className="text-clay-400 cursor-grab active:cursor-grabbing" title="Arrastra para reordenar o mover de día" />
+      <span
+        draggable
+        onDragStart={onDragStart}
+        className="inline-flex items-center justify-center cursor-grab active:cursor-grabbing text-clay-400 hover:text-terracotta hover:bg-clay-100 rounded select-none"
+        title="Arrastra para reordenar o mover de día"
+      >
+        <GripVertical size={14} />
+      </span>
       <select className={`text-[10px] tracking-widest uppercase px-1.5 py-1 ${TYPE_BADGE[service.type] || TYPE_BADGE.otro} border-none outline-none`} value={service.type} onChange={(e) => onChange({ type: e.target.value })}>
         {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
       </select>
