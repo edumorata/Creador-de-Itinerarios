@@ -41,6 +41,9 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from pydantic import BaseModel, BeforeValidator, ConfigDict, EmailStr, Field
 from starlette.middleware.cors import CORSMiddleware
 
+# Local imports
+from retrieval import bump_version, get_retriever
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -1920,6 +1923,7 @@ async def create_training_example(
         created_by=user.email,
     )
     await db.training_examples.insert_one(ex.model_dump())
+    await bump_version(db)
     return ex
 
 
@@ -1932,6 +1936,7 @@ async def update_training_example(
     patch = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
     if patch:
         await db.training_examples.update_one({"example_id": example_id}, {"$set": patch})
+        await bump_version(db)
     doc = await db.training_examples.find_one({"example_id": example_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1943,7 +1948,49 @@ async def delete_training_example(example_id: str, _: Annotated[User, Depends(cu
     res = await db.training_examples.delete_one({"example_id": example_id})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Not found")
+    await bump_version(db)
     return {"ok": True}
+
+
+@api.get("/ai/retrieval/stats")
+async def retrieval_stats(_: Annotated[User, Depends(current_user)]):
+    """Inspect the TF-IDF index status (size + vocabulary)."""
+    r = await get_retriever(db)
+    return {
+        "docs": len(r.docs),
+        "features": int(r.matrix.shape[1]) if r.matrix.shape[0] > 0 else 0,
+        "version": r.version,
+        "outcome_breakdown": {
+            "sold": sum(1 for d in r.docs if d.get("outcome") == "sold"),
+            "not_sold": sum(1 for d in r.docs if d.get("outcome") == "not_sold"),
+            "pending": sum(1 for d in r.docs if d.get("outcome") == "pending"),
+        },
+    }
+
+
+@api.post("/ai/retrieval/search")
+async def retrieval_search(
+    payload: dict = Body(...),
+    _: Annotated[User, Depends(current_user)] = None,
+):
+    """Manual semantic search over training examples — useful to preview what the
+    AI generator will see for a given client request."""
+    query = (payload.get("query") or "").strip()
+    k = int(payload.get("k") or 10)
+    if not query:
+        raise HTTPException(status_code=400, detail="query es obligatorio")
+    r = await get_retriever(db)
+    hits = r.top_k(query, k=k, min_score=0.01)
+    return {
+        "matches": [{
+            "example_id": h.get("example_id"),
+            "client_name": h.get("client_name"),
+            "outcome": h.get("outcome"),
+            "score": h.get("_score"),
+            "client_request": (h.get("client_request") or "")[:300],
+        } for h in hits],
+        "total_indexed": len(r.docs),
+    }
 
 
 @api.post("/training-examples/bulk-import-gestion", response_model=BulkImportJob)
@@ -2421,6 +2468,10 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
             + f"{created} creados · {skipped} saltados · {failed} con error"
         ),
     )
+    # Bulk imports may have inserted dozens of examples — invalidate the
+    # retrieval index so the next /ai/generate sees them.
+    if created > 0:
+        await bump_version(db)
 
 
 
@@ -2610,10 +2661,25 @@ async def ai_generate(
                     break
 
     hotels = await db.hotels.find({}, {"_id": 0}).limit(150).to_list(150)
-    examples = await db.training_examples.find(
-        {"outcome": {"$in": ["sold", "not_sold"]}},
-        {"_id": 0},
-    ).sort("created_at", -1).limit(20).to_list(20)
+
+    # Pull TRAINING examples by semantic similarity (TF-IDF over client_request),
+    # balanced between winners and losers so the model learns what does AND
+    # doesn't sell. Falls back to recency if the index is still empty.
+    retriever = await get_retriever(db)
+    sold = retriever.top_k(request_text, k=8, prefer_outcomes=["sold"], min_score=0.02)
+    not_sold = retriever.top_k(request_text, k=3, prefer_outcomes=["not_sold"], min_score=0.02)
+    examples: list[dict] = sold + not_sold
+    if not examples:
+        # Cold-start fallback: most recent labelled examples.
+        examples = await db.training_examples.find(
+            {"outcome": {"$in": ["sold", "not_sold"]}, "client_request": {"$nin": [None, ""]}},
+            {"_id": 0},
+        ).sort("created_at", -1).limit(8).to_list(8)
+    retrieval_meta = {
+        "matched_sold": len(sold),
+        "matched_not_sold": len(not_sold),
+        "top_score": (examples[0].get("_score") if examples and examples[0].get("_score") is not None else None),
+    }
 
     user_prompt_parts = [
         f"NEW CLIENT REQUEST:\n{request_text}",
@@ -2626,7 +2692,11 @@ async def ai_generate(
         "",
     ]
     if examples:
-        user_prompt_parts.append("PAST EXAMPLES (learn from these patterns):")
+        user_prompt_parts.append(
+            "PAST EXAMPLES (semantically similar, learn from these patterns).\n"
+            "STUDY the SOLD ones to replicate what worked, COMPARE with the NOT_SOLD ones "
+            "to avoid what failed. Each one is annotated with its outcome and similarity score."
+        )
         for ex in examples:
             client_struct = ex.get("itinerary_structured")
             ops_struct = ex.get("itinerary_structured_ops")
@@ -2641,8 +2711,10 @@ async def ai_generate(
                 blocks.append(f"INTERNAL OPS VIEW (raw):\n{ex['itinerary_text_ops'][:2500]}")
             if not blocks:
                 continue
+            score = ex.get("_score")
+            score_tag = f" similarity={score:.2f}" if isinstance(score, (int, float)) else ""
             user_prompt_parts.append(
-                f"--- outcome={ex['outcome']} ---\n"
+                f"--- outcome={ex['outcome']}{score_tag} ---\n"
                 f"CLIENT REQUEST:\n{ex['client_request'][:1500]}\n\n"
                 + "\n\n".join(blocks)
             )
@@ -2655,7 +2727,7 @@ async def ai_generate(
     if save:
         await db.itineraries.insert_one(dict(draft))  # avoid mutating draft with _id
     draft.pop("_id", None)
-    return {"itinerary": draft, "ai_summary": data.get("summary", "")}
+    return {"itinerary": draft, "ai_summary": data.get("summary", ""), "retrieval": retrieval_meta}
 
 
 def _re_escape(s: str) -> str:
