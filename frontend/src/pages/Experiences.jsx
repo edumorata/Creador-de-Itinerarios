@@ -81,23 +81,42 @@ export default function Experiences() {
         </div>
         <div className="flex items-center gap-2">
           {user?.role === "admin" && (
-            <button
-              data-testid="bulk-import-btn"
-              disabled={bulkBusy}
-              onClick={async () => {
-                if (!window.confirm("Importar TODOS los Excel de proveedores almacenados en el servidor (~94 archivos)?")) return;
-                setBulkBusy(true);
-                try {
-                  const { data } = await api.post("/experiences/import-all-server");
-                  toast.success(`${data.total_created} experiencias añadidas (${data.files_scanned} archivos, ${data.total_skipped} duplicadas saltadas)`);
-                  load();
-                } catch (e) { toast.error(e?.response?.data?.detail || "Error en la importación masiva"); }
-                finally { setBulkBusy(false); }
-              }}
-              className="inline-flex items-center gap-2 px-4 py-2 border border-clay-300 hover:bg-clay-100 text-sm disabled:opacity-50"
-            >
-              <Server size={14}/> {bulkBusy ? "Importando…" : "Importar TODO del servidor"}
-            </button>
+            <>
+              <button
+                data-testid="csv-import-btn"
+                disabled={bulkBusy}
+                onClick={async () => {
+                  if (!window.confirm("Re-construir el catálogo desde el CSV histórico de viajes (servicios + hoteles + transfers)?\n\nWipe activado = se vacía experiencias y hoteles primero.")) return;
+                  setBulkBusy(true);
+                  try {
+                    const { data } = await api.post("/catalog/import-from-trips-csv?wipe=true");
+                    toast.success(`${data.experiences_created} experiencias + ${data.hotels_created} hoteles desde ${data.rows_scanned} filas`);
+                    load();
+                  } catch (e) { toast.error(e?.response?.data?.detail || "Error CSV import"); }
+                  finally { setBulkBusy(false); }
+                }}
+                className="inline-flex items-center gap-2 px-4 py-2 border border-clay-300 hover:bg-clay-100 text-sm disabled:opacity-50"
+              >
+                <Server size={14}/> Catálogo desde CSV histórico
+              </button>
+              <button
+                data-testid="bulk-import-btn"
+                disabled={bulkBusy}
+                onClick={async () => {
+                  if (!window.confirm("Importar TODOS los Excel de proveedores almacenados en el servidor (~94 archivos)?")) return;
+                  setBulkBusy(true);
+                  try {
+                    const { data } = await api.post("/experiences/import-all-server");
+                    toast.success(`${data.total_created} experiencias añadidas (${data.files_scanned} archivos, ${data.total_skipped} duplicadas saltadas)`);
+                    load();
+                  } catch (e) { toast.error(e?.response?.data?.detail || "Error en la importación masiva"); }
+                  finally { setBulkBusy(false); }
+                }}
+                className="inline-flex items-center gap-2 px-4 py-2 border border-clay-300 hover:bg-clay-100 text-sm disabled:opacity-50"
+              >
+                <Server size={14}/> Tarifas proveedores
+              </button>
+            </>
           )}
           <button data-testid="import-btn" onClick={() => setImportOpen(true)} className="inline-flex items-center gap-2 px-4 py-2 border border-clay-300 hover:bg-clay-100 text-sm">
             <Upload size={14}/> Importar desde Excel

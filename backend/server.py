@@ -738,7 +738,221 @@ async def import_provider_sheet(
     return result
 
 
-@api.post("/experiences/import-all-server")
+@api.post("/catalog/import-from-trips-csv")
+async def import_catalog_from_trips_csv(
+    admin: Annotated[User, Depends(require_admin)],
+    file_path: str = Query("/app/artifacts/catalog_db/app_operators.csv", description="Server-side CSV path"),
+    wipe: bool = Query(False, description="Wipe experiences + hotels first"),
+):
+    """Build the catalog from a CSV of services used in past trips.
+
+    Expected columns (semicolon-separated, latin-1 OR utf-8):
+        ID_TRIP; Fecha_venta; Servicio; Ciudad; Proveedor; AD; CH; Sin_IVA; Con_IVA
+
+    Each row → either an Experience (activity/transfer/train/etc.) or a Hotel
+    (when Servicio matches hotel/apartament/resort keywords). Dedup by
+    (name + provider + city), keeping the median price across occurrences.
+    Providers are upserted automatically.
+    """
+    import csv as _csv
+    import pathlib as _p
+
+    fp = _p.Path(file_path)
+    if not fp.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+
+    # City → country lookup (covers the top cities seen in real data)
+    city_country = {
+        # Spain
+        "Madrid": "España", "Barcelona": "España", "Sevilla": "España", "Seville": "España",
+        "Valencia": "España", "Bilbao": "España", "Granada": "España", "Toledo": "España",
+        "Cordoba": "España", "Córdoba": "España", "Ronda": "España", "Malaga": "España",
+        "Málaga": "España", "San Sebastian": "España", "San Sebastián": "España",
+        "Mallorca": "España", "Ibiza": "España", "Segovia": "España", "Salamanca": "España",
+        "Logroño": "España", "La Rioja": "España", "Pamplona": "España", "Avila": "España",
+        "Ávila": "España", "Cuenca": "España", "Marbella": "España", "Tenerife": "España",
+        # Portugal
+        "Lisbon": "Portugal", "Lisboa": "Portugal", "Porto": "Portugal", "Oporto": "Portugal",
+        "Sintra": "Portugal", "Cascais": "Portugal", "Algarve": "Portugal", "Lagos": "Portugal",
+        "Coimbra": "Portugal", "Evora": "Portugal", "Évora": "Portugal", "Douro": "Portugal",
+        "Douro Valley": "Portugal", "Madeira": "Portugal", "Azores": "Portugal", "Braga": "Portugal",
+        "Faro": "Portugal", "Aveiro": "Portugal",
+        # Italy
+        "Rome": "Italia", "Roma": "Italia", "Florence": "Italia", "Firenze": "Italia",
+        "Florencia": "Italia", "Venice": "Italia", "Venezia": "Italia", "Venecia": "Italia",
+        "Naples": "Italia", "Napoli": "Italia", "Milan": "Italia", "Milano": "Italia",
+        "Sorrento": "Italia", "Positano": "Italia", "Amalfi": "Italia", "Capri": "Italia",
+        "Pompeii": "Italia", "Tuscany": "Italia", "Toscana": "Italia", "Bologna": "Italia",
+        "Verona": "Italia", "Siena": "Italia", "Pisa": "Italia", "Cinque Terre": "Italia",
+        "Lake Como": "Italia", "Sicily": "Italia", "Sicilia": "Italia", "Palermo": "Italia",
+        "Taormina": "Italia", "Catania": "Italia", "Matera": "Italia", "Puglia": "Italia",
+        "Lecce": "Italia",
+        # Morocco
+        "Marrakech": "Marruecos", "Marrakesh": "Marruecos", "Casablanca": "Marruecos",
+        "Fes": "Marruecos", "Fez": "Marruecos", "Rabat": "Marruecos", "Tangier": "Marruecos",
+        "Chefchaouen": "Marruecos", "Essaouira": "Marruecos", "Merzouga": "Marruecos",
+    }
+    # Normalize duplicate city spellings → canonical
+    city_aliases = {
+        "Roma": "Rome", "Florencia": "Florence", "Firenze": "Florence",
+        "Venecia": "Venice", "Venezia": "Venice", "Napoli": "Naples", "Milano": "Milan",
+        "Lisboa": "Lisbon", "Oporto": "Porto", "Sevilla": "Seville", "Marrakesh": "Marrakech",
+        "Fez": "Fes",
+    }
+
+    HOTEL_KW = ("hotel", "hostel", "hostal", "apartam", "apartment", "resort", "pousada",
+                "riad", "villa", "b&b", "bed and breakfast", "lodge", "boutique stay")
+    TRANSFER_KW = ("transfer", "taxi", "limo", "driver", "private car", "private vehicle")
+    FLIGHT_KW = ("flight", "vuelo", "airline")
+    TRAIN_KW = ("train", "tren", "renfe", "trenitalia", "italo", "ave ", "ave-")
+    RESTAURANT_KW = ("restaur", "lunch", "dinner", "cena", " menu ", "wine pairing")
+
+    def classify(name: str) -> str:
+        n = name.lower()
+        if any(k in n for k in HOTEL_KW):
+            return "hotel"
+        if any(k in n for k in TRANSFER_KW):
+            return "transfer"
+        if any(k in n for k in FLIGHT_KW):
+            return "vuelo"
+        if any(k in n for k in TRAIN_KW):
+            return "transporte"
+        if any(k in n for k in RESTAURANT_KW):
+            return "restaurante"
+        return "actividad"
+
+    def tier_from_name(name: str) -> str:
+        n = name.lower()
+        if any(w in n for w in ("luxury", "deluxe", "5*", "5 star", "5-star")):
+            return "luxury"
+        if any(w in n for w in ("4*", "4 star", "boutique", "premium")):
+            return "upscale"
+        return "upscale"
+
+    if wipe:
+        await db.experiences.delete_many({})
+        await db.hotels.delete_many({})
+
+    # Try UTF-8 then fall back to Latin-1
+    try:
+        text = fp.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        text = fp.read_text(encoding="latin-1")
+
+    rows = list(_csv.DictReader(text.splitlines(), delimiter=";"))
+
+    # Group rows by (service_name, provider, city) → aggregate prices
+    grouped: dict = {}
+    for r in rows:
+        svc = (r.get("Servicio") or "").strip()
+        prov = (r.get("Proveedor") or "").strip()
+        city_raw = (r.get("Ciudad") or "").strip()
+        if not svc or not prov or not city_raw:
+            continue
+        city = city_aliases.get(city_raw, city_raw)
+        key = (svc, prov, city)
+        excl = r.get("Sin_IVA")
+        incl = r.get("Con_IVA")
+        def _num(v):
+            if not v or v == "NULL":
+                return None
+            try:
+                return float(v)
+            except ValueError:
+                return None
+        e = _num(excl)
+        i = _num(incl)
+        grouped.setdefault(key, {"excl": [], "incl": []})
+        if e is not None:
+            grouped[key]["excl"].append(e)
+        if i is not None:
+            grouped[key]["incl"].append(i)
+
+    def _median(lst):
+        if not lst:
+            return 0.0
+        s = sorted(lst)
+        n = len(s)
+        return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+    # Provider cache (upsert once)
+    provider_cache: dict = {}
+    exp_created = 0
+    exp_skipped = 0
+    hotel_created = 0
+    hotel_skipped = 0
+
+    for (svc, prov_name, city), agg in grouped.items():
+        country = city_country.get(city)
+        # Upsert provider
+        if prov_name not in provider_cache:
+            doc = await db.providers.find_one({"name": prov_name}, {"_id": 0})
+            if not doc:
+                doc = Provider(name=prov_name, country=country).model_dump()
+                await db.providers.insert_one(dict(doc))
+            provider_cache[prov_name] = doc
+        provider = provider_cache[prov_name]
+        price_excl = round(_median(agg["excl"]), 2)
+        price_incl = round(_median(agg["incl"]) or price_excl, 2)
+
+        kind = classify(svc)
+        if kind == "hotel":
+            existing = await db.hotels.find_one(
+                {"name": svc, "city": city}, {"_id": 0}
+            )
+            if existing:
+                hotel_skipped += 1
+                continue
+            h = Hotel(
+                name=svc,
+                city=city,
+                country=country,
+                tier=tier_from_name(svc),
+                description=None,
+                price_per_night_excl=price_excl,
+                price_per_night_incl=price_incl,
+                currency="EUR",
+                contact=prov_name,
+                notes=f"Importado del histórico de viajes. Proveedor: {prov_name}",
+            )
+            await db.hotels.insert_one(h.model_dump())
+            hotel_created += 1
+        else:
+            existing = await db.experiences.find_one(
+                {"title": svc, "provider_id": provider["provider_id"], "city": city},
+                {"_id": 0},
+            )
+            if existing:
+                exp_skipped += 1
+                continue
+            exp = Experience(
+                title=svc,
+                provider_id=provider["provider_id"],
+                provider_name=prov_name,
+                country=country,
+                city=city,
+                type=kind,
+                price_tax_excl=price_excl,
+                price_tax_incl=price_incl,
+                price=price_incl,
+                currency="EUR",
+            )
+            await db.experiences.insert_one(exp.model_dump())
+            exp_created += 1
+
+    return {
+        "rows_scanned": len(rows),
+        "unique_services": len(grouped),
+        "experiences_created": exp_created,
+        "experiences_skipped": exp_skipped,
+        "hotels_created": hotel_created,
+        "hotels_skipped": hotel_skipped,
+        "providers_total": len(provider_cache),
+        "wiped": wipe,
+    }
+
+
+
 async def import_all_server(
     admin: Annotated[User, Depends(require_admin)],
     base_path: str = Query("/app/artifacts/excel_creados", description="Server-side directory to scan"),
