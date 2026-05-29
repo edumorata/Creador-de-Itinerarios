@@ -53,14 +53,15 @@
   - `#app_trips___statusvalue` (`abierto`/`cerrado`)
   - `#app_trips___booking_date_..._filter_range_0/1_.0` (Fecha de Venta range)
 - It clicks `button[name="filter"]`, paginates the result, harvests every trip ID + its visible link text (used as client_name once cleaned of the `_facturado…` suffix), then scrapes each trip with the existing Playwright + LLM parser. Dedup on `itinerary_url_ops`.
-- Each result is stored as a `TrainingExample` with `client_request=""` (pending) and `outcome="sold"`.
+- **Outcome selector per batch**: payload accepts `outcome` (`sold` / `not_sold` / `pending`, default `sold`) so the agent can learn patterns from both winning and losing itineraries.
+- Each result is stored as a `TrainingExample` with `client_request=""` (pending) and the chosen `outcome`.
 - New endpoints:
   - `GET /api/training-examples/pending-request`
   - `GET /api/training-examples/bulk-import-jobs` (+ `/{job_id}` polling)
 - AI Trainer page (`/ai/trainer`) gained:
-  - "Importación masiva" card (agent/source/status/date_from/date_to/limit) with live progress bar and per-line message.
+  - "Importación masiva" card (agente / source / estado / **marcar como** / fechas / límite) with live progress bar and per-line message.
   - "Entrenamientos pendientes de solicitud" section with one card per pending example: link to gestion, optional structured-day summary, free textarea for the original client request, and a "Guardar y marcar entrenado" button.
-- Verified end-to-end: 2 trips imported in ~85s (`Karen Hutton`, `Eileen Zanardi` with 10 / 9 day itineraries parsed), client_request flow tested.
+- Verified end-to-end: trips imported with both `outcome=sold` and `outcome=not_sold` correctly tagged.
 
 ## Known minor items
 - Autocomplete payload returns full Experience docs (could be slimmed)

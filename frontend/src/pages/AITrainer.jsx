@@ -30,6 +30,7 @@ const DEFAULT_BULK = {
   agent: "",
   source: "KimKim",
   status: "both",
+  outcome: "sold",
   date_from: "01/01/2025",
   date_to: "29/05/2026",
   limit: 500,
@@ -365,13 +366,13 @@ function BulkImportCard({ bulkForm, setBulkForm, onStart, activeJob, jobsHistory
           <div className="smallcaps text-terracotta">Importación masiva</div>
           <h2 className="font-serif text-2xl leading-tight mt-1">Cargar lote desde gestion.viajadverdad.com</h2>
           <p className="text-[12px] text-clay-700 mt-1.5 max-w-2xl">
-            El sistema entra al gestor, aplica los filtros y trae <strong>todos</strong> los viajes que coinciden. Cada uno queda con <em>solicitud pendiente</em> abajo, listo para que pegues el request original.
+            El sistema entra al gestor, aplica los filtros y trae <strong>todos</strong> los viajes que coinciden. Marca el lote como <em>vendido</em> o <em>no vendido</em> para que el agente aprenda patrones. Cada uno queda con <em>solicitud pendiente</em> abajo, listo para que pegues el request original.
           </p>
         </div>
         <Download size={18} className="text-clay-500 mt-1" />
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-3 p-5">
+      <div className="grid grid-cols-2 md:grid-cols-7 gap-3 p-5">
         <Field label="Agente de Ventas" hint="vacío = todos">
           <input
             data-testid="bulk-agent"
@@ -403,6 +404,19 @@ function BulkImportCard({ bulkForm, setBulkForm, onStart, activeJob, jobsHistory
             <option value="both">Abierto + Cerrado</option>
             <option value="open">Solo Abierto</option>
             <option value="closed">Solo Cerrado</option>
+          </select>
+        </Field>
+        <Field label="Marcar como" hint="resultado venta">
+          <select
+            data-testid="bulk-outcome"
+            value={bulkForm.outcome}
+            onChange={(e) => setBulkForm({ ...bulkForm, outcome: e.target.value })}
+            disabled={isRunning}
+            className="w-full bg-white border border-clay-300 px-3 py-2 text-sm outline-none focus:border-terracotta disabled:opacity-50"
+          >
+            <option value="sold">Vendido</option>
+            <option value="not_sold">No vendido</option>
+            <option value="pending">Pendiente</option>
           </select>
         </Field>
         <Field label="Fecha venta · Desde" hint="DD/MM/YYYY">
@@ -512,8 +526,8 @@ function BulkImportCard({ bulkForm, setBulkForm, onStart, activeJob, jobsHistory
                 {jobsHistory.slice(0, 10).map((j) => (
                   <tr key={j.job_id} className="border-t border-clay-200">
                     <td className="py-1 tabular">{new Date(j.started_at).toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" })}</td>
-                    <td className="py-1 text-clay-700 truncate max-w-[260px]">
-                      {[j.params?.agent || "Todos", j.params?.source, j.params?.status, `${j.params?.date_from}→${j.params?.date_to}`].filter(Boolean).join(" · ")}
+                    <td className="py-1 text-clay-700 truncate max-w-[280px]">
+                      {[j.params?.agent || "Todos", j.params?.source, j.params?.status, j.params?.outcome || "sold", `${j.params?.date_from}→${j.params?.date_to}`].filter(Boolean).join(" · ")}
                     </td>
                     <td className="py-1 text-center tabular">{j.matched}</td>
                     <td className="py-1 text-center tabular text-pine font-semibold">{j.scraped}</td>

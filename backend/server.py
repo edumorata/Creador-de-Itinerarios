@@ -1820,6 +1820,7 @@ async def bulk_import_gestion(
         status     "open" | "closed" | "both" | "all"
         date_from  "DD/MM/YYYY" filter Fecha de Venta lower bound
         date_to    "DD/MM/YYYY" filter Fecha de Venta upper bound
+        outcome    "sold" | "not_sold" | "pending"  (tag every imported example)
         limit      int        safety cap on number of trips (default 500)
 
     Returns the queued BulkImportJob immediately; poll
@@ -1893,6 +1894,8 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
         statuses = [raw_status]
     date_from = (params.get("date_from") or "").strip()
     date_to = (params.get("date_to") or "").strip()
+    raw_outcome = (params.get("outcome") or "sold").strip().lower()
+    outcome: TripOutcome = raw_outcome if raw_outcome in ("sold", "not_sold", "pending") else "sold"
     try:
         limit = max(1, min(int(params.get("limit") or 500), 2000))
     except Exception:
@@ -2106,7 +2109,7 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
     errors: list[str] = []
     notes_tag = (
         f"Auto-import gestion (agente={agent or 'Todos'} · source={source or '—'} · "
-        f"estado={','.join(statuses)} · fechas={date_from or '—'}→{date_to or '—'})"
+        f"estado={','.join(statuses)} · fechas={date_from or '—'}→{date_to or '—'} · outcome={outcome})"
     )
     for i, tid in enumerate(trip_ids):
         url = f"https://gestion.viajadverdad.com/trips/form/1/{tid}"
@@ -2136,7 +2139,7 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
                 itinerary_url_ops=url,
                 itinerary_text_ops=text,
                 itinerary_structured_ops=structured,
-                outcome="sold",     # bulk = sold trips
+                outcome=outcome,    # selectable per-import (sold / not_sold / pending)
                 notes=notes_tag,
                 created_by=user_email,
             )
