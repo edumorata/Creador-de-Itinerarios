@@ -263,6 +263,27 @@ async def shutdown_db_client():
     client.close()
 
 
+@app.on_event("startup")
+async def reap_orphan_bulk_jobs():
+    """Any bulk_import_job left as queued/running from a previous process is
+    orphaned — the in-memory asyncio task died with the restart. Mark them
+    `interrupted` so the AI Trainer UI shows what really happened instead of
+    spinning forever on a job that no one is processing."""
+    try:
+        res = await db.bulk_import_jobs.update_many(
+            {"status": {"$in": ["queued", "running"]}},
+            {"$set": {
+                "status": "interrupted",
+                "finished_at": now_iso(),
+                "last_message": "Job interrumpido por reinicio del backend. Los viajes que ya se importaron están en la base; relánzalo con los mismos filtros — la deduplicación por URL evita duplicados.",
+            }},
+        )
+        if res.modified_count:
+            logger.warning("Marked %d orphan bulk-import job(s) as interrupted", res.modified_count)
+    except Exception as e:
+        logger.warning("orphan bulk-job reaper failed: %s", e)
+
+
 # ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
@@ -1714,7 +1735,7 @@ class TrainingExampleUpsert(BaseModel):
     notes: Optional[str] = None
 
 
-BulkJobStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
+BulkJobStatus = Literal["queued", "running", "completed", "failed", "cancelled", "interrupted"]
 
 
 class BulkImportJob(BaseModel):

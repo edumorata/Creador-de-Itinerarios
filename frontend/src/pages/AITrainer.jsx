@@ -76,19 +76,29 @@ export default function AITrainer() {
       try {
         const { data } = await api.get(`/training-examples/bulk-import-jobs/${jobId}`);
         setActiveJob(data);
-        if (data.status === "completed" || data.status === "failed" || data.status === "cancelled") {
+        if (["completed","failed","cancelled","interrupted"].includes(data.status)) {
           clearInterval(pollRef.current);
           pollRef.current = null;
           // refresh lists
           load();
           if (data.status === "completed") {
             toast.success(`Import finalizado: +${data.scraped} · ${data.skipped} repetidos · ${data.failed} con error`);
+          } else if (data.status === "interrupted") {
+            toast.warning("Job interrumpido por reinicio del backend. Vuelve a lanzarlo — la dedup evita duplicados.");
           } else if (data.status === "failed") {
             toast.error(data.last_message || "El job falló");
           }
         }
       } catch (e) {
-        console.error("poll error", e);
+        if (e?.response?.status === 404) {
+          // Job ya no existe (probablemente borrado). Paramos el polling.
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+          setActiveJob(null);
+          toast.warning("El job ya no existe en la base de datos.");
+        } else {
+          console.error("poll error", e);
+        }
       }
     };
     tick();
@@ -479,6 +489,7 @@ function BulkImportCard({ bulkForm, setBulkForm, onStart, activeJob, jobsHistory
               activeJob.status === "running" ? "bg-terracotta text-white border-terracotta" :
               activeJob.status === "completed" ? "bg-pine text-white border-pine" :
               activeJob.status === "failed" ? "bg-clay-900 text-white border-clay-900" :
+              activeJob.status === "interrupted" ? "bg-clay-700 text-white border-clay-700" :
               "bg-white border-clay-300"
             }`}>{activeJob.status}</span>
           </div>
