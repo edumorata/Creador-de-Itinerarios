@@ -2867,7 +2867,42 @@ AE) CONTRADICTORY TIER WORDS — TAKE THE LOWER ONE.
    When the request mixes "Luxury, $2,250+" with "3 or 4 star accommodations", the SOLD
    pattern picks 3-4 star boutique, NOT 5-star gran lujo. The dollar amount is aspirational;
    the specific star rating is what the client actually expects. Same logic for "Upscale,
-   midrange-boutique" → pick the midrange boutique side, not the upscale side."""
+   midrange-boutique" → pick the midrange boutique side, not the upscale side.
+
+AF) "REPEAT, BUT SKIP THE LINE"  →  TICKETS ONLY, NO GUIDED TOUR.
+   When the client says they have already visited a monument and now want to "skip the line"
+   / "fast track" / "priority entry", the SOLD pattern is to book ONLY entrance tickets (not
+   a guided tour). The client knows the site, they want efficiency, not interpretation.
+   Default to: Sagrada Familia tickets, Park Güell tickets, Doge's Palace skip-the-line,
+   Uffizi reserved entry. Save €200-400/pax of unneeded guide.
+   First-time visitors instead get the small-group or private guided tour.
+
+AG) "DON'T WANT TO STAY IN BARCELONA"  ≠  "NEVER STAY IN BARCELONA".
+   When the client explicitly says they want to avoid a major city as their main base BUT
+   the itinerary requires multiple tours that anchor in that city (Sagrada Familia,
+   Montserrat day trips, Park Güell, Vatican, Colosseum), the SOLD pattern is:
+   - 2-3 nights at a value boutique near the city center for the cultural anchor days
+   - 6-8 nights at the actual destination they wanted (Sitges, Sorrento, Lake Como)
+   - 1 private transfer between the two bases
+   Picking a value 3-star like Gran Hotel Havana (€280/night) for those first nights costs
+   far less than the daily round-trip taxi rides from a coast hotel — and lets you anchor
+   the high-energy days early in the trip. The client gets what they really wanted: the
+   coastal base for the second, longer half of the trip.
+
+REVISED Q) HOTELS-AT-€0 ONLY WHEN THE CLIENT BRINGS THEIR OWN STAY.
+   The "Total Alojamientos = €0" pattern (sold trips like Karli Tatum, Bradley Tatro,
+   Peter Glick, Jeffrey Schuh) applies WHEN:
+   - The client explicitly names an Airbnb, vrbo or rental ("Villa Castle Airbnb", "Stella
+     Marina Apartment", "Be Mate Via Tivoli")
+   - The client says "booked by traveler" / "self-arranged"
+   - The destination is a small village where rentals dominate (Praiano, Atrani, Cinque
+     Terre)
+   OTHERWISE — when the client names mainstream hotel brands ("Melia", "Marriott", "Hilton",
+   "Hyatt", "Pestana", "Sabàtic Autograph") OR no specific accommodation, the agency BOOKS
+   the hotel and bills it normally. The Manuel Hernandez sold trip had Total Alojamientos
+   €4,065 because the client named hotels we can book through standard wholesale, not
+   Airbnbs. Default behaviour: bill the hotel unless the request explicitly contains
+   "Airbnb" / "vrbo" / "self-arranged" / "I'll book the accommodation"."""
 
 
 async def _call_claude_json(system_prompt: str, user_prompt: str) -> dict:
