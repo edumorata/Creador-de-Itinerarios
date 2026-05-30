@@ -2750,7 +2750,43 @@ S) DIRECT CLIENT vs KIMKIM — DEFAULT PARTNER COMMISSION BY SOURCE PATTERN.
    - Source: Zicasso → 8-10.5%.
    - Source: ResponsibleTravel → check the partner row in the spreadsheet.
    When in doubt, prefer the higher markup — clients can negotiate down but you rarely
-   negotiate up."""
+   negotiate up.
+
+T) FAMILY + TEENS + COAST + "AFFORDABLE"  →  AIRBNB ON COAST + LOTS OF FREE DAYS.
+   When the request mentions: (a) 1 adult travelling with children/teens, (b) coast/beach
+   lounging as an explicit interest, AND (c) any budget signal pointing to "affordable",
+   the sold pattern is:
+   - HOTEL only in the cultural hub (Rome, Lisbon, Madrid) for 3-4 nights.
+   - SELF-BOOKED Airbnb in the coastal location for 5-7 nights (price=0 on agency books,
+     mark hotel as "[Town] Accommodation - Booked by the traveler").
+   - Activity density drops to 0.3-0.5/day (4-5 paid activities for a 10-day trip).
+   - Days 4-9 mostly "FREE DAYS" — the agent trusts the location, the pool, and the
+     gelato to entertain teens. Do NOT over-program.
+   - 1-2 family-friendly activities: a cooking class, a boat day to Capri or the islands,
+     possibly a private guided tour of the main archaeological site.
+
+U) "MUST-SEE [VOLCANO / LANDMARK]" MAY MEAN "SEE IT", NOT "CLIMB IT".
+   When the wishlist mentions Vesuvius / Etna / Stromboli / etc., FIRST check whether the
+   coastal base offers a natural view (Praiano, Sorrento, Taormina, Lipari). If yes, do
+   NOT book a guided ascent unless the request explicitly mentions "hike / climb /
+   summit / volcano excursion". Praiano gives a daily view of Vesuvius for free; Taormina
+   does the same for Etna. Save €200-500/pax of unnecessary tour.
+
+V) COMBINE PRIVATE TRANSFER WITH SIGHTSEEING WHEN THE ROUTE PASSES A LANDMARK.
+   For routes like Naples → Amalfi Coast (passes Pompeii) or Rome → Pompeii → Sorrento, do
+   NOT bill the transfer AND a separate Pompeii guided tour. Book a single "Private
+   Transfer with Pompeii stop" — one service, single quote, much lower combined price.
+   Same trick works for Olbia → Cala Gonone (stops at Orgosolo), Athens → Delphi → Meteora,
+   Lisbon → Algarve (stops at Évora).
+
+W) AMALFI COAST BASE — CHOOSE BY CLIENT PROFILE.
+   - Honeymooners / couples / 50+ tourists → Sorrento (lots of restaurants, polished hotels,
+     easy connections) — when budget supports €450-800/n.
+   - Families with teens + Airbnb-style accommodation → Praiano or Atrani (smaller, quieter,
+     cheaper rentals, more authentic) — when "affordable" is a stated priority.
+   - Active hikers → Ravello or Conca dei Marini (higher elevation, hike Path of the Gods).
+   - Luxury seekers → Positano (most expensive, iconic views) — only when budget > €1000/n.
+   Default for "affordable family" is PRAIANO with self-booked accommodation."""
 
 
 async def _call_claude_json(system_prompt: str, user_prompt: str) -> dict:
