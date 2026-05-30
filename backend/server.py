@@ -2694,7 +2694,31 @@ N) DOMESTIC FLIGHTS — STOPOVER IS OFTEN THE SOLD ROUTE.
    When booking internal flights (e.g. Olbia → Rome), CHECK whether a one-stop via Naples /
    Milan exists at lower cost or with better timing. Mid-September Sardinia → Rome direct
    slots fill up early; the sold pattern frequently routes Olbia → Napoli → Roma. Do not
-   default to "direct flight" without considering the alternative."""
+   default to "direct flight" without considering the alternative.
+
+O) "NORTHERN ITALY + ACTIVE HIKER" = DOLOMITES / ALTO ADIGE, NOT LAKE COMO.
+   When the client mentions serious hiking credentials (Salkantay Pass, Tour du Mont Blanc,
+   Camino, GR routes, multi-day trekking) AND wants Northern Italy, the SOLD pattern is
+   Lake Garda 2-3n + Castelrotto/South Tyrol 5n with hikes around Tre Cime di Lavaredo,
+   Lago di Braies, Alpe di Siusi, Seceda. Lake Como / Verona / Bellagio are for slower
+   travellers who want lakeside towns and culture. Do NOT pick Lake Como as the base for
+   trail-runner-class clients — it is the wrong region geologically.
+
+P) "EXPERIENCED HIKER" + WELL-KNOWN ROUTES = MOSTLY SELF-GUIDED.
+   When the client demonstrates serious outdoor experience (specific peaks done, multi-day
+   treks, trail running, "we are very active"), DOWNGRADE private guides to SELF-GUIDED
+   day hikes on famous routes (Tre Cime loop, Alpe di Siusi, Five Lakes Trail, Cinque Terre
+   path, Greenway del Lago). Keep ONLY 1-2 guided activities for cultural / off-the-path
+   experiences (e.g. local sanctuary tour, food/wine ROAD with a chef). This drops the
+   activities subtotal from €1,500 to €600-800 — coherent with the "Total Actividades"
+   range we see in sold trips for active clients (€500-800).
+
+REVISED H) HOTEL PRICING — DO A MATH CHECK BEFORE PICKING ANY 5-STAR HOTEL.
+   Compute: budget_mid_USD × travelers × 0.45 / total_nights = max nightly hotel budget in USD.
+   Example: $4,750 × 2 × 0.45 / 9 nights = $475/night (~€440/night).
+   If a candidate hotel exceeds 2x this number, REJECT it. For Active/Hikers in Northern
+   Italy at $4,500-5,000/pax you should land on €350-450/night properties (Floris Green
+   Suites in Castelrotto, Hotel Piccola Vela in Garda) — NOT €1,800/night gran lujo Como."""
 
 
 async def _call_claude_json(system_prompt: str, user_prompt: str) -> dict:
