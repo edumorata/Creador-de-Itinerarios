@@ -2595,7 +2595,50 @@ BUSINESS FACT SHEET — these are REAL averages computed over 59 trips this agen
    - When the destination is Italy/Portugal/Spain you have many sold matches; use them.
    - For other destinations, lean harder on the explicit preferences in the request.
 
-In the "summary" field, briefly explain WHY this draft fits the request, mentioning which 1-2 sold patterns inspired it."""
+In the "summary" field, briefly explain WHY this draft fits the request, mentioning which 1-2 sold patterns inspired it.
+
+CRITICAL READING RULES — learned from past mistakes:
+
+A) DETECT "CAMINO" CONTEXT IN THE REQUEST.
+   Phrases like "Camino", "Camino de Santiago", "Portuguese Camino", "Camino Francés"
+   may mean two very different things — read the full request twice before deciding:
+   - If the dates of the Camino are STATED SEPARATELY (e.g. "walking the Camino on June 21 for a week"),
+     the new trip you build does NOT include the Camino. Build a normal Portugal/Spain itinerary.
+   - If the request says "walking the Camino to Santiago [during/within] this trip", reserve
+     5-9 days for the Camino itself plus an arrival hub (Saint-Jean / Tui / Sarria) and Santiago
+     as the final stop. Surround it with 2-4 days of regular tourism before/after.
+   - If the request says "AFTER walking the Camino we'd like…", the Camino is BEFORE these dates —
+     ignore it for the itinerary.
+
+B) CLIENT WISHLIST OF SIGHTS  ≠  ONE ACTIVITY PER SIGHT.
+   When a client lists many monuments/museums (e.g. "Pena Palace, Quinta da Regaleira, Évora
+   Cathedral, Batalha, Jerónimos, Belém Tower, Discoveries Monument…"), DO NOT create one
+   service per sight. Use COMBINED tours from the library that cover them:
+   - Sintra → "Sintra & Cascais (small group)" covers Pena + Quinta da Regaleira + Cabo da Roca
+   - Lisbon Belém area → "Belém Tuk-Tuk Tour" covers Jerónimos + Belém Tower + Discoveries
+   - The remaining sights become free-day self-guided visits, not paid activities.
+
+C) DO NOT SLEEP IN SINTRA OR IN SMALL TOURIST TOWNS WHEN LISBON IS NEARBY.
+   Sold pattern: Sintra is a day trip from Lisbon. Same for Cascais, Óbidos, Setúbal, Évora,
+   Toledo, Segovia. Sleep in the main hub and do the excursion. Only sleep in a small town if
+   the client explicitly asks for it or the route distance forces it.
+
+D) REUSE THE SAME HOTEL ON ROUND-TRIPS.
+   If the trip returns to Lisbon/Madrid/Rome at the end, reuse the same hotel as the opening
+   stay (not a new one). This is the dominant pattern across SOLD trips and clients value the
+   continuity. Pick the better hotel for the longer stay.
+
+E) PORTUGAL PRICING REALITY CHECK.
+   Across 14 sold Portugal trips, the median PVP/pax is **$3,820** (range $1,349 - $12,740).
+   - "Basic" tier Portugal: median ~$3,500-4,500/pax for 10-14 days
+   - "Mid-range" tier Portugal: median ~$4,500-5,500/pax for 10-14 days
+   - "Comfort" / "Upscale" boutique Portugal: $5,500-7,500/pax for 10-14 days
+   When the resulting markup pushes you above 1.3x the client's declared mid-budget, REVIEW
+   the choices: too many overnights, too many private guided tours, too high a hotel tier.
+
+F) KIMKIM COMMISSION VARIES — assume default 15% (range 8-30%).
+   This affects the gap between Precio Final (what the client pays) and Ingresado (what the
+   agency receives). Target agency margin: 25-28% on Ingresado."""
 
 
 async def _call_claude_json(system_prompt: str, user_prompt: str) -> dict:
