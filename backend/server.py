@@ -2592,7 +2592,10 @@ BUSINESS FACT SHEET — these are REAL averages computed over 59 trips this agen
 
 6) DESTINATION FOOTPRINT:
    - Italy 61% · Portugal 25% · Spain 14% of the historical sold volume.
-   - When the destination is Italy/Portugal/Spain you have many sold matches; use them.
+   - Morocco is ALSO actively sold via partner DMC "Youssef Ayadi - Marruecos" — 81
+     experiences and 43 hotels are in the library covering Fes, Marrakech, Sahara,
+     Boumalne, Ait Ben Haddou, etc. NEVER decline a Morocco request as "out of scope".
+   - When the destination is Italy/Portugal/Spain/Morocco you have many sold matches; use them.
    - For other destinations, lean harder on the explicit preferences in the request.
 
 In the "summary" field, briefly explain WHY this draft fits the request, mentioning which 1-2 sold patterns inspired it.
@@ -2889,6 +2892,20 @@ AG) "DON'T WANT TO STAY IN BARCELONA"  ≠  "NEVER STAY IN BARCELONA".
    the high-energy days early in the trip. The client gets what they really wanted: the
    coastal base for the second, longer half of the trip.
 
+AH) MULTI-COUNTRY REQUEST  →  PICK THE COUNTRY WITH MOST UNIQUE SIGNAL, DROP THE REST.
+   When a client describes 2-3 countries in the same request (e.g. "Spain 4-5 days drink
+   wine, then Morocco 4-5 days hot air balloon, then Tunisia 4 days"), the SOLD pattern
+   is to BUILD THE TRIP IN THE COUNTRY WITH THE STRONGEST UNIQUE EXPERIENCE SIGNAL, not
+   to try to fit all three:
+   - "Souks + Sahara + hot air balloon + spices" = Morocco signal cluster
+   - "Cava + flamenco + romantic dinner" = Spain signal cluster
+   When both are present, the WIN typically goes to the one with MORE specific items
+   (Morocco has 4 unique-to-it words above vs Spain has 3).
+   For Tunisia (not in our scope), Iceland, Greenland, etc. the agent gracefully informs
+   the human agent: "out of agency scope — refer to specialist".
+   Result for Curtis Olson 8-day request: SOLD trip was 100% Morocco (Fes + Sahara +
+   Marrakech), NOT split Spain/Morocco/Tunisia.
+
 REVISED Q) HOTELS-AT-€0 ONLY WHEN THE CLIENT BRINGS THEIR OWN STAY.
    The "Total Alojamientos = €0" pattern (sold trips like Karli Tatum, Bradley Tatro,
    Peter Glick, Jeffrey Schuh) applies WHEN:
@@ -2938,34 +2955,65 @@ async def _call_claude_json(system_prompt: str, user_prompt: str) -> dict:
 
 
 # Country detection — exact tokens used in the DB (Spanish names).
-_COUNTRY_KEYWORDS = {
-    "Portugal":  ["portugal", "lisbon", "lisboa", "porto", "sintra", "évora", "evora",
-                  "douro", "batalha", "alentejo", "algarve", "obidos", "óbidos",
-                  "coimbra", "cascais", "nazaré", "nazare", "madeira", "azores"],
-    "España":    ["spain", "españa", "madrid", "barcelona", "sevilla", "seville",
-                  "granada", "valencia", "bilbao", "san sebastian", "san sebastián",
-                  "toledo", "córdoba", "cordoba", "málaga", "malaga", "mallorca",
-                  "ibiza", "tenerife", "asturias", "rioja", "ronda"],
-    "Italia":    ["italy", "italia", "rome", "roma", "florence", "firenze", "venice",
-                  "venezia", "milan", "milano", "naples", "napoli", "tuscany",
-                  "toscana", "sicily", "sicilia", "amalfi", "matera", "puglia",
-                  "apulia", "como", "verona", "bologna", "cinque terre", "capri"],
-    "Marruecos": ["morocco", "marruecos", "marrakech", "marrakesh", "fez", "fes",
-                  "casablanca", "essaouira", "chefchaouen", "rabat", "merzouga",
-                  "atlas", "sahara"],
+# Some keywords are HIGH-SIGNAL (souks → Morocco, alhambra → Spain) and act as
+# tie-breakers. Each tuple is (keyword, weight). Default weight=1.
+_COUNTRY_KEYWORDS_WEIGHTED = {
+    "Portugal":  [(k, 1) for k in (
+        "portugal", "lisbon", "lisboa", "porto", "sintra", "évora", "evora",
+        "douro", "batalha", "alentejo", "algarve", "obidos", "óbidos",
+        "coimbra", "cascais", "nazaré", "nazare", "madeira", "azores",
+        "pastel de nata", "fado",
+    )],
+    "España":    [(k, 1) for k in (
+        "spain", "españa", "madrid", "barcelona", "sevilla", "seville",
+        "granada", "valencia", "bilbao", "san sebastian", "san sebastián",
+        "toledo", "córdoba", "cordoba", "málaga", "malaga", "mallorca",
+        "ibiza", "tenerife", "asturias", "rioja", "ronda", "alhambra",
+        "flamenco", "tapas", "cava", "sagrada familia", "sitges",
+        "montserrat", "park güell", "park guell",
+    )],
+    "Italia":    [(k, 1) for k in (
+        "italy", "italia", "rome", "roma", "florence", "firenze", "venice",
+        "venezia", "milan", "milano", "naples", "napoli", "tuscany",
+        "toscana", "sicily", "sicilia", "amalfi", "matera", "puglia",
+        "apulia", "como", "verona", "bologna", "cinque terre", "capri",
+        "sorrento", "positano", "vatican", "vesuvius", "pompeii", "dolomites",
+        "stintino", "sardinia", "cerdeña",
+    )],
+    # Morocco gets explicit weight on its iconic/unique keywords so it wins the
+    # tie even when the request is mostly written in English with "Spain" first
+    # (frequent for multi-country requests originating on KimKim).
+    "Marruecos": (
+        [(k, 1) for k in (
+            "morocco", "marruecos", "marrakech", "marrakesh", "fez", "fes",
+            "casablanca", "essaouira", "chefchaouen", "rabat", "merzouga",
+            "atlas", "ouarzazate", "ait ben haddou", "boumalne", "dades",
+        )]
+        + [(k, 3) for k in (
+            "souks", "souk", "sahara", "berber", "riad", "tagine",
+            "hot air balloon", "camel trek", "spice market",
+        )]
+    ),
 }
 
 
 def _detect_country(text: str) -> Optional[str]:
-    """Pick the country whose keywords appear most often in the request text."""
+    """Pick the country with the highest weighted keyword score."""
     if not text:
         return None
     t = text.lower()
     scores: dict[str, int] = {}
-    for country, kws in _COUNTRY_KEYWORDS.items():
-        scores[country] = sum(1 for kw in kws if kw in t)
+    for country, kw_pairs in _COUNTRY_KEYWORDS_WEIGHTED.items():
+        scores[country] = sum(w for kw, w in kw_pairs if kw in t)
     best = max(scores.items(), key=lambda x: x[1])
     return best[0] if best[1] > 0 else None
+
+
+# Backwards-compat alias for any code path that still queries by country
+_COUNTRY_KEYWORDS = {
+    c: [kw for kw, _w in pairs]
+    for c, pairs in _COUNTRY_KEYWORDS_WEIGHTED.items()
+}
 
 
 def _detect_cities(text: str, country: Optional[str]) -> list[str]:
