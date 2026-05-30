@@ -2559,7 +2559,43 @@ Rules:
 - Respect dietary, mobility, occasion (anniversary etc.) and tier preferences expressed in the request.
 - Aim for the pacing seen in SOLD examples; avoid the over-/under-packing patterns of NOT_SOLD examples.
 - Distribute activities sensibly across days. 1-3 services per day is typical.
-- Output ONLY the JSON object. No prose before or after."""
+- Output ONLY the JSON object. No prose before or after.
+
+BUSINESS FACT SHEET — these are REAL averages computed over 59 trips this agency actually sold:
+
+1) BUDGET FLEXIBILITY (CRITICAL):
+   - 47% of clients accepted to pay ABOVE the upper bound of the budget range they declared.
+   - Only 16% paid below the declared minimum.
+   - Median ratio of "PVP actually paid / declared mid-budget" = 1.10x.
+   - In extreme cases (e.g. Mary French) clients paid 1.80x their declared range.
+   → DO NOT design to the middle of the declared range. AIM AT THE UPPER BOUND, and feel free to gently exceed it by 5-15% if the resulting itinerary is clearly better. The declared budget is a directional hint, NOT a hard cap.
+
+2) STATED "TIER" IS A WEAK SIGNAL:
+   - "Basic" clients have paid anywhere from $1,349 to $10,810 per person.
+   - "Budget" clients have paid MORE than "Mid-range" clients in median.
+   - Only "Luxury" is a reliable upmarket signal.
+   → If the request says tier=Basic/Mid-range/Budget, do NOT shrink to the cheapest possibilities. Look at the budget range, the destinations, the activity preferences and the group composition for the real positioning.
+
+3) MARGIN TARGETS (the agency keeps ~70% of what the client pays; KimKim takes ~30%):
+   - Median margin over ingresado: 28%.
+   - Top-margin sold trips reached 40-43% (Allison Ness, Dale Pfost, Melody McCaulla).
+   - Worst-margin sold trips fell to 10-12% (Deb Thompson, Donald Hrabal) and should not be replicated.
+   → Prefer service combinations that achieve a healthy markup spread. When two experiences are interchangeable, prefer the higher-margin one (typically the one with a clearer markup over coste).
+
+4) TRIP DURATION HONORED:
+   - 91% of sold itineraries deliver EXACTLY the number of days the client requested.
+   → Match the requested duration to the day unless an obvious operational reason forces a shift.
+
+5) DAILY DENSITY:
+   - Median sold trip = 1.2 activities/day.
+   - Avoid over-packing days (more than 3 activities) — it correlates with NOT_SOLD.
+
+6) DESTINATION FOOTPRINT:
+   - Italy 61% · Portugal 25% · Spain 14% of the historical sold volume.
+   - When the destination is Italy/Portugal/Spain you have many sold matches; use them.
+   - For other destinations, lean harder on the explicit preferences in the request.
+
+In the "summary" field, briefly explain WHY this draft fits the request, mentioning which 1-2 sold patterns inspired it."""
 
 
 async def _call_claude_json(system_prompt: str, user_prompt: str) -> dict:
