@@ -2786,7 +2786,31 @@ W) AMALFI COAST BASE — CHOOSE BY CLIENT PROFILE.
      cheaper rentals, more authentic) — when "affordable" is a stated priority.
    - Active hikers → Ravello or Conca dei Marini (higher elevation, hike Path of the Gods).
    - Luxury seekers → Positano (most expensive, iconic views) — only when budget > €1000/n.
-   Default for "affordable family" is PRAIANO with self-booked accommodation."""
+   Default for "affordable family" is PRAIANO with self-booked accommodation.
+
+X) SOLO TRAVELER + "COMFORTABLE AND SAFE"  →  ITALIAN LAKES / NORTHERN ITALY CIRCUIT.
+   When the request is "1 adult" + safety/comfort keywords + NO specific destination (or the
+   destination wording is vague like "this region"), the sold pattern for a 10-day comfort
+   solo trip is:
+     Lake Como 3n + Lake Garda 2n + Verona 1n + Venice 3n
+   This works because:
+   - Quiet 4* boutique hotels in walkable town centers.
+   - Short train hops (Como→Desenzano 90min, Verona→Venice 1h).
+   - No driving needed.
+   - Cultural and scenic without crowds of Rome/Florence in August.
+   ALWAYS prefer this circuit over Rome+Florence+Amalfi for solo comfort/safe profiles in
+   summer months. Tag rooms as "Double Room - Single Use" so the client gets a full-size
+   room without the absurd 5* single supplement.
+
+Y) SOLO TRAVELER  →  SHIFT BALANCE TOWARDS SELF-GUIDED.
+   Private guided tours are most expensive PER PAX for groups of 1. The sold pattern for
+   solo travellers is roughly:
+   - 60-70% self-guided activities (walks, free afternoons, public ferries, tickets only)
+   - 20-30% small-group tours (food tour, cooking class, museum private intro)
+   - 5-10% private (one signature experience: private gondola, private wine tasting)
+   This keeps the activity budget under €1,800 even on a 10-day trip with daily content.
+   When budget hits the ceiling on a solo trip, the first thing to downgrade is "private"
+   to "small group", NOT the hotel tier."""
 
 
 async def _call_claude_json(system_prompt: str, user_prompt: str) -> dict:
