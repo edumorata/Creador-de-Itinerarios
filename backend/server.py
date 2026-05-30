@@ -2718,7 +2718,39 @@ REVISED H) HOTEL PRICING — DO A MATH CHECK BEFORE PICKING ANY 5-STAR HOTEL.
    Example: $4,750 × 2 × 0.45 / 9 nights = $475/night (~€440/night).
    If a candidate hotel exceeds 2x this number, REJECT it. For Active/Hikers in Northern
    Italy at $4,500-5,000/pax you should land on €350-450/night properties (Floris Green
-   Suites in Castelrotto, Hotel Piccola Vela in Garda) — NOT €1,800/night gran lujo Como."""
+   Suites in Castelrotto, Hotel Piccola Vela in Garda) — NOT €1,800/night gran lujo Como.
+
+Q) HOTELS ARE OFTEN BILLED DIRECTLY TO THE CLIENT — `Total Alojamientos = €0` IS NORMAL.
+   For mid-range and upscale trips, the agency picks the hotels and reserves the rooms but
+   the client pays the property directly at check-in (especially when working with chains
+   like Hilton, Palace Hotel Lake Como, Ca' d'Oro, or boutique hotels not on a wholesale
+   contract). The result: hotels appear in the itinerary with price=0 in the AGENCY's
+   books, but the client pays them separately. ALWAYS keep the hotel name visible to the
+   client so they know what they will be staying at, but mark price=0 unless you have a
+   confirmed contracted rate from the library.
+
+R) CLIENT-DRAFTED ITINERARY  →  TRIM AGGRESSIVELY.
+   When the client arrives with a detailed day-by-day plan (10+ specific activities pre-
+   listed, often by their travel-savvy friend), DO NOT confirm every line item as a booking.
+   Sold pattern: the agency picks the 5-7 highest-impact activities and converts the rest
+   into self-guided notes. The client wants you to BOOK what's hard (tickets that sell out,
+   guided tours with specific providers) and TRUST them to do the easy parts (aperitivo,
+   stroll, funicular ride, generic dinner reservation). Drop these from billable services:
+   "welcome aperitivo", "stroll through square", "funicular ride", "ferry hop public",
+   "spa afternoon", "scenic walk", "classical concert generic". Keep these as billable:
+   timed tickets (Last Supper, Doge's Palace), private guided cultural tours, food tours
+   with a small group/private chef, private transfers, water taxis in Venice.
+
+S) DIRECT CLIENT vs KIMKIM — DEFAULT PARTNER COMMISSION BY SOURCE PATTERN.
+   - Highly detailed self-drafted request, client speaks directly to the agency, no KK
+     mention → assume Partner Commission 0% (direct client). Use markup 30-40% on
+     cotizado to land on a healthy margin.
+   - "Source: KimKim" or short request via partner platform → KK commission 15% default
+     (range 8-30%). Use markup 15-20% on cotizado.
+   - Source: Zicasso → 8-10.5%.
+   - Source: ResponsibleTravel → check the partner row in the spreadsheet.
+   When in doubt, prefer the higher markup — clients can negotiate down but you rarely
+   negotiate up."""
 
 
 async def _call_claude_json(system_prompt: str, user_prompt: str) -> dict:
