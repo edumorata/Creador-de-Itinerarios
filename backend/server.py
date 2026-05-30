@@ -2945,7 +2945,50 @@ REVISED Q) HOTELS-AT-€0 ONLY WHEN THE CLIENT BRINGS THEIR OWN STAY.
    the hotel and bills it normally. The Manuel Hernandez sold trip had Total Alojamientos
    4065 EUR because the client named hotels we can book through standard wholesale, not
    Airbnbs. Default behaviour: bill the hotel unless the request explicitly contains
-   "Airbnb" / "vrbo" / "self-arranged" / "I'll book the accommodation"."""
+   "Airbnb" / "vrbo" / "self-arranged" / "I'll book the accommodation".
+
+AL) ENFORCED PRICING TARGETS — DATA FROM 67 SOLD TRIPS ANALYSED.
+   Calibration after running the draft generator against every sold trip in the database:
+   - Mean draft/real ratio: 1.10x · median: 0.99x · stdev: 0.72
+   - 38/67 trips were OVER-PROGRAMMED on activities by +30% on average.
+   - REAL sold trips have MEDIAN 1.09 paid activities/day. NEVER target above 1.3/day.
+   - HOTEL COUNT: real sold trips have MEDIAN 4 hotels, MEAN 3.9. Drafts often pack 3 hotels
+     when 4 would be the right answer (longer trip = more bases, not fewer).
+
+AM) LONG TRIPS (>14 DAYS) ARE SYSTEMATICALLY UNDER-PRICED — ADD MORE BASES, NOT JUST DAYS.
+   Long trips (>14 days) draft-vs-real ratio is 0.73x in batch evaluation, vs 1.04x for
+   couples on normal trips. The mechanism: drafts stretch the same 3-hotel structure across
+   20+ days, leaving "free days" that are really under-priced "filler" days.
+   ENFORCEMENT for trips >14 days:
+   - Add 1 hotel per 4-5 days of trip (15 days = 3-4 bases; 20 days = 4-5 bases).
+   - Each base should have ≥1 paid activity per night except the very last "transit" night.
+   - When client says "stay at one hotel/villa entire stay" for >14 days, push back with
+     an apartment estimate (Z) AT REALISTIC PRICE (€350-500/night for upscale apartment).
+
+AN) LARGE GROUPS (5+ TRAVELERS) ARE SYSTEMATICALLY UNDER-PRICED — ratio 0.63x in batch.
+   Large groups need: more rooms (apartment that fits 4+ adults = €600-900/night, not €350),
+   private vehicle (van vs sedan), guides priced per group rather than per pax.
+   ENFORCEMENT: for groups of 5+, multiply hotel/villa nightly price by 1.5-2x compared to
+   couple-trip baseline. Use private van transfers (€200-300 vs €100-150 for sedan).
+   Private tours scale slowly with pax (€500 private 2pax → €600 for 5 pax, not €1,250).
+
+AO) THE MOST COMMON DRAFT ERROR: HOTEL ESTIMATE LEFT AT €0.
+   When a hotel is free-form (not in library), the LLM tends to leave price_tax_incl=0
+   "for the agent to fill". This produces the massive under-pricing (ratios 0.16-0.40x).
+   ENFORCEMENT: ALWAYS estimate a realistic nightly price for free-form hotels using:
+     hotel_nightly_eur = budget_mid_usd × travelers × 0.45 / total_nights / 1.08
+   Add a note in the hotel name like "(estimate — confirm)". A guess within ±30% is far
+   better than 0.
+
+AP) TUSCANY / CHIANTI / TOSCANA  →  WRITE THE EXACT VILLAGE NAME.
+   When client says "Tuscany" the SOLD pattern picks specific villages: San Gimignano,
+   Montalcino, Pienza, Siena, Greve in Chianti, Castiglione della Pescaia, Cortona. NEVER
+   leave a base as "Tuscany" — that disables catalogue filtering. Same trick:
+   - "Cinque Terre" → Monterosso (the easiest base) or La Spezia
+   - "Amalfi Coast" → Sorrento / Praiano / Positano / Atrani (decide per W)
+   - "Costa Brava" → Cadaqués or Begur
+   - "Algarve" → Lagos (most active) or Albufeira (more relaxed)
+   - "Andalucía" → Sevilla + Granada (NOT generic "Andalucia")"""
 
 
 async def _call_claude_json(system_prompt: str, user_prompt: str) -> dict:

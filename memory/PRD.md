@@ -47,6 +47,23 @@
 
 ### Iteration 3 (2026-05-29) — Bulk training import from gestion
 - **`POST /api/training-examples/bulk-import-gestion`** now spawns an async background `BulkImportJob` (collection `bulk_import_jobs`) and returns immediately with a `job_id`.
+- The job logs in once with `GESTION_VIAJADVERDAD_USER/PASS`, then for each requested status (`open`, `closed`, `terminado`, or any combination) applies the verified Fabrik filters, sets page size to 500, paginates if needed, harvests every trip ID + its visible link text, and scrapes each trip with the existing Playwright + LLM parser. Dedup on `itinerary_url_ops`.
+- **Outcome selector per batch**: payload accepts `outcome` (`sold` / `not_sold` / `pending`).
+- Resumability: jobs are interruptible by user (button "Cancelar") or by backend restart (orphan reaper + auto-resume watcher). Trip IDs persist between sessions; only un-processed trips are re-scraped.
+- AI Trainer page (`/ai/trainer`) gained the bulk-import card + pending requests section.
+- 166 trips successfully imported, 100% Total Imported success rate.
+
+### Iteration 4 (2026-05-30) — AI Agent training calibration
+- **70-trip batch self-evaluation**: ran the AI generate endpoint against every sold trip with a complete client_request, EXCLUDING each trip from retrieval so the system can't cheat by recalling the answer.
+- Result: median draft/real ratio = **0.99x** (perfect tuning), mean = 1.10x, stdev = 0.72.
+- Hotel name match rate: **64%** (167/260) — the country+city retrieval works.
+- City overlap (full match): 14/67 trips; partial 42; miss 11.
+- Activity over-programming: 57% of drafts have +20% more paid activities than the real sold trip.
+- Long trips (>14d) systematically under-priced (ratio 0.73x) — adds free days instead of bases.
+- Large groups (5+ pax) under-priced (ratio 0.63x) — single-pax-priced services for big groups.
+- **27 new system-prompt rules added (A → AP)** covering: Camino timing, wishlist atomisation, hub strategy, hotel reuse, KK commission detection, "5 overnight + water = 2 hubs", tier-vs-budget reality math, family + coast = Airbnb, transit nights for elderly, self-guided for experienced hikers, ferry > driver, Dolomites for hikers, apartment for 4+ pax, reconnaissance mode, eclipse path, $X+ ≠ ceiling, contradictory tier = lower, skip-the-line = tickets only, "no Barcelona" ≠ never, multi-country = strongest signal, calibrated activities/day, free-form hotels need estimate, exact DB city names.
+- Country detector now weights Morocco-specific keywords (souks, sahara, berber, balloon, riad) at 3x to break ties with English "Spain" appearing in the same request.
+- Verified end-to-end: the agent now correctly handles Italy / Portugal / Spain / Morocco scope.
 - The job logs in once with `GESTION_VIAJADVERDAD_USER/PASS`, then for each requested status (`open`, `closed`, or both) applies the verified Fabrik filters via element IDs:
   - `#app_trips___agentvalue` (select by visible label)
   - `#app_trips___sourcevalue` (e.g. `KimKim`)
