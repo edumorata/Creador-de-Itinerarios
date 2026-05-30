@@ -2630,6 +2630,87 @@ async def _call_claude_json(system_prompt: str, user_prompt: str) -> dict:
         raise HTTPException(status_code=502, detail=f"JSON inválido del modelo: {e}")
 
 
+# Country detection — exact tokens used in the DB (Spanish names).
+_COUNTRY_KEYWORDS = {
+    "Portugal":  ["portugal", "lisbon", "lisboa", "porto", "sintra", "évora", "evora",
+                  "douro", "batalha", "alentejo", "algarve", "obidos", "óbidos",
+                  "coimbra", "cascais", "nazaré", "nazare", "madeira", "azores"],
+    "España":    ["spain", "españa", "madrid", "barcelona", "sevilla", "seville",
+                  "granada", "valencia", "bilbao", "san sebastian", "san sebastián",
+                  "toledo", "córdoba", "cordoba", "málaga", "malaga", "mallorca",
+                  "ibiza", "tenerife", "asturias", "rioja", "ronda"],
+    "Italia":    ["italy", "italia", "rome", "roma", "florence", "firenze", "venice",
+                  "venezia", "milan", "milano", "naples", "napoli", "tuscany",
+                  "toscana", "sicily", "sicilia", "amalfi", "matera", "puglia",
+                  "apulia", "como", "verona", "bologna", "cinque terre", "capri"],
+    "Marruecos": ["morocco", "marruecos", "marrakech", "marrakesh", "fez", "fes",
+                  "casablanca", "essaouira", "chefchaouen", "rabat", "merzouga",
+                  "atlas", "sahara"],
+}
+
+
+def _detect_country(text: str) -> Optional[str]:
+    """Pick the country whose keywords appear most often in the request text."""
+    if not text:
+        return None
+    t = text.lower()
+    scores: dict[str, int] = {}
+    for country, kws in _COUNTRY_KEYWORDS.items():
+        scores[country] = sum(1 for kw in kws if kw in t)
+    best = max(scores.items(), key=lambda x: x[1])
+    return best[0] if best[1] > 0 else None
+
+
+def _detect_cities(text: str, country: Optional[str]) -> list[str]:
+    """Detect specific cities mentioned for the (optionally) detected country.
+    Returns city names as they appear in the DB."""
+    if not text:
+        return []
+    t = text.lower()
+    cities_for = {
+        "Portugal": {
+            "lisbon": "Lisbon", "lisboa": "Lisbon",
+            "porto": "Porto", "oporto": "Porto",
+            "sintra": "Sintra", "évora": "Évora", "evora": "Évora",
+            "douro": "Douro", "batalha": "Batalha", "óbidos": "Óbidos", "obidos": "Óbidos",
+            "coimbra": "Coimbra", "cascais": "Cascais", "nazaré": "Nazaré", "nazare": "Nazaré",
+            "alentejo": "Alentejo", "algarve": "Algarve", "madeira": "Madeira",
+        },
+        "España": {
+            "madrid": "Madrid", "barcelona": "Barcelona", "sevilla": "Sevilla",
+            "seville": "Seville", "granada": "Granada", "valencia": "Valencia",
+            "bilbao": "Bilbao", "san sebastian": "San Sebastian",
+            "toledo": "Toledo", "córdoba": "Córdoba", "cordoba": "Córdoba",
+            "málaga": "MALAGA", "malaga": "MALAGA", "ronda": "Ronda",
+        },
+        "Italia": {
+            "rome": "Rome", "roma": "Rome", "florence": "Florence", "firenze": "Florence",
+            "venice": "Venice", "venezia": "Venice", "milan": "Milan", "milano": "Milan",
+            "naples": "Naples", "napoli": "Naples",
+            "tuscany": "Tuscany", "toscana": "Tuscany",
+            "sicily": "Sicilia", "sicilia": "Sicilia",
+            "amalfi": "Amalfi Coast", "matera": "Apulia + Matera",
+            "puglia": "Apulia + Matera", "apulia": "Apulia + Matera",
+        },
+        "Marruecos": {
+            "marrakech": "Marrakech", "marrakesh": "Marrakech",
+            "fez": "Fez", "fes": "Fez", "casablanca": "Casablanca",
+            "essaouira": "Essaouira", "chefchaouen": "Chefchaouen",
+        },
+    }
+    pool = dict(cities_for.get(country, {})) if country else {}
+    if not pool:
+        for cs in cities_for.values():
+            pool.update(cs)
+    found: list[str] = []
+    seen: set[str] = set()
+    for kw, name in pool.items():
+        if kw in t and name not in seen:
+            found.append(name)
+            seen.add(name)
+    return found
+
+
 def _summ_experience(e: dict) -> dict:
     return {
         "experience_id": e.get("experience_id"),
@@ -2674,51 +2755,115 @@ async def ai_generate(
     save = bool(payload.get("save", True))
 
     # Build context: library subsets and training examples
-    # 1) Pull relevant experiences (limit by tokens). We pass a focused subset
-    #    inferred by simple keyword matching from the request.
-    keywords = {w.lower() for w in request_text.split() if len(w) > 4}
-    # First pass: try to fetch experiences whose city/title matches keywords
+    # ----------------------------------------------------------------------
+    # CASCADE FILTERING — pick context that is RELEVANT to the destination.
+    #   1. Detect country and specific cities from the new request.
+    #   2. Catalog (experiences + hotels) is filtered to that country
+    #      AND boosted for the mentioned cities.
+    #   3. Training examples are filtered to the same country before doing
+    #      the TF-IDF retrieval, so "Portugal" requests don't surface Italy
+    #      itineraries unless we explicitly have to fall back.
+    # ----------------------------------------------------------------------
+    country = _detect_country(request_text)
+    cities = _detect_cities(request_text, country)
+
+    # -- Experiences --
     exp_flt: dict = {}
-    if keywords:
-        terms = list(keywords)[:25]
-        exp_flt["$or"] = [
-            {"title": {"$regex": "|".join(map(_re_escape, terms)), "$options": "i"}},
-            {"city": {"$regex": "|".join(map(_re_escape, terms)), "$options": "i"}},
-        ]
-    exps = await db.experiences.find(exp_flt, {"_id": 0}).limit(200).to_list(200)
-    if len(exps) < 30:
-        # widen
-        more = await db.experiences.find({}, {"_id": 0}).limit(150).to_list(150)
-        seen = {e["experience_id"] for e in exps}
+    if country:
+        exp_flt["country"] = country
+    if cities:
+        # Boost city matches via a separate query, then merge.
+        city_flt = {**exp_flt, "city": {"$in": cities}}
+        city_exps = await db.experiences.find(city_flt, {"_id": 0}).limit(80).to_list(80)
+    else:
+        city_exps = []
+    rest_exps = await db.experiences.find(exp_flt, {"_id": 0}).limit(150).to_list(150)
+    seen_exp = {e["experience_id"] for e in city_exps}
+    exps = list(city_exps)
+    for e in rest_exps:
+        if e["experience_id"] not in seen_exp:
+            exps.append(e)
+            if len(exps) >= 120:
+                break
+    # Final fallback when the country filter is too tight (rare destinations).
+    if len(exps) < 20:
+        more = await db.experiences.find({}, {"_id": 0}).limit(60).to_list(60)
+        seen_exp = {e["experience_id"] for e in exps}
         for e in more:
-            if e["experience_id"] not in seen:
+            if e["experience_id"] not in seen_exp:
                 exps.append(e)
-                if len(exps) >= 200:
+                if len(exps) >= 80:
                     break
 
-    hotels = await db.hotels.find({}, {"_id": 0}).limit(150).to_list(150)
+    # -- Hotels --
+    hotel_flt: dict = {}
+    if country:
+        hotel_flt["country"] = country
+    if cities:
+        city_hotels = await db.hotels.find(
+            {**hotel_flt, "city": {"$in": cities}}, {"_id": 0}
+        ).limit(60).to_list(60)
+    else:
+        city_hotels = []
+    rest_hotels = await db.hotels.find(hotel_flt, {"_id": 0}).limit(80).to_list(80)
+    seen_h = {h.get("hotel_id") for h in city_hotels}
+    hotels = list(city_hotels)
+    for h in rest_hotels:
+        if h.get("hotel_id") not in seen_h:
+            hotels.append(h)
+            if len(hotels) >= 80:
+                break
+    if len(hotels) < 10:
+        more_h = await db.hotels.find({}, {"_id": 0}).limit(60).to_list(60)
+        seen_h = {h.get("hotel_id") for h in hotels}
+        for h in more_h:
+            if h.get("hotel_id") not in seen_h:
+                hotels.append(h)
+                if len(hotels) >= 40:
+                    break
 
     # Pull TRAINING examples by semantic similarity (TF-IDF over client_request),
-    # balanced between winners and losers so the model learns what does AND
-    # doesn't sell. Falls back to recency if the index is still empty.
+    # FILTERED to the detected country so the AI doesn't mix Italy trips into a
+    # Portugal draft. Falls back to recency if the index is still empty.
     retriever = await get_retriever(db)
-    sold = retriever.top_k(request_text, k=8, prefer_outcomes=["sold"], min_score=0.02)
-    not_sold = retriever.top_k(request_text, k=3, prefer_outcomes=["not_sold"], min_score=0.02)
+    sold = retriever.top_k(request_text, k=5, prefer_outcomes=["sold"], min_score=0.05)
+    not_sold = retriever.top_k(request_text, k=2, prefer_outcomes=["not_sold"], min_score=0.05)
     examples: list[dict] = sold + not_sold
+    if country:
+        # Keep only training examples whose request mentions the same country.
+        country_kws = {k.lower() for k in _COUNTRY_KEYWORDS.get(country, [])}
+        filtered = [
+            ex for ex in examples
+            if any(k in (ex.get("client_request") or "").lower() for k in country_kws)
+        ]
+        # If filtering left too few, keep the originals (better some inspiration
+        # than none — but tag them so the prompt knows).
+        if len(filtered) >= 2:
+            examples = filtered
     if not examples:
-        # Cold-start fallback: most recent labelled examples.
         examples = await db.training_examples.find(
             {"outcome": {"$in": ["sold", "not_sold"]}, "client_request": {"$nin": [None, ""]}},
             {"_id": 0},
-        ).sort("created_at", -1).limit(8).to_list(8)
+        ).sort("created_at", -1).limit(5).to_list(5)
     retrieval_meta = {
+        "country": country,
+        "cities": cities,
         "matched_sold": len(sold),
         "matched_not_sold": len(not_sold),
+        "examples_used": len(examples),
+        "experiences_in_context": len(exps),
+        "hotels_in_context": len(hotels),
         "top_score": (examples[0].get("_score") if examples and examples[0].get("_score") is not None else None),
     }
 
     user_prompt_parts = [
         f"NEW CLIENT REQUEST:\n{request_text}",
+        "",
+        (
+            f"DETECTED CONTEXT — country={country or 'unknown'} · cities={', '.join(cities) if cities else 'none'}.\n"
+            f"All library items and past examples below are PRE-FILTERED to this destination, "
+            f"so you can trust them to be geographically relevant."
+        ),
         "",
         "EXPERIENCE LIBRARY (pick from these whenever possible):",
         _compact_json([_summ_experience(e) for e in exps]),
@@ -2737,21 +2882,23 @@ async def ai_generate(
             client_struct = ex.get("itinerary_structured")
             ops_struct = ex.get("itinerary_structured_ops")
             blocks = []
+            # Prefer structured forms (much more token-efficient than raw text).
+            # If neither structure has days, fall back to a TRUNCATED raw snippet.
             if client_struct and isinstance(client_struct, dict) and client_struct.get("days"):
                 blocks.append(f"CLIENT-FACING ITINERARY (Travefy):\n{_compact_json(client_struct)}")
-            elif ex.get("itinerary_text"):
-                blocks.append(f"CLIENT-FACING ITINERARY (raw):\n{ex['itinerary_text'][:2500]}")
             if ops_struct and isinstance(ops_struct, dict) and ops_struct.get("days"):
                 blocks.append(f"INTERNAL OPS VIEW (providers + real margins):\n{_compact_json(ops_struct)}")
-            elif ex.get("itinerary_text_ops"):
-                blocks.append(f"INTERNAL OPS VIEW (raw):\n{ex['itinerary_text_ops'][:2500]}")
+            if not blocks and ex.get("itinerary_text_ops"):
+                blocks.append(f"INTERNAL OPS VIEW (raw, truncated):\n{ex['itinerary_text_ops'][:1200]}")
+            elif not blocks and ex.get("itinerary_text"):
+                blocks.append(f"CLIENT ITINERARY (raw, truncated):\n{ex['itinerary_text'][:1200]}")
             if not blocks:
                 continue
             score = ex.get("_score")
             score_tag = f" similarity={score:.2f}" if isinstance(score, (int, float)) else ""
             user_prompt_parts.append(
                 f"--- outcome={ex['outcome']}{score_tag} ---\n"
-                f"CLIENT REQUEST:\n{ex['client_request'][:1500]}\n\n"
+                f"CLIENT REQUEST:\n{ex['client_request'][:1000]}\n\n"
                 + "\n\n".join(blocks)
             )
     user_prompt_parts.append("\nNow produce ONLY the JSON itinerary for the NEW CLIENT REQUEST above.")
