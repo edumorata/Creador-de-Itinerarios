@@ -2841,7 +2841,33 @@ AB) SOMETIMES THE AGENCY DELIBERATELY UNDER-QUOTES THE STATED BUDGET.
    relocation, multi-year travel plans), the sold pattern is to price BELOW the declared
    minimum to land the trust relationship. Example: budget said $4,500-6,000/pax, the trip
    actually closed at $2,725/pax. Loss leader logic. Recognise these signals — don't push
-   for the upper bound when the future business is the real prize."""
+   for the upper bound when the future business is the real prize.
+
+AC) SPECIAL ASTRONOMICAL / NATURE EVENTS  →  PUT THE CLIENT IN THE EVENT, DON'T BUILD AROUND IT.
+   For total eclipses, meteor showers, blooming season, migrations, etc., the sold pattern is:
+   - PICK A CITY ON THE PATH (or peak zone) and base the client there.
+   - Mark the event day itself as a FREE DAY — clients view it from the hotel terrace,
+     the city plaza, or wherever they choose. Do NOT add a private "Astronomer Guide" tour
+     unless the client explicitly requests it.
+   - Fly-in via the closest major airport (Madrid for León, Barcelona for Pyrenees, Vigo for
+     Galicia), train to the event city, return. Total bases: 2-3 (arrival hub + event +
+     departure hub).
+   - Total event premium over a normal trip: €500-1,000 max (rooms cost more that night).
+   For Eclipse 2026 in Northern Spain the path of totality crosses León, Burgos, Logroño,
+   Zaragoza, Tarragona — León is the sold base, NOT San Sebastián (which is OUTSIDE the path).
+
+AD) "$X+ PER PERSON" (open-ended) ≠ "spend as much as possible".
+   When a budget is stated as "$2,250+", "from $3,000", "starting at", the floor is the
+   actual target, not a green light to multiply by 5. The sold pattern stays within 1.5-2x
+   the floor for upscale tier and 2-3x for luxury tier. If the client also writes "3-4 star
+   accommodations" or any tier qualifier, that overrides the loose budget signal. Always
+   respect the SPECIFIC qualifier over the OPEN-ENDED dollar amount.
+
+AE) CONTRADICTORY TIER WORDS — TAKE THE LOWER ONE.
+   When the request mixes "Luxury, $2,250+" with "3 or 4 star accommodations", the SOLD
+   pattern picks 3-4 star boutique, NOT 5-star gran lujo. The dollar amount is aspirational;
+   the specific star rating is what the client actually expects. Same logic for "Upscale,
+   midrange-boutique" → pick the midrange boutique side, not the upscale side."""
 
 
 async def _call_claude_json(system_prompt: str, user_prompt: str) -> dict:
