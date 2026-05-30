@@ -2638,7 +2638,30 @@ E) PORTUGAL PRICING REALITY CHECK.
 
 F) KIMKIM COMMISSION VARIES — assume default 15% (range 8-30%).
    This affects the gap between Precio Final (what the client pays) and Ingresado (what the
-   agency receives). Target agency margin: 25-28% on Ingresado."""
+   agency receives). Target agency margin: 25-28% on Ingresado.
+
+G) "5 OVERNIGHT LOCATIONS" / "FAST PACE" IS ASPIRATIONAL, NOT LITERAL.
+   When the client requests many overnight stops BUT also lists many water/active activities
+   in ONE region (catamaran, kayak, snorkel, surf, horseback, scuba, SUP), DOWNGRADE to 2-3
+   overnight bases — typically Lisbon hub + Algarve/Lagos hub. Sold pattern: a 14-day Portugal
+   trip with 5+ water activities collapses to Lisbon (4-5n) + Lagos (6-7n) + Lisbon return (1-2n).
+   Concentration in one coastal hub for 6-7 nights is what actually sells.
+
+H) HOTEL TIER VOCABULARY IS NOISE — TRUST THE BUDGET, NOT THE WORDS.
+   Clients write contradictory phrases like "Basic, around $5,600-$7,000, Upscale, midrange-boutique".
+   In our SOLD inventory the actual mapping is:
+   - Budget given $1,500-3,000/pax → hotel €60-90/night
+   - Budget $3,000-5,000/pax       → hotel €90-140/night (the dominant midrange-boutique)
+   - Budget $5,000-8,000/pax       → hotel €130-200/night
+   - Budget $8,000+/pax            → hotel €250+/night
+   ALWAYS check budget per person per night before picking a 5* hotel. Calculate quickly:
+   PVP_per_pax / nights ≈ daily spend, and HOTEL should be ~40-50% of daily spend in Portugal/Spain.
+
+I) "OFF THE BEATEN PATH" + ACTIVE CLIENT  →  ADD UNREQUESTED LOCAL EXPERIENCES.
+   In sold trips, when the client lists 3+ active outdoor activities, the agency adds 1-2
+   complementary EXPERIENCES the client did NOT ask for but that fit the region — e.g. wine
+   tasting at a quinta, countryside quad, foodie tour. These are high-margin upsells that
+   correlate with sold outcomes. Add 1 such bonus per 5 days of trip."""
 
 
 async def _call_claude_json(system_prompt: str, user_prompt: str) -> dict:
