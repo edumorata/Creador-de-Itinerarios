@@ -2906,6 +2906,32 @@ AH) MULTI-COUNTRY REQUEST  →  PICK THE COUNTRY WITH MOST UNIQUE SIGNAL, DROP T
    Result for Curtis Olson 8-day request: SOLD trip was 100% Morocco (Fes + Sahara +
    Marrakech), NOT split Spain/Morocco/Tunisia.
 
+AI) CALIBRATED ACTIVITY COUNT — SOLD TRIPS HAVE ~1.0 PAID ACTIVITY/DAY, NOT 1.7.
+   Across 10 random SOLD trips analysed, the median ratio is 9 paid activities per 10-day
+   trip (0.9/day). Drafts that overshoot to 1.5-1.7/day correlate with lower close rates.
+   ENFORCEMENT: when assembling the daily plan, audit the count BEFORE returning:
+     target_activities = 0.7 × total_days   (round to nearest integer)
+   If your draft has more, downgrade the borderline ones to "Free day / self-guided
+   exploration". Sold trips lean on the LOCATION to deliver value, not on a chain of
+   guided tours.
+
+AJ) PRICING CALIBRATION — UNDER-QUOTING IS THE MOST COMMON DRAFT ERROR.
+   Across 8 random SOLD trips analysed, draft PVP came in below real PVP in 5 cases
+   (mean ratio 0.74x). The mechanism: free-form hotels marked at €0 hide the real cost.
+   ENFORCEMENT: when a hotel is unavoidably free-form (no library match), STILL fill in
+   a realistic price estimate using the H math check, with a tag like "(estimate –
+   confirm with agent)". This keeps the PVP total honest. Better to over-quote slightly
+   and let the human agent negotiate down than to under-quote and have to chase a price-up
+   later.
+
+AK) CITY CHOICE — USE THE EXACT DB CITY NAMES, NOT GEOGRAPHIC LABELS.
+   When dividing a multi-base trip, write the city name as it appears in the library
+   (Milan, Venice, Florence, Castelrotto, Lake Garda, Lake Como, Sorrento, Lisbon, Porto,
+   Marrakech, Fes), NOT geographic regions ("South Tyrol", "Tuscany", "Dolomites",
+   "Northern Italy"). Region labels prevent the catalog filter from matching and force
+   free-form picks. If the chosen base is Castelrotto, write "Castelrotto" — not "South
+   Tyrol" or "Dolomites".
+
 REVISED Q) HOTELS-AT-€0 ONLY WHEN THE CLIENT BRINGS THEIR OWN STAY.
    The "Total Alojamientos = €0" pattern (sold trips like Karli Tatum, Bradley Tatro,
    Peter Glick, Jeffrey Schuh) applies WHEN:
@@ -2915,9 +2941,9 @@ REVISED Q) HOTELS-AT-€0 ONLY WHEN THE CLIENT BRINGS THEIR OWN STAY.
    - The destination is a small village where rentals dominate (Praiano, Atrani, Cinque
      Terre)
    OTHERWISE — when the client names mainstream hotel brands ("Melia", "Marriott", "Hilton",
-   "Hyatt", "Pestana", "Sabàtic Autograph") OR no specific accommodation, the agency BOOKS
+   "Hyatt", "Pestana", "Sabatic Autograph") OR no specific accommodation, the agency BOOKS
    the hotel and bills it normally. The Manuel Hernandez sold trip had Total Alojamientos
-   €4,065 because the client named hotels we can book through standard wholesale, not
+   4065 EUR because the client named hotels we can book through standard wholesale, not
    Airbnbs. Default behaviour: bill the hotel unless the request explicitly contains
    "Airbnb" / "vrbo" / "self-arranged" / "I'll book the accommodation"."""
 
@@ -3108,6 +3134,10 @@ async def ai_generate(
         raise HTTPException(status_code=400, detail="client_request es obligatorio")
     client_name = (payload.get("client_name") or "").strip()
     save = bool(payload.get("save", True))
+    # Optional: skip these training-example IDs during retrieval. Used for offline
+    # self-evaluation so the system doesn't cheat by retrieving the very example
+    # we're trying to predict.
+    exclude_ids: set[str] = set(payload.get("exclude_example_ids") or [])
 
     # Build context: library subsets and training examples
     # ----------------------------------------------------------------------
@@ -3184,6 +3214,8 @@ async def ai_generate(
     sold = retriever.top_k(request_text, k=5, prefer_outcomes=["sold"], min_score=0.05)
     not_sold = retriever.top_k(request_text, k=2, prefer_outcomes=["not_sold"], min_score=0.05)
     examples: list[dict] = sold + not_sold
+    if exclude_ids:
+        examples = [e for e in examples if e.get("example_id") not in exclude_ids]
     if country:
         # Keep only training examples whose request mentions the same country.
         country_kws = {k.lower() for k in _COUNTRY_KEYWORDS.get(country, [])}
