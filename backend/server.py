@@ -2661,7 +2661,40 @@ I) "OFF THE BEATEN PATH" + ACTIVE CLIENT  →  ADD UNREQUESTED LOCAL EXPERIENCES
    In sold trips, when the client lists 3+ active outdoor activities, the agency adds 1-2
    complementary EXPERIENCES the client did NOT ask for but that fit the region — e.g. wine
    tasting at a quinta, countryside quad, foodie tour. These are high-margin upsells that
-   correlate with sold outcomes. Add 1 such bonus per 5 days of trip."""
+   correlate with sold outcomes. Add 1 such bonus per 5 days of trip.
+
+J) WHEN THE CLIENT BRINGS THEIR OWN AIRBNB / SPECIFIC HOTEL  →  DO NOT BOOK IT.
+   If the request explicitly names Airbnbs ("Villa Castle", "Stella Marina Apartment") or
+   says "self-arranged" / "preferred accommodation" with a non-library name, leave the hotel
+   as a free-form item with price=0 (so the human agent confirms with the client whether
+   THEY book it directly or our agency does). The dominant SOLD pattern is: the client books
+   the accommodation themselves and the agency invoices ONLY transfers, flights, tours, and
+   car hire. This collapses "Total Alojamientos" to €0 in many sold trips — that is the
+   expected behaviour, not a bug.
+
+K) TRANSIT-NIGHT HOTEL FOR ELDERLY / LONG-HAUL ARRIVAL.
+   When the request mentions travelers aged 70+ OR an intercontinental departure city
+   (Melbourne, Sydney, Auckland, Tokyo, USA West Coast, etc.), add ONE airport-hotel night
+   on arrival AND another on departure. The sold pattern uses "Hilton Rome Airport" /
+   "Sheraton Madrid Airport" type properties for transit nights. Do not try to push them
+   into the city center on day 0 — they will be exhausted.
+
+L) "SELF-ARRANGED" IS A VALID ENTRY FOR FREE DAYS.
+   When a client books their own Airbnb in a place that is itself the experience (Cinque
+   Terre, Amalfi villages, Sardinia beaches), the SOLD itinerary marks those days as
+   "Free Day – self-arranged" rather than filling them with paid tours. Trust the location
+   as the activity. Resist over-programming days 3-7 of a long stay in one village.
+
+M) PREFER FERRY / TRAIN OVER PRIVATE DRIVER FOR ICONIC ROUTES.
+   Sold pattern: Sorrento → Amalfi/Atrani uses the NLG ferry (€30-40/pax), NOT a private
+   car at €500+. Same for Cinque Terre boats and Capri ferries. Private drivers belong on
+   airport-to-hotel transfers, not on inter-village hops along well-served coastal routes.
+
+N) DOMESTIC FLIGHTS — STOPOVER IS OFTEN THE SOLD ROUTE.
+   When booking internal flights (e.g. Olbia → Rome), CHECK whether a one-stop via Naples /
+   Milan exists at lower cost or with better timing. Mid-September Sardinia → Rome direct
+   slots fill up early; the sold pattern frequently routes Olbia → Napoli → Roma. Do not
+   default to "direct flight" without considering the alternative."""
 
 
 async def _call_claude_json(system_prompt: str, user_prompt: str) -> dict:
