@@ -2810,7 +2810,38 @@ Y) SOLO TRAVELER  →  SHIFT BALANCE TOWARDS SELF-GUIDED.
    - 5-10% private (one signature experience: private gondola, private wine tasting)
    This keeps the activity budget under €1,800 even on a 10-day trip with daily content.
    When budget hits the ceiling on a solo trip, the first thing to downgrade is "private"
-   to "small group", NOT the hotel tier."""
+   to "small group", NOT the hotel tier.
+
+Z) GROUP OF 4+ PEOPLE + LONG STAY IN ONE CITY  →  APARTMENT, NOT HOTEL.
+   When the request is 4+ pax (especially with kids) AND ≥7 nights in one base, the SOLD
+   pattern is an APARTMENT (Be Mate, Sonder, Numa, City Apartment Hotels) instead of
+   2-3 hotel rooms. Reasons:
+   - Kitchen handles Ferragosto / Sunday-closed restaurants
+   - Single rate vs 3× hotel rates is dramatically cheaper
+   - Common space for the family in the evening
+   - Washing machine for long stays
+   Apartment €350-450/night easily replaces 3 hotel rooms at €600-900/night combined.
+   Always offer an apartment FIRST when the brief has "stay at one hotel/villa entire stay".
+
+AA) "RECONNAISSANCE / LIFESTYLE-SCOUTING" TRIP  →  ONE LOCAL GUIDE, MANY FREE DAYS.
+   When the client states they are exploring a city as a potential residence / sabbatical /
+   second home, the SOLD pattern uses:
+   - 1 signature private tour explicitly framed as "Live Like a Local" / "Insider's Walk"
+     (FollowMi Around Tours, Slow Lake Como, Lisbon Authentic Tour, etc.). This is the
+     core deliverable — they pay for ACCESS to a local who shows them where to live.
+   - 3-4 FREE DAYS where the family walks neighbourhoods on their own to "feel" the city.
+   - Light cultural anchor activities (1 ticketed icon — Last Supper, Duomo — per stay).
+   - Maybe 1 cooking class at a local home (relationship-building).
+   Do NOT propose multi-city day trips for this profile. They want depth in ONE place.
+   Total activity count: 4-6 paid services for a 10-day trip.
+
+AB) SOMETIMES THE AGENCY DELIBERATELY UNDER-QUOTES THE STATED BUDGET.
+   When the trip is framed as a "first visit", "reconnaissance", "introductory" or "test"
+   experience, AND the family is signalling a future, much larger booking (sabbatical year,
+   relocation, multi-year travel plans), the sold pattern is to price BELOW the declared
+   minimum to land the trust relationship. Example: budget said $4,500-6,000/pax, the trip
+   actually closed at $2,725/pax. Loss leader logic. Recognise these signals — don't push
+   for the upper bound when the future business is the real prize."""
 
 
 async def _call_claude_json(system_prompt: str, user_prompt: str) -> dict:
