@@ -657,6 +657,9 @@ function Row({ label, children }) {
 }
 
 function AccommodationsBlock({ itn, schedSave, markup }) {
+  const [orientCity, setOrientCity] = useState(null);
+  const [orientData, setOrientData] = useState(null);
+  const [orientBusy, setOrientBusy] = useState(false);
   const add = () => {
     schedSave({ ...itn, accommodations: [...(itn.accommodations || []), { acc_id: uid("acc"), date_from: itn.start_date, date_to: itn.end_date, name: "", price_tax_excl: 0, price_tax_incl: 0, price: 0, currency: "EUR" }] });
   };
@@ -670,11 +673,44 @@ function AccommodationsBlock({ itn, schedSave, markup }) {
   const del = (idx) => {
     schedSave({ ...itn, accommodations: (itn.accommodations || []).filter((_, i) => i !== idx) });
   };
+  const fetchOrient = async (idx, a) => {
+    // Use the hotel name as a search seed if no city is present elsewhere.
+    const city = (a.name || "").split(",")[0].trim() || prompt("¿Ciudad para buscar precio orientativo?");
+    if (!city) return;
+    setOrientCity({ idx, city });
+    setOrientBusy(true);
+    setOrientData(null);
+    try {
+      const { data } = await api.get("/hotels/price-orientation", {
+        params: { city, checkin: a.date_from || itn.start_date, checkout: a.date_to || itn.end_date, adults: itn.num_travelers || 2 },
+        timeout: 40000,
+      });
+      setOrientData(data);
+    } catch (e) {
+      toast.error("Error consultando precio orientativo");
+    } finally {
+      setOrientBusy(false);
+    }
+  };
+  const applyOrient = (price) => {
+    if (!orientCity || !price) return;
+    const nights = orientData?.training_data?.n_trips ? 1 : 1;  // unused, price is per night
+    // Calculate total = price/night × number of nights between dates
+    const a = itn.accommodations[orientCity.idx];
+    const dFrom = a.date_from ? new Date(a.date_from) : null;
+    const dTo = a.date_to ? new Date(a.date_to) : null;
+    const n = (dFrom && dTo) ? Math.max(1, Math.round((dTo - dFrom) / 86400000)) : 1;
+    const total = price * n;
+    upd(orientCity.idx, { price_tax_incl: total, price_tax_excl: total / 1.10 });
+    toast.success(`Aplicado · ${price}€/noche × ${n} noches = ${Math.round(total)}€`);
+    setOrientCity(null);
+    setOrientData(null);
+  };
   return (
     <div className="mt-10">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2 smallcaps"><Bed size={13}/> Alojamientos (sumario)</div>
-        <button onClick={add} className="text-xs inline-flex items-center gap-1 px-2 py-1 hover:bg-clay-200">
+        <button onClick={add} className="text-xs inline-flex items-center gap-1 px-2 py-1 hover:bg-clay-200" data-testid="add-accommodation">
           <Plus size={12}/> Añadir alojamiento
         </button>
       </div>
@@ -683,26 +719,114 @@ function AccommodationsBlock({ itn, schedSave, markup }) {
           <div className="p-4 text-sm text-clay-700">Opcional. Añade alojamientos resumidos por estancia.</div>
         ) : (
           <>
-            <div className="grid grid-cols-[1fr_130px_130px_100px_100px_100px_30px] gap-2 px-3 py-2 text-[10px] tracking-[0.2em] uppercase text-clay-700 font-semibold bg-clay-50 border-b border-clay-300">
+            <div className="grid grid-cols-[1fr_120px_120px_90px_90px_90px_28px_28px] gap-2 px-3 py-2 text-[10px] tracking-[0.2em] uppercase text-clay-700 font-semibold bg-clay-50 border-b border-clay-300">
               <div>Hotel / Apartamento</div><div>Desde</div><div>Hasta</div>
-              <div className="text-right">Sin IVA</div><div className="text-right">Con IVA</div><div className="text-right">PVP</div><div></div>
+              <div className="text-right">Sin IVA</div><div className="text-right">Con IVA</div><div className="text-right">PVP</div><div></div><div></div>
             </div>
             {(itn.accommodations || []).map((a, idx) => {
               const incl = a.price_tax_incl || a.price || 0;
               const pvp = incl * (1 + (markup || 0) / 100);
               return (
-                <div key={a.acc_id} className="grid grid-cols-[1fr_130px_130px_100px_100px_100px_30px] gap-2 px-3 py-2 items-center border-t border-clay-300 text-sm">
+                <div key={a.acc_id} className="grid grid-cols-[1fr_120px_120px_90px_90px_90px_28px_28px] gap-2 px-3 py-2 items-center border-t border-clay-300 text-sm">
                   <input className="bg-transparent outline-none font-semibold" placeholder="Nombre del hotel" value={a.name} onChange={(e) => upd(idx, { name: e.target.value })} />
                   <input type="date" className="bg-transparent outline-none tabular" value={a.date_from || ""} onChange={(e) => upd(idx, { date_from: e.target.value })} />
                   <input type="date" className="bg-transparent outline-none tabular" value={a.date_to || ""} onChange={(e) => upd(idx, { date_to: e.target.value })} />
                   <input type="number" min="0" step="0.01" className="bg-transparent text-right outline-none tabular" value={a.price_tax_excl || 0} onChange={(e) => upd(idx, { price_tax_excl: parseFloat(e.target.value || "0") })} />
                   <input type="number" min="0" step="0.01" className="bg-transparent text-right outline-none tabular" value={incl} onChange={(e) => upd(idx, { price_tax_incl: parseFloat(e.target.value || "0") })} />
                   <div className="text-right tabular font-semibold">{fmtEUR(pvp)}</div>
+                  <button
+                    data-testid={`orient-${idx}`}
+                    onClick={() => fetchOrient(idx, a)}
+                    title="Precio orientativo basado en histórico + Expedia"
+                    className="text-clay-500 hover:text-terracotta p-1"
+                  ><Search size={14}/></button>
                   <button onClick={() => del(idx)} className="text-clay-500 hover:text-destructive p-1"><Trash2 size={14}/></button>
                 </div>
               );
             })}
           </>
+        )}
+      </div>
+
+      {orientCity && (
+        <OrientationModal
+          city={orientCity.city}
+          busy={orientBusy}
+          data={orientData}
+          onClose={() => { setOrientCity(null); setOrientData(null); }}
+          onApply={applyOrient}
+        />
+      )}
+    </div>
+  );
+}
+
+function OrientationModal({ city, busy, data, onClose, onApply }) {
+  const rec = data?.recommendation;
+  const td = data?.training_data;
+  const ex = data?.expedia;
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onClose} data-testid="orient-modal">
+      <div className="bg-white border border-clay-300 max-w-xl w-full p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <div className="smallcaps">Precio orientativo</div>
+            <div className="font-serif text-xl">{city}</div>
+          </div>
+          <button onClick={onClose} className="text-clay-500 hover:text-clay-900">✕</button>
+        </div>
+        {busy && <div className="py-8 text-center text-sm text-clay-700">Consultando histórico y Expedia…</div>}
+        {!busy && rec && rec.price_per_night_eur && (
+          <div className="border border-pine bg-pine/5 p-4 mb-3">
+            <div className="text-xs text-clay-700 uppercase tracking-wider mb-1">Recomendación · {rec.source === "training_data" ? "Histórico" : rec.source === "expedia" ? "Expedia" : "—"}</div>
+            <div className="flex items-baseline gap-2">
+              <div className="font-serif text-3xl tabular">€ {rec.price_per_night_eur}</div>
+              <div className="text-sm text-clay-700">/ noche</div>
+              <div className="ml-auto text-xs text-clay-700">Confianza: {rec.confidence}</div>
+            </div>
+            <div className="text-xs text-clay-700 mt-2">{rec.rationale}</div>
+            <button
+              data-testid="apply-orient"
+              onClick={() => onApply(rec.price_per_night_eur)}
+              className="mt-3 px-3 py-1.5 text-xs uppercase tracking-wider bg-pine text-white hover:bg-clay-900"
+            >Aplicar a este alojamiento</button>
+          </div>
+        )}
+        {!busy && td && (
+          <div className="border border-clay-300 p-3 mb-3 text-sm">
+            <div className="smallcaps mb-1">Histórico ({td.n_trips} viajes vendidos en {city})</div>
+            <div className="grid grid-cols-3 text-center gap-2">
+              <div><div className="text-[10px] uppercase text-clay-700">p25</div><div className="tabular font-semibold">€ {td.p25_eur}</div></div>
+              <div><div className="text-[10px] uppercase text-clay-700">mediana</div><div className="tabular font-bold text-terracotta">€ {td.median_price_per_night_eur}</div></div>
+              <div><div className="text-[10px] uppercase text-clay-700">p75</div><div className="tabular font-semibold">€ {td.p75_eur}</div></div>
+            </div>
+            {td.sample_hotels && td.sample_hotels.length > 0 && (
+              <div className="mt-3 text-xs text-clay-700">
+                <div className="smallcaps mb-1">Hoteles vistos en histórico</div>
+                <div className="flex flex-wrap gap-1">
+                  {td.sample_hotels.slice(0,8).map((h,i) => (<span key={i} className="px-2 py-0.5 bg-clay-100 border border-clay-300">{h.name}</span>))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        {!busy && ex && (
+          <div className="border border-clay-300 p-3 text-xs">
+            <div className="smallcaps mb-1">Expedia.es {ex.blocked ? "(bloqueado por anti-bot)" : (ex.ok ? "" : "(sin resultados)")}</div>
+            {ex.ok && (ex.results || []).slice(0,4).map((h, i) => (
+              <div key={i} className="flex items-center justify-between py-1 border-t border-clay-200">
+                <div className="truncate">{h.name}</div>
+                <div className="tabular font-semibold ml-3">€ {Math.round(h.price_per_night_eur)}/n</div>
+              </div>
+            ))}
+            {ex.error && !ex.blocked && <div className="text-clay-700">{ex.error}</div>}
+            {ex.source_url && <a href={ex.source_url} target="_blank" rel="noopener noreferrer" className="block mt-2 text-terracotta underline">Abrir en Expedia →</a>}
+          </div>
+        )}
+        {!busy && !rec?.price_per_night_eur && !td && (
+          <div className="text-sm text-clay-700">
+            Sin datos suficientes para esta ciudad. Estima manualmente con la fórmula del prompt: <code className="bg-clay-100 px-1">budget_mid_usd × travelers × 0.27 / nights</code>.
+          </div>
         )}
       </div>
     </div>

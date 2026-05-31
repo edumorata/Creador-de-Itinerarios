@@ -10,6 +10,7 @@ import asyncio
 import io
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -847,6 +848,7 @@ async def import_catalog_from_trips_csv(
                 currency="EUR",
                 contact=prov_name,
                 notes=f"Importado del histórico de viajes. Proveedor: {prov_name}",
+                source="imported_from_trip",
             )
             await db.hotels.insert_one(h.model_dump())
             hotel_created += 1
@@ -1649,6 +1651,171 @@ async def calibration_job_log(job_id: str, _: Annotated[User, Depends(require_ad
     return {"job": doc, "log_tail": tail}
 
 
+    items = await db.hotels.find(flt, {"_id": 0}).sort("name", 1).to_list(2000)
+    return items
+
+
+# ===========================================================================
+# HOTEL PRICE ORIENTATION
+# Combines two sources, in order of reliability:
+#   1. Internal training data — median price/night extracted from past trips
+#      stored in `training_examples.itinerary_structured_ops.days[*].hotels`
+#      and the per-trip "Total Alojamientos (€)" / nights. Always available
+#      offline, never blocked.
+#   2. Expedia.es live search — best-effort scrape with Playwright (no login).
+#      Often blocked by Cloudflare; degrades gracefully.
+# Use this from the Itinerary Builder to give the agent a realistic nightly
+# rate for any city — especially useful when no library hotel matches.
+# ===========================================================================
+@api.get("/hotels/price-orientation")
+async def hotel_price_orientation(
+    user: Annotated[User, Depends(current_user)],
+    city: str,
+    country: Optional[str] = None,
+    checkin: Optional[str] = None,
+    checkout: Optional[str] = None,
+    adults: int = 2,
+    try_expedia: bool = True,
+):
+    """Orientation price/night for a given city.
+
+    Strategy:
+    1. Mine training_examples for trips that visited this city → compute
+       median/p25/p75 from real sold prices (instant, reliable).
+    2. If nothing found AND try_expedia=True, attempt a quick scrape of
+       expedia.es. Falls back gracefully if blocked.
+    """
+    city_clean = (city or "").strip()
+    if not city_clean:
+        raise HTTPException(status_code=400, detail="city es obligatorio")
+
+    out = {
+        "city": city_clean,
+        "country": country,
+        "checkin": checkin,
+        "checkout": checkout,
+        "adults": adults,
+        "training_data": None,
+        "expedia": None,
+        "recommendation": None,
+    }
+
+    # ----- 1. Internal training-data aggregation -----
+    # Search training_examples whose itinerary_structured_ops.days[*].city
+    # matches `city` (case-insensitive). For each match, look up the real
+    # "Total Alojamientos (€)" from the raw text and divide by total nights
+    # to get a per-night rate.
+    city_re = re.compile(re.escape(city_clean), re.IGNORECASE)
+    cursor = db.training_examples.find(
+        {
+            "outcome": "sold",
+            "itinerary_structured_ops.days.city": {"$regex": city_re},
+        },
+        {"_id": 0, "example_id": 1, "itinerary_structured_ops": 1,
+         "itinerary_text_ops": 1, "partner": 1},
+    ).limit(40)
+
+    prices: list[float] = []
+    sample_hotels: list[dict] = []
+    seen_hotel_names: set[str] = set()
+    async for d in cursor:
+        ops = d.get("itinerary_structured_ops") or {}
+        days = ops.get("days") or []
+        # Sum of nights and unique hotel names linked to THIS city
+        city_nights = 0
+        for day in days:
+            if not isinstance(day, dict):
+                continue
+            c = (day.get("city") or "")
+            if not city_re.search(c):
+                continue
+            for h in day.get("hotels") or []:
+                nights = float(h.get("nights") or 0)
+                if nights > 0:
+                    city_nights += nights
+                name = (h.get("name") or "").strip()
+                if name and name not in seen_hotel_names:
+                    seen_hotel_names.add(name)
+                    sample_hotels.append({"name": name[:80], "trip_partner": d.get("partner") or "kimkim"})
+        if city_nights == 0:
+            continue
+        # Pull Total Alojamientos and nights from the raw ops text
+        text = d.get("itinerary_text_ops") or ""
+        m_aloj = re.search(r"Total Alojamientos \(€\)\s*\n\s*([\d,\.]+)", text)
+        if not m_aloj:
+            continue
+        try:
+            total_eur = float(m_aloj.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        # Total nights = sum of ops days nights (fallback to len(days))
+        total_nights = 0
+        for day in days:
+            for h in day.get("hotels") or []:
+                total_nights += float(h.get("nights") or 0)
+        if total_nights == 0:
+            total_nights = max(1, len(days) - 1)
+        # Approximate per-night for THIS city by sharing total proportionally
+        # to the nights spent in this city.
+        per_night = (total_eur * city_nights / total_nights) / city_nights if city_nights else 0
+        if per_night > 30:  # ignore zero / passthrough trips
+            prices.append(per_night)
+
+    if prices:
+        prices.sort()
+        n = len(prices)
+        median = prices[n // 2]
+        p25 = prices[n // 4]
+        p75 = prices[min(n - 1, (3 * n) // 4)]
+        out["training_data"] = {
+            "n_trips": n,
+            "median_price_per_night_eur": round(median, 0),
+            "p25_eur": round(p25, 0),
+            "p75_eur": round(p75, 0),
+            "currency": "EUR",
+            "sample_hotels": sample_hotels[:10],
+        }
+        out["recommendation"] = {
+            "price_per_night_eur": round(median, 0),
+            "source": "training_data",
+            "confidence": "high" if n >= 5 else ("medium" if n >= 3 else "low"),
+            "rationale": f"Mediana de {n} viajes vendidos con noche en {city_clean}.",
+        }
+
+    # ----- 2. Expedia best-effort (only if training data is thin) -----
+    if try_expedia and (not prices or len(prices) < 3):
+        from expedia_scraper import search_hotels as _expedia_search
+        try:
+            exp_res = await asyncio.wait_for(
+                _expedia_search(city_clean, checkin=checkin, checkout=checkout,
+                                adults=adults, max_results=5),
+                timeout=30.0,
+            )
+            out["expedia"] = exp_res
+            if exp_res.get("ok") and exp_res.get("median_price_per_night_eur"):
+                # Prefer Expedia over training data ONLY when training data is empty.
+                if not prices:
+                    out["recommendation"] = {
+                        "price_per_night_eur": exp_res["median_price_per_night_eur"],
+                        "source": "expedia",
+                        "confidence": "medium",
+                        "rationale": f"Mediana de {len(exp_res.get('results') or [])} hoteles encontrados en Expedia.es.",
+                    }
+        except asyncio.TimeoutError:
+            out["expedia"] = {"ok": False, "blocked": False, "error": "timeout (>30s)"}
+        except Exception as e:
+            out["expedia"] = {"ok": False, "blocked": False, "error": str(e)[:200]}
+
+    if not out["recommendation"]:
+        out["recommendation"] = {
+            "price_per_night_eur": None,
+            "source": "none",
+            "confidence": "none",
+            "rationale": "Sin datos suficientes. Estima a mano con la Regla H del prompt.",
+        }
+    return out
+
+
 @api.get("/hotels", response_model=List[Hotel])
 async def list_hotels(
     _: Annotated[User, Depends(current_user)],
@@ -1656,8 +1823,15 @@ async def list_hotels(
     city: Optional[str] = None,
     country: Optional[str] = None,
     tier: Optional[HotelTier] = None,
+    include_imported: bool = False,
 ):
+    """List hotels. By default returns only `source='library'` rows (the
+    official Excel-imported catalogue). Pass `include_imported=true` to also
+    show the 316 hotels auto-created from past-trip scrapes (hidden by
+    default per product decision)."""
     flt: dict = {}
+    if not include_imported:
+        flt["source"] = "library"
     if q:
         flt["$or"] = [
             {"name": {"$regex": q, "$options": "i"}},
@@ -2845,7 +3019,9 @@ async def ai_generate(
                     break
 
     # -- Hotels --
-    hotel_flt: dict = {}
+    # Only the library catalogue (Excel-imported). The 316 hotels auto-imported
+    # from past-trip scrapes are hidden so the AI doesn't suggest them.
+    hotel_flt: dict = {"source": "library"}
     if country:
         hotel_flt["country"] = country
     if cities:
@@ -2863,7 +3039,7 @@ async def ai_generate(
             if len(hotels) >= 80:
                 break
     if len(hotels) < 10:
-        more_h = await db.hotels.find({}, {"_id": 0}).limit(60).to_list(60)
+        more_h = await db.hotels.find({"source": "library"}, {"_id": 0}).limit(60).to_list(60)
         seen_h = {h.get("hotel_id") for h in hotels}
         for h in more_h:
             if h.get("hotel_id") not in seen_h:

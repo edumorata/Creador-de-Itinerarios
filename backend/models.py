@@ -158,6 +158,13 @@ class Hotel(BaseModel):
     currency: str = "EUR"
     contact: Optional[str] = None
     notes: Optional[str] = None
+    # Where this hotel came from. Controls visibility:
+    #  - 'library' = imported from the official Excel files (HOTELES <PAÍS>.xlsx).
+    #               These are the ONLY hotels surfaced in the UI and used by the
+    #               AI generator.
+    #  - 'imported_from_trip' = auto-created from a scraped past trip. Hidden
+    #               from listings, autocomplete and AI context.
+    source: Literal["library", "imported_from_trip"] = "library"
     created_at: str = Field(default_factory=now_iso)
 
 

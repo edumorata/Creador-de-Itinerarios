@@ -147,6 +147,35 @@
   critical bugs · only maintainability suggestions (server.py size, fx cache
   sweeper, calibration_run watchdog).
 
+### Iteration 8 (2026-05-31) — Hotel library hygiene + price orientation
+- **Hotel.source field added** (`Literal["library","imported_from_trip"]`).
+  Library = the 521 hotels from the official Excel files (`HOTELES <PAÍS>.xlsx`).
+  Imported_from_trip = the 316 auto-created from past-trip scrapes.
+- **GET /api/hotels filtered to source=library by default** (`include_imported=true`
+  to override). The 316 auto-imported ones are hidden in:
+  - Hotels list page
+  - Autocomplete in itineraries
+  - AI generation context (hotel library passed to Claude)
+- **Imports going forward**: `_run_bulk_import_gestion` continues creating
+  trip-imported hotels but with `source="imported_from_trip"`, so they never
+  leak into the library again.
+- **NEW: `/app/backend/expedia_scraper.py`** — Playwright-based best-effort
+  scrape of expedia.es with no login. Detects Cloudflare anti-bot challenge
+  in Spanish (“¿Eres un robot?”) and returns `blocked=true` instead of crashing.
+- **NEW: `GET /api/hotels/price-orientation?city=X`** — combined endpoint:
+  1. PRIMARY source = aggregate over training_examples → median, p25, p75 of
+     real price/night per city, plus the actual hotel names used.
+  2. FALLBACK = Expedia scrape (when training data has <3 trips for the city).
+  3. Returns a unified `recommendation` block with source, confidence and
+     a rationale string.
+  - Live results: Madrid → €303/n median over 26 trips · Lisbon → €323/n
+    over 24 trips · Praiano → none (Expedia blocked, no training data).
+- **NEW UI: Orientation modal** on each row of "Alojamientos (sumario)" in
+  the Itinerary Builder. Search icon (lucide `Search`) per row opens the
+  modal with median/p25/p75, sample hotels from historical trips, plus
+  Expedia results (when not blocked). "Aplicar a este alojamiento" button
+  fills in the price × nights automatically.
+
 ## Known minor items
 - Autocomplete payload returns full Experience docs (could be slimmed)
 - CORS regex `.*` is permissive (lock down to frontend origin for production)
