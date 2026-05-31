@@ -1,0 +1,934 @@
+{
+  "total": 158,
+  "ratio_global": {
+    "n": 157,
+    "min": 0.357,
+    "max": 3.813,
+    "median": 1.256,
+    "mean": 1.388,
+    "stdev": 0.648,
+    "p10": 0.668,
+    "p90": 2.157
+  },
+  "by_country": {
+    "España": {
+      "n": 41,
+      "ratio": {
+        "n": 41,
+        "min": 0.357,
+        "max": 2.115,
+        "median": 1.288,
+        "mean": 1.364,
+        "stdev": 0.487,
+        "p10": 0.717,
+        "p90": 2.052
+      },
+      "activity_ratio": {
+        "n": 39,
+        "min": 0.5,
+        "max": 2.0,
+        "median": 1.1,
+        "mean": 1.075,
+        "stdev": 0.341,
+        "p10": 0.6,
+        "p90": 1.5
+      },
+      "hotel_diff": {
+        "n": 9,
+        "min": 1,
+        "max": 4,
+        "median": 2,
+        "mean": 2.222,
+        "stdev": 1.315,
+        "p10": 1,
+        "p90": 4
+      }
+    },
+    "Portugal": {
+      "n": 40,
+      "ratio": {
+        "n": 39,
+        "min": 0.444,
+        "max": 3.701,
+        "median": 1.073,
+        "mean": 1.301,
+        "stdev": 0.791,
+        "p10": 0.517,
+        "p90": 2.206
+      },
+      "activity_ratio": {
+        "n": 38,
+        "min": 0.625,
+        "max": 2.2,
+        "median": 1.0,
+        "mean": 1.103,
+        "stdev": 0.365,
+        "p10": 0.765,
+        "p90": 1.667
+      },
+      "hotel_diff": {
+        "n": 11,
+        "min": 1,
+        "max": 4,
+        "median": 2,
+        "mean": 2.182,
+        "stdev": 1.113,
+        "p10": 1,
+        "p90": 4
+      }
+    },
+    "Italia": {
+      "n": 75,
+      "ratio": {
+        "n": 75,
+        "min": 0.5,
+        "max": 3.813,
+        "median": 1.358,
+        "mean": 1.461,
+        "stdev": 0.636,
+        "p10": 0.703,
+        "p90": 2.168
+      },
+      "activity_ratio": {
+        "n": 75,
+        "min": 0.5,
+        "max": 2.333,
+        "median": 0.909,
+        "mean": 0.987,
+        "stdev": 0.379,
+        "p10": 0.625,
+        "p90": 1.6
+      },
+      "hotel_diff": {
+        "n": 10,
+        "min": 1,
+        "max": 5,
+        "median": 1.5,
+        "mean": 2.1,
+        "stdev": 1.375,
+        "p10": 1,
+        "p90": 5
+      }
+    },
+    "Marruecos": {
+      "n": 2,
+      "ratio": {
+        "n": 2,
+        "min": 0.715,
+        "max": 0.919,
+        "median": 0.817,
+        "mean": 0.817,
+        "stdev": 0.102,
+        "p10": 0.715,
+        "p90": 0.919
+      },
+      "activity_ratio": {
+        "n": 1,
+        "min": 1.2,
+        "max": 1.2,
+        "median": 1.2,
+        "mean": 1.2,
+        "stdev": 0,
+        "p10": 1.2,
+        "p90": 1.2
+      },
+      "hotel_diff": {
+        "n": 1,
+        "min": 6,
+        "max": 6,
+        "median": 6,
+        "mean": 6,
+        "stdev": 0,
+        "p10": 6,
+        "p90": 6
+      }
+    }
+  },
+  "by_sales_agent": {
+    "Marina": {
+      "n": 15,
+      "ratio": {
+        "n": 15,
+        "min": 0.47,
+        "max": 2.168,
+        "median": 1.073,
+        "mean": 1.222,
+        "stdev": 0.547,
+        "p10": 0.47,
+        "p90": 2.082
+      }
+    },
+    "Janelle": {
+      "n": 12,
+      "ratio": {
+        "n": 12,
+        "min": 0.544,
+        "max": 1.802,
+        "median": 1.224,
+        "mean": 1.201,
+        "stdev": 0.417,
+        "p10": 0.544,
+        "p90": 1.739
+      }
+    },
+    "Giorgia Torre": {
+      "n": 27,
+      "ratio": {
+        "n": 27,
+        "min": 0.517,
+        "max": 2.67,
+        "median": 1.498,
+        "mean": 1.546,
+        "stdev": 0.521,
+        "p10": 0.655,
+        "p90": 2.206
+      }
+    },
+    "Anita": {
+      "n": 27,
+      "ratio": {
+        "n": 27,
+        "min": 0.357,
+        "max": 3.422,
+        "median": 1.161,
+        "mean": 1.326,
+        "stdev": 0.673,
+        "p10": 0.514,
+        "p90": 2.146
+      }
+    },
+    "Beatriz": {
+      "n": 20,
+      "ratio": {
+        "n": 20,
+        "min": 0.703,
+        "max": 1.994,
+        "median": 1.185,
+        "mean": 1.242,
+        "stdev": 0.387,
+        "p10": 0.706,
+        "p90": 1.865
+      }
+    },
+    "Raquel": {
+      "n": 13,
+      "ratio": {
+        "n": 13,
+        "min": 0.734,
+        "max": 3.692,
+        "median": 1.123,
+        "mean": 1.324,
+        "stdev": 0.743,
+        "p10": 0.734,
+        "p90": 1.801
+      }
+    },
+    "Rita": {
+      "n": 25,
+      "ratio": {
+        "n": 25,
+        "min": 0.5,
+        "max": 3.813,
+        "median": 1.514,
+        "mean": 1.52,
+        "stdev": 0.804,
+        "p10": 0.504,
+        "p90": 2.598
+      }
+    },
+    "Hector": {
+      "n": 17,
+      "ratio": {
+        "n": 17,
+        "min": 0.444,
+        "max": 3.701,
+        "median": 1.365,
+        "mean": 1.545,
+        "stdev": 0.784,
+        "p10": 0.444,
+        "p90": 2.173
+      }
+    }
+  },
+  "error_buckets": {
+    "severe_over_quote_>1.5x": 58,
+    "severe_under_quote_<0.7x": 15,
+    "big_hotel_diff_>3000eur": 80,
+    "activity_over_+3": 17,
+    "activity_under_-3": 20,
+    "zero_city_overlap": 26
+  },
+  "city_mismatch_examples": [
+    {
+      "id": "trn_f2c4c84f66bf",
+      "agent": "Marina",
+      "country": "España",
+      "real_cities": [
+        "Madrid",
+        "Logroño",
+        "La Rioja",
+        "San Sebastián",
+        "Bilbao"
+      ],
+      "draft_cities": [
+        "Barcelona",
+        "Seville",
+        "Granada",
+        "Malaga"
+      ],
+      "ratio": 2.082
+    },
+    {
+      "id": "trn_6931ef067c18",
+      "agent": "Giorgia Torre",
+      "country": "Italia",
+      "real_cities": [
+        "Naples to Amalfi Coast (Sorrento)",
+        "Amalfi Coast (Sorrento)",
+        "Amalfi Coast (Sorrento) to Rome",
+        "Rome"
+      ],
+      "draft_cities": [
+        "Naples",
+        "Sorrento",
+        "Palermo"
+      ],
+      "ratio": 1.161
+    },
+    {
+      "id": "trn_0eb77f66cc60",
+      "agent": "Beatriz",
+      "country": "Portugal",
+      "real_cities": [
+        "São Miguel",
+        "Terceira",
+        "Flores",
+        "Pico"
+      ],
+      "draft_cities": [
+        "Porto",
+        "Évora",
+        "Lisbon",
+        "Lagos"
+      ],
+      "ratio": 1.306
+    },
+    {
+      "id": "trn_217648a7ed58",
+      "agent": "Beatriz",
+      "country": "Italia",
+      "real_cities": [
+        "Roma",
+        "Radda in Chianti",
+        "Monterosso al Mare",
+        "Firenze",
+        "Venezia"
+      ],
+      "draft_cities": [
+        "Rome",
+        "Florence",
+        "Verona",
+        "Venice"
+      ],
+      "ratio": 1.39
+    },
+    {
+      "id": "trn_40b9c17d2392",
+      "agent": "Anita",
+      "country": "Italia",
+      "real_cities": [
+        "Lisbon",
+        "Lisbon - Porto",
+        "Porto",
+        "Porto - Lagos",
+        "Lagos",
+        "Lagos - Lisbon"
+      ],
+      "draft_cities": [
+        "Rome",
+        "Florence",
+        "Lake Garda",
+        "Milan"
+      ],
+      "ratio": 0.945
+    },
+    {
+      "id": "trn_0770ee2b1d96",
+      "agent": "Rita",
+      "country": "Italia",
+      "real_cities": [
+        "Bari",
+        "Alberobello / Trulli",
+        "Matera / Alberobello",
+        "Torre Canne",
+        "Rome"
+      ],
+      "draft_cities": [
+        "Catania",
+        "Tropea",
+        "Cisternino"
+      ],
+      "ratio": 0.511
+    },
+    {
+      "id": "trn_d666f741e584",
+      "agent": "Marina",
+      "country": "España",
+      "real_cities": [
+        "Milan",
+        "Florence",
+        "Rome"
+      ],
+      "draft_cities": [
+        "Barcelona",
+        "Tarragona",
+        "Teruel",
+        "Valencia",
+        "Cartagena",
+        "Nerja",
+        "Málaga"
+      ],
+      "ratio": 1.015
+    },
+    {
+      "id": "trn_afc19baf54ee",
+      "agent": "Beatriz",
+      "country": "Italia",
+      "real_cities": [
+        "Roma",
+        "Firenze"
+      ],
+      "draft_cities": [
+        "Rome",
+        "Siena",
+        "Sorrento"
+      ],
+      "ratio": 0.915
+    },
+    {
+      "id": "trn_dc494bd14131",
+      "agent": "Beatriz",
+      "country": "Italia",
+      "real_cities": [
+        "Roma",
+        "Firenze",
+        "Venezia"
+      ],
+      "draft_cities": [
+        "Venice",
+        "Florence",
+        "Rome"
+      ],
+      "ratio": 0.739
+    },
+    {
+      "id": "trn_d6a4938a32b8",
+      "agent": "Giorgia Torre",
+      "country": "Italia",
+      "real_cities": [
+        "Milan / Lake Garda",
+        "Lake Garda",
+        "Lake Garda / Brescia",
+        "Lake Garda / Verona",
+        "Verona / Valpolicella",
+        "Verona / Mantova",
+        "Verona to Milan Airport"
+      ],
+      "draft_cities": [
+        "Sorrento",
+        "Florence"
+      ],
+      "ratio": 2.416
+    },
+    {
+      "id": "trn_8b4832f4bc5d",
+      "agent": "Hector",
+      "country": "Portugal",
+      "real_cities": [
+        "Barcelona"
+      ],
+      "draft_cities": [
+        "Porto",
+        "Lisbon"
+      ],
+      "ratio": 1.28
+    },
+    {
+      "id": "trn_550905fdfd7f",
+      "agent": "Marina",
+      "country": "Portugal",
+      "real_cities": [
+        "Sao Miguel"
+      ],
+      "draft_cities": [
+        "Ponta Delgada",
+        "Pico Island"
+      ],
+      "ratio": 0.47
+    },
+    {
+      "id": "trn_667dd3965312",
+      "agent": "Rita",
+      "country": "Italia",
+      "real_cities": [
+        "Roma",
+        "Roma > Firenze",
+        "Firenze",
+        "Firenze > San Gimignano",
+        "San Gimignano",
+        "San Gimignano > Bologna",
+        "Bologna",
+        "Bologna > Venezia",
+        "Venezia",
+        "Venezia > Milano",
+        "Milano"
+      ],
+      "draft_cities": [
+        "Rome",
+        "Tuscany",
+        "Florence"
+      ],
+      "ratio": 2.598
+    },
+    {
+      "id": "trn_d33d627076b9",
+      "agent": "Raquel",
+      "country": "Portugal",
+      "real_cities": [
+        "Porto",
+        "Porto - Algarve",
+        "Algarve",
+        "Algarve - Lisbon",
+        "Lisbon - Departure"
+      ],
+      "draft_cities": [
+        "Lisbon",
+        "Lagos"
+      ],
+      "ratio": 1.105
+    },
+    {
+      "id": "trn_7e83de263cbf",
+      "agent": "Hector",
+      "country": "Portugal",
+      "real_cities": [
+        "Sao Miguel",
+        "Terceira",
+        "Pico Island",
+        "Pico Island / Faial"
+      ],
+      "draft_cities": [
+        "Ponta Delgada",
+        "Faial (Horta)",
+        "Flores Island"
+      ],
+      "ratio": 0.626
+    },
+    {
+      "id": "trn_35a8484d280a",
+      "agent": "Beatriz",
+      "country": "España",
+      "real_cities": [
+        "San Sebastián",
+        "Zaragoza",
+        "Barcelona"
+      ],
+      "draft_cities": [
+        "Madrid",
+        "Seville",
+        "Granada",
+        "Málaga"
+      ],
+      "ratio": 1.762
+    },
+    {
+      "id": "trn_de445658d634",
+      "agent": "Hector",
+      "country": "Portugal",
+      "real_cities": [
+        "Mallorca",
+        "Barcelona"
+      ],
+      "draft_cities": [
+        "Lisbon",
+        "Porto",
+        "León",
+        "Burgos",
+        "San Sebastián",
+        "Bilbao"
+      ],
+      "ratio": 0.444
+    },
+    {
+      "id": "trn_b93462afba68",
+      "agent": "Hector",
+      "country": "España",
+      "real_cities": [
+        "Madrid",
+        "Madrid - León",
+        "León",
+        "León - Madrid"
+      ],
+      "draft_cities": [
+        "San Sebastián",
+        "Logroño"
+      ],
+      "ratio": 2.004
+    },
+    {
+      "id": "trn_99d895abbd78",
+      "agent": "Raquel",
+      "country": "España",
+      "real_cities": [
+        "Barcelona / Tossa del Mar (Costa Brava)",
+        "Costa Brava",
+        "Costa Brava → Barcelona",
+        "Barcelona",
+        "Barcelona - Departure"
+      ],
+      "draft_cities": [
+        "Seville",
+        "Ronda",
+        "Granada"
+      ],
+      "ratio": 0.734
+    },
+    {
+      "id": "trn_31cd02ab0ccc",
+      "agent": "Anita",
+      "country": "Portugal",
+      "real_cities": [
+        "Madeira (Funchal)",
+        "Madeira - Sao Miguel",
+        "Sao Miguel Island (Ponta Delgada)",
+        "Sao Miguel Island",
+        "Sao Miguel - Lisbon",
+        "Lisbon"
+      ],
+      "draft_cities": [
+        "Madeira",
+        "Ponta Delgada"
+      ],
+      "ratio": 0.539
+    },
+    {
+      "id": "trn_3ed1ccf75546",
+      "agent": "Giorgia Torre",
+      "country": "Italia",
+      "real_cities": [
+        "Naples / Sorrento (Amalfi Coast)",
+        "Amalfi Coast (Sorrento)",
+        "Capri / Sorrento",
+        "Sorrento to Ostuni",
+        "Ostuni",
+        "Ostuni to Otranto",
+        "Gallipoli / Santa Maria di Leuca",
+        "Otranto to Matera",
+        "Altamura / Matera",
+        "Matera to Naples"
+      ],
+      "draft_cities": [
+        "Naples",
+        "Sorrento"
+      ],
+      "ratio": 1.688
+    },
+    {
+      "id": "trn_10f2e8f8bdfe",
+      "agent": "Anita",
+      "country": "España",
+      "real_cities": [
+        "Rome",
+        "Athens",
+        "Malaga"
+      ],
+      "draft_cities": [
+        "Madrid"
+      ],
+      "ratio": 0.357
+    },
+    {
+      "id": "trn_154ec0e6e365",
+      "agent": "Rita",
+      "country": "Italia",
+      "real_cities": [
+        "Milan",
+        "Milan - Como - Milan",
+        "Milan > Venice",
+        "Venice",
+        "Venice > Florence",
+        "Florence",
+        "Florence > Rome",
+        "Rome"
+      ],
+      "draft_cities": [
+        "Palermo",
+        "Taormina",
+        "Catania"
+      ],
+      "ratio": 3.813
+    },
+    {
+      "id": "trn_ecd9b37f35e3",
+      "agent": "Beatriz",
+      "country": "Italia",
+      "real_cities": [
+        "Roma",
+        "Radda in Chianti",
+        "San Gimignano",
+        "Firenze",
+        "Venezia"
+      ],
+      "draft_cities": [
+        "Rome",
+        "Venice",
+        "Florence",
+        "Tuscany"
+      ],
+      "ratio": 1.068
+    },
+    {
+      "id": "trn_e34380898d2e",
+      "agent": "Beatriz",
+      "country": "Italia",
+      "real_cities": [
+        "Roma",
+        "Orvieto",
+        "Radda in Chianti",
+        "Firenze / Venezia",
+        "Venezia"
+      ],
+      "draft_cities": [
+        "Rome",
+        "Florence",
+        "Venice"
+      ],
+      "ratio": 1.155
+    }
+  ],
+  "draft_uses_free_form_hotels": 59,
+  "worst_hotel_overshoots": [
+    {
+      "id": "trn_b3c60e077ac7",
+      "real": 276.0,
+      "draft": 6974.3,
+      "diff": 6698.3,
+      "ratio": 25.269202898550724
+    },
+    {
+      "id": "trn_0809f76c39aa",
+      "real": 785.0,
+      "draft": 15919.65,
+      "diff": 15134.65,
+      "ratio": 20.279808917197453
+    },
+    {
+      "id": "trn_154ec0e6e365",
+      "real": 1175.0,
+      "draft": 23752.0,
+      "diff": 22577.0,
+      "ratio": 20.214468085106382
+    },
+    {
+      "id": "trn_85139f2e8576",
+      "real": 1450.0,
+      "draft": 24691.08,
+      "diff": 23241.08,
+      "ratio": 17.02833103448276
+    },
+    {
+      "id": "trn_d9bff99e4e84",
+      "real": 640.0,
+      "draft": 10696.0,
+      "diff": 10056.0,
+      "ratio": 16.7125
+    },
+    {
+      "id": "trn_294d515d2477",
+      "real": 507.0,
+      "draft": 7519.43,
+      "diff": 7012.43,
+      "ratio": 14.831222879684418
+    },
+    {
+      "id": "trn_0867d092fd37",
+      "real": 870.0,
+      "draft": 12600.14,
+      "diff": 11730.14,
+      "ratio": 14.482919540229885
+    },
+    {
+      "id": "trn_d6a4938a32b8",
+      "real": 676.0,
+      "draft": 7676.0,
+      "diff": 7000.0,
+      "ratio": 11.355029585798816
+    },
+    {
+      "id": "trn_b20d0a6099b2",
+      "real": 1428.38,
+      "draft": 15352.0,
+      "diff": 13923.619999999999,
+      "ratio": 10.747840210588217
+    },
+    {
+      "id": "trn_bbad99c7da2c",
+      "real": 690.0,
+      "draft": 7247.56,
+      "diff": 6557.56,
+      "ratio": 10.503710144927537
+    },
+    {
+      "id": "trn_c548ed8ddf42",
+      "real": 800.0,
+      "draft": 8180.0,
+      "diff": 7380.0,
+      "ratio": 10.225
+    },
+    {
+      "id": "trn_295e2a5fe2e0",
+      "real": 922.0,
+      "draft": 8944.56,
+      "diff": 8022.5599999999995,
+      "ratio": 9.701258134490239
+    },
+    {
+      "id": "trn_c29619c9d58d",
+      "real": 816.0,
+      "draft": 7835.0,
+      "diff": 7019.0,
+      "ratio": 9.60171568627451
+    },
+    {
+      "id": "trn_c1a648448c0b",
+      "real": 1180.0,
+      "draft": 11300.0,
+      "diff": 10120.0,
+      "ratio": 9.576271186440678
+    },
+    {
+      "id": "trn_fa07f3459039",
+      "real": 220.0,
+      "draft": 2079.6,
+      "diff": 1859.6,
+      "ratio": 9.452727272727273
+    }
+  ],
+  "worst_hotel_undershoots": [
+    {
+      "id": "trn_5559c9dc87fe",
+      "real": 7364.0,
+      "draft": 6127.19,
+      "diff": -1236.8100000000004,
+      "ratio": 0.8320464421510049
+    },
+    {
+      "id": "trn_170eb1097fd9",
+      "real": 7845.0,
+      "draft": 6506.0,
+      "diff": -1339.0,
+      "ratio": 0.8293180369662205
+    },
+    {
+      "id": "trn_867eadddf314",
+      "real": 6898.99,
+      "draft": 4805.44,
+      "diff": -2093.55,
+      "ratio": 0.6965425373859072
+    },
+    {
+      "id": "trn_5c58d1b11d06",
+      "real": 3249.0,
+      "draft": 2240.0,
+      "diff": -1009.0,
+      "ratio": 0.6894429055093875
+    },
+    {
+      "id": "trn_31cd02ab0ccc",
+      "real": 2018.0,
+      "draft": 1390.0,
+      "diff": -628.0,
+      "ratio": 0.688800792864222
+    },
+    {
+      "id": "trn_0876ece4789c",
+      "real": 3736.0,
+      "draft": 2504.41,
+      "diff": -1231.5900000000001,
+      "ratio": 0.6703452890792291
+    },
+    {
+      "id": "trn_550905fdfd7f",
+      "real": 925.0,
+      "draft": 604.8,
+      "diff": -320.20000000000005,
+      "ratio": 0.6538378378378378
+    },
+    {
+      "id": "trn_0770ee2b1d96",
+      "real": 1240.0,
+      "draft": 790.0,
+      "diff": -450.0,
+      "ratio": 0.6370967741935484
+    },
+    {
+      "id": "trn_8b5c19b82e3a",
+      "real": 2265.0,
+      "draft": 1408.0,
+      "diff": -857.0,
+      "ratio": 0.6216335540838852
+    },
+    {
+      "id": "trn_99d895abbd78",
+      "real": 5100.0,
+      "draft": 2844.0,
+      "diff": -2256.0,
+      "ratio": 0.5576470588235294
+    },
+    {
+      "id": "trn_39c687ebf9fa",
+      "real": 3514.0,
+      "draft": 1720.0,
+      "diff": -1794.0,
+      "ratio": 0.48947068867387594
+    },
+    {
+      "id": "trn_a868475205aa",
+      "real": 3500.0,
+      "draft": 1650.0,
+      "diff": -1850.0,
+      "ratio": 0.4714285714285714
+    },
+    {
+      "id": "trn_de445658d634",
+      "real": 49300.0,
+      "draft": 16481.64,
+      "diff": -32818.36,
+      "ratio": 0.33431318458417847
+    },
+    {
+      "id": "trn_994bffab8acd",
+      "real": 1810.0,
+      "draft": 540.0,
+      "diff": -1270.0,
+      "ratio": 0.2983425414364641
+    },
+    {
+      "id": "trn_10f2e8f8bdfe",
+      "real": 2192.0,
+      "draft": 0.0,
+      "diff": -2192.0,
+      "ratio": 0.0
+    }
+  ],
+  "activities_eur_ratio": {
+    "n": 157,
+    "min": 0.211,
+    "max": 3.287,
+    "median": 1.145,
+    "mean": 1.273,
+    "stdev": 0.618,
+    "p10": 0.513,
+    "p90": 2.106
+  }
+}

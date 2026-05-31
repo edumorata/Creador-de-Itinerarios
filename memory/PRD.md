@@ -84,3 +84,37 @@
 - Autocomplete payload returns full Experience docs (could be slimmed)
 - CORS regex `.*` is permissive (lock down to frontend origin for production)
 - LLM parser sometimes echoes example trip_name from the system prompt; not blocking since real client_name is captured from the listing link.
+
+### Iteration 5 (2026-05-31) — Second-pass AI calibration (158 sold trips)
+- **`training_examples.last_learned_at` field added**: every trip evaluated by the batch
+  script gets a timestamp so future runs only analyse new imports (no more re-processing).
+  Populated for 158 trips after this iteration.
+- **Batch eval v2 run over 167 trips** (151 successful + 9 budget-rejected + 7 leftover).
+  Results saved at `/app/memory/batch_eval_v2.jsonl` and analysed in
+  `/app/memory/batch_eval_v2_report.md`.
+- **Calibration result with rules A→AQ**: median draft/real ratio = **1.26x**, mean 1.39x,
+  stdev 0.65. The 45 prior rules over-corrected and now systematically OVER-quote.
+- **Root cause #1 — Hotel multiplier wrong**: Rule H used 0.45 (hotels = 45% of total PVP),
+  but real data shows median hotel share = **27%**. Corrected REVISED H and AO formulas
+  with 0.27 multiplier.
+- **Root cause #2 — Geographic miss-fires** (26 trips with ZERO city overlap, 16%):
+  - "Azores" requests routed to mainland Portugal
+  - "Puglia / Matera / trulli" routed to Sicily
+  - "Italian Lakes" routed to Amalfi / Sorrento
+  - "Northern Spain wine + culture + beach" routed to Andalusia
+- **6 new prompt rules added (AR–AX)**:
+  - **AR** Final PVP audit BEFORE output, with hard hotel nightly caps per tier
+    (Basic ≤€160, Mid-range ≤€240, Upscale ≤€360, Luxury ≤€600).
+  - **AS** Azores override (São Miguel / Pico / Terceira / Flores — never mainland).
+  - **AT** Puglia / Basilicata never reroutes to Sicily or Amalfi.
+  - **AU** Northern Italy + lakes/active = Garda + Verona + Valpolicella.
+  - **AV** Northern Spain wine route = Madrid + La Rioja + San Sebastián + Bilbao
+    (Andalusia only when Moorish/flamenco/white-villages/"south" is mentioned).
+  - **AW** City naming convention — always English form (Rome not Roma, Florence not Firenze).
+  - **AX** Activity subtotal cap by duration (median real values from 158-trip dataset).
+- **Per-agent calibration**: median ratios by sales agent — Rita 1.51x, Giorgia 1.50x,
+  Hector 1.37x, Anita 1.16x, Beatriz 1.19x, Raquel 1.12x, Marina 1.07x.
+  Marina-style retrievals are the most balanced.
+- **Batch eval is now resumable & idempotent**: re-running `python -m tests.batch_eval_v2`
+  skips trips that already have `last_learned_at` set. New imports flagged as `sold`
+  (or `not_sold` when phase 2 lands) are picked up automatically on the next run.

@@ -2751,10 +2751,12 @@ P) "EXPERIENCED HIKER" + WELL-KNOWN ROUTES = MOSTLY SELF-GUIDED.
    range we see in sold trips for active clients (€500-800).
 
 REVISED H) HOTEL PRICING — DO A MATH CHECK BEFORE PICKING ANY 5-STAR HOTEL.
-   Compute: budget_mid_USD × travelers × 0.45 / total_nights = max nightly hotel budget in USD.
-   Example: $4,750 × 2 × 0.45 / 9 nights = $475/night (~€440/night).
+   Compute: budget_mid_USD × travelers × 0.27 / total_nights = max nightly hotel budget in USD.
+   Example: $4,750 × 2 × 0.27 / 9 nights = $285/night (~€260/night).
+   (Calibrated against 158 sold trips: median Total Alojamientos = 27% of total real PVP,
+   NOT 45% as the original heuristic assumed — the previous figure inflated hotels by 1.7x.)
    If a candidate hotel exceeds 2x this number, REJECT it. For Active/Hikers in Northern
-   Italy at $4,500-5,000/pax you should land on €350-450/night properties (Floris Green
+   Italy at $4,500-5,000/pax you should land on €200-280/night properties (Floris Green
    Suites in Castelrotto, Hotel Piccola Vela in Garda) — NOT €1,800/night gran lujo Como.
 
 Q) HOTELS ARE OFTEN BILLED DIRECTLY TO THE CLIENT — `Total Alojamientos = €0` IS NORMAL.
@@ -3032,7 +3034,8 @@ AO) THE MOST COMMON DRAFT ERROR: HOTEL ESTIMATE LEFT AT €0.
    When a hotel is free-form (not in library), the LLM tends to leave price_tax_incl=0
    "for the agent to fill". This produces the massive under-pricing (ratios 0.16-0.40x).
    ENFORCEMENT: ALWAYS estimate a realistic nightly price for free-form hotels using:
-     hotel_nightly_eur = budget_mid_usd × travelers × 0.45 / total_nights / 1.08
+     hotel_nightly_eur = budget_mid_usd × travelers × 0.27 / total_nights / 1.08
+   (Recalibrated from 0.45 to 0.27 against 158-trip eval — see REVISED H above.)
    Add a note in the hotel name like "(estimate — confirm)". A guess within ±30% is far
    better than 0.
 
@@ -3065,7 +3068,89 @@ AQ) STAFF-LEARNED PATTERNS — WHAT THE BEST CLOSERS DO.
      lean on their styles in the retrieval.
    - **Beatriz is the only "premium generalist"**: 45% Italy + Portugal + Spain + Morocco +
      long-tail. When the request is truly multi-country or exotic, copy Beatriz's
-     pattern from the retrieval examples."""
+     pattern from the retrieval examples.
+
+AR) FINAL PVP AUDIT BEFORE OUTPUT — TARGET 0.95-1.15x EXPECTED.
+   Calibration from 158-trip eval (May 2026, after rules A→AQ): drafts now OVERSHOOT by
+   median 1.26x. To correct, ENFORCE THESE HARD HOTEL NIGHTLY CAPS by tier:
+   - Basic / Budget / Affordable tier         → ≤ €160/night/room
+   - Mid-range / Comfort / Upscale-Boutique   → ≤ €240/night/room
+   - Upscale / Premium                        → ≤ €360/night/room
+   - Luxury / Gran Lujo                       → ≤ €600/night/room
+   These caps OVERRIDE any library price tagged higher unless the request EXPLICITLY
+   names that hotel by full title (e.g. "we want to stay at Belmond Caruso").
+   If a hotel from the library exceeds the cap, REPLACE it with the next-cheaper library
+   hotel in the same city of the same star rating.
+
+   Then run this audit BEFORE returning the JSON:
+     expected_total_eur = (budget_mid_usd × num_travelers) / 1.10
+     draft_total_eur    = sum(activities + transfers + hotels) × (1 + markup_pct/100)
+     ratio              = draft_total_eur / expected_total_eur
+   - If ratio > 1.30 → INSPECT IN ORDER: (1) any hotel breaching the tier cap above
+     → reduce it, (2) activities subtotal > €4,000 for ≤10 days → drop 2-3 paid
+     activities to "Free day / self-guided", (3) transfers > 25% of activities subtotal
+     → combine private + sightseeing per Rule V. Re-sum and re-check.
+   - If ratio < 0.75 → INSPECT: (a) hotels with price=0 that should be billable per Rule
+     AO formula, (b) wholesale items priced at €0 by mistake. Fill in realistic estimates.
+   - Target: 0.95-1.15x. Acceptable: 0.8-1.3x. Outside that band → re-audit.
+
+AS) AZORES = STANDALONE DESTINATION, NOT MAINLAND PORTUGAL.
+   Triggers: "Azores", "Açores", "São Miguel", "Sao Miguel", "Pico", "Terceira", "Faial",
+   "Horta", "Ponta Delgada", "Flores Island", "Lajes das Flores".
+   The trip is ENTIRELY in the islands. SOLD pattern:
+     São Miguel (Ponta Delgada) 3-4n → Terceira 1-2n → Pico 2-3n → (Flores 1-2n optional)
+   Inter-island connections: SATA Air Açores (book as flights, not transfers).
+   NEVER include Lisbon / Porto / Algarve / Évora unless the client EXPLICITLY adds a
+   mainland extension. Sold examples wrongly drafted as Lisbon+Porto+Algarve: trn_0eb77f66cc60,
+   trn_7e83de263cbf, trn_550905fdfd7f.
+
+AT) PUGLIA / BASILICATA  →  NEVER ROUTE THROUGH SICILY OR AMALFI.
+   Triggers: "Puglia", "Apulia", "trulli", "Alberobello", "Matera", "sassi", "Lecce",
+   "Ostuni", "Polignano", "Torre Canne", "Locorotondo", "Cisternino".
+   SOLD bases: Bari (1-2n arrival) → Alberobello or Ostuni (2-3n) → Matera (1-2n) →
+   (Lecce 1-2n optional, Rome 1n departure). These two regions are 600+ km from Sicily,
+   600+ km from Amalfi/Sorrento. Wrong drafts seen in eval: trn_0770ee2b1d96 (Bari + Matera
+   request answered with Catania + Tropea). Always honour the SPECIFIC town when the
+   client names it.
+
+AU) NORTH ITALY + LAKES + ACTIVE = GARDA/VERONA/VALPOLICELLA (NOT AMALFI/SORRENTO).
+   Triggers: Italy + "lakes", "Lake Garda", "Lake Como", "Verona", "Dolomites",
+   "Valpolicella", "Mantova", "cycling", "Alpe di Siusi", "Cortina".
+   SOLD circuit: Milan 1n → Lake Garda 3-4n → Verona 1-2n → Valpolicella/Mantova 1n →
+   (Castelrotto 4-5n if hiker per Rule O). Wrong drafts seen: trn_d6a4938a32b8 (Lake
+   Garda request answered with Sorrento + Florence). Sorrento, Amalfi, Praiano belong to
+   SOUTHERN Italy ("Amalfi Coast" trigger per Rule W) — never default to them for a
+   "Lakes" request.
+
+AV) NORTHERN SPAIN ROUTE = MADRID → LA RIOJA → SAN SEBASTIÁN → BILBAO.
+   Triggers: Spain + ANY 2+ of: "wine", "Rioja", "Logroño", "Basque", "vasco", "Pintxos",
+   "txikiteo", "San Sebastián", "Donosti", "Bilbao", "Guggenheim", "Bay of Biscay",
+   "Cantabria", "Asturias", "Galicia", "Picos de Europa", "lakes" (in Spain context).
+   SOLD circuit: Madrid 2-3n (culture) → La Rioja/Logroño 2-3n (wine — Hotel Viura,
+   Marqués de Riscal) → San Sebastián 2-3n (Pintxos + beach) → Bilbao 1-2n (Guggenheim)
+   → return Madrid 1n.
+   Do NOT default to Andalusia (Seville/Granada/Málaga) unless the request EXPLICITLY
+   mentions: "Moorish", "Alhambra", "flamenco", "white villages", "south of Spain",
+   "Andalucía", "Costa del Sol", "Ronda", or names Andalusian cities directly.
+   Wrong draft seen: trn_f2c4c84f66bf (Northern Spain wine route → drafted as Barcelona +
+   Seville + Granada + Málaga, ratio 2.08x).
+
+AW) CITY NAMING — USE THE ENGLISH FORM EXACTLY AS IT APPEARS IN THE LIBRARY.
+   Always write Italian/Portuguese cities in their English form to match the catalog:
+   Roma → Rome · Firenze → Florence · Venezia → Venice · Milano → Milan · Napoli → Naples ·
+   Siracusa → Syracuse · Genova → Genoa · Torino → Turin · Lisboa → Lisbon · São Miguel →
+   Sao Miguel (no accent). Mixing Italian and English city names splits retrieval and
+   makes the city filter miss valid library items.
+
+AX) ACTIVITY SUBTOTAL BY DURATION — CALIBRATED FROM 158 SOLD TRIPS.
+   Real activity subtotals (EUR, including transfers) by trip length:
+   - ≤7 days   : median €1,500, p75 €2,300, p90 €3,200
+   - 8-10 days : median €2,800, p75 €3,900, p90 €5,200
+   - 11-14 days: median €3,500, p75 €4,800, p90 €6,500
+   - ≥15 days  : median €4,500, p75 €6,500, p90 €8,800
+   ENFORCEMENT: sum activity prices in the draft. If above the p75 threshold for the
+   trip duration, DROP the lowest-impact paid activities to "Free day / self-guided"
+   until under the threshold. Library prices are accurate — do NOT pad them with markup."""
 
 
 async def _call_claude_json(system_prompt: str, user_prompt: str) -> dict:
