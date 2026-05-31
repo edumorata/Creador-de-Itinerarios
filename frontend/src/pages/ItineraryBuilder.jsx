@@ -18,6 +18,16 @@ const TYPES = ["alojamiento", "actividad", "transporte", "restaurante", "transfe
 const fmtEUR = (n) => `€ ${Number(n || 0).toLocaleString("es-ES", { maximumFractionDigits: 2, minimumFractionDigits: 2 })}`;
 const fmtUSD = (n) => `$ ${Number(n || 0).toLocaleString("en-US", { maximumFractionDigits: 0, minimumFractionDigits: 0 })}`;
 const uid = (p) => `${p}_${Math.random().toString(36).slice(2, 12)}`;
+
+// Partner labels used by the cost summary + selector.
+const PARTNER_OPTIONS = [
+  { value: "kimkim", label: "KimKim", hint: "+15% sobre coste · markup 33%" },
+  { value: "zicasso", label: "Zicasso", hint: "+10.5% sobre coste · markup 30%" },
+  { value: "responsible_travel", label: "Responsible Travel", hint: "+10% sobre coste · markup 30%" },
+  { value: "direct", label: "Directo", hint: "sin comisión · markup 35%" },
+  { value: "other", label: "Otro", hint: "manual" },
+];
+const PARTNER_LABELS = Object.fromEntries(PARTNER_OPTIONS.map((p) => [p.value, p.label]));
 const fmt = (d) => {
   if (!d) return "—";
   try { return new Date(d).toLocaleDateString("es-ES", { day: "2-digit", month: "short" }); }
@@ -98,6 +108,36 @@ export default function ItineraryBuilder() {
 
   useEffect(() => { searchExperiences(); }, [searchExperiences]);
 
+  // Global orientation modal state (used by AccommodationsBlock + day service rows).
+  const [orient, setOrient] = useState(null); // {context, hotelName, city, dates, data, busy}
+  const openOrient = useCallback(async (opts) => {
+    const { hotelName, city: cityHint, checkin, checkout, adults, onApply } = opts;
+    let city = cityHint;
+    if (!city && hotelName) {
+      try {
+        const { data } = await api.get("/hotels", { params: { q: hotelName, include_imported: true } });
+        const hit = (data || []).find((h) => (h.name || "").toLowerCase() === hotelName.toLowerCase())
+                 || (data || [])[0];
+        if (hit && hit.city) city = hit.city;
+      } catch { /* fallthrough */ }
+    }
+    if (!city) {
+      city = window.prompt(`¿Ciudad para buscar precio orientativo${hotelName ? ' de "' + hotelName + '"' : ""}?`, "");
+      if (!city) return;
+    }
+    setOrient({ hotelName, city, busy: true, data: null, onApply });
+    try {
+      const { data } = await api.get("/hotels/price-orientation", {
+        params: { city, checkin, checkout, adults: adults || 2 },
+        timeout: 45000,
+      });
+      setOrient((prev) => prev ? { ...prev, data, busy: false } : prev);
+    } catch (e) {
+      toast.error("Error consultando precio orientativo");
+      setOrient(null);
+    }
+  }, []);
+
   const schedSave = useCallback((next) => {
     setItn(next);
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -109,14 +149,15 @@ export default function ItineraryBuilder() {
           start_date: next.start_date, end_date: next.end_date,
           duration_days: next.duration_days, num_travelers: next.num_travelers,
           travelers: next.travelers, days: next.days, accommodations: next.accommodations,
-          markup_pct: next.markup_pct, currency: next.currency, status: next.status,
+          markup_pct: next.markup_pct, commission_pct: next.commission_pct,
+          partner: next.partner, currency: next.currency, status: next.status,
         });
       } finally { setSaving(false); }
     }, 600);
   }, [id]);
 
   const totals = useMemo(() => {
-    if (!itn) return { sub_excl: 0, sub_incl: 0, pvp: 0, iva: 0 };
+    if (!itn) return { sub_excl: 0, sub_incl: 0, sub_with_markup: 0, commission_eur: 0, markup_eur: 0, pvp: 0, iva: 0 };
     let excl = 0, incl = 0;
     (itn.days || []).forEach((d) => (d.services || []).forEach((s) => {
       excl += (s.unit_price_tax_excl || 0) * (s.quantity || 0);
@@ -127,13 +168,30 @@ export default function ItineraryBuilder() {
       incl += a.price_tax_incl || a.price || 0;
     });
     const mk = (itn.markup_pct || 0) / 100;
-    return { sub_excl: excl, sub_incl: incl, pvp: incl * (1 + mk), iva: incl - excl };
+    const com = (itn.commission_pct || 0) / 100;
+    const markup_eur = incl * mk;
+    const sub_with_markup = incl + markup_eur;
+    const commission_eur = sub_with_markup * com;
+    const pvp = sub_with_markup + commission_eur;
+    return { sub_excl: excl, sub_incl: incl, sub_with_markup, markup_eur, commission_eur, pvp, iva: incl - excl };
   }, [itn]);
 
   if (!itn) return <div className="p-10 text-sm text-clay-700">Cargando itinerario…</div>;
 
   const setField = (k, v) => {
     const next = { ...itn, [k]: v };
+    // Auto-apply per-partner markup & commission defaults when the partner changes.
+    if (k === "partner") {
+      const defaults = {
+        kimkim: { markup_pct: 33, commission_pct: 15 },
+        zicasso: { markup_pct: 30, commission_pct: 10.5 },
+        responsible_travel: { markup_pct: 30, commission_pct: 10 },
+        direct: { markup_pct: 35, commission_pct: 0 },
+        other: { markup_pct: 30, commission_pct: 0 },
+      }[v] || { markup_pct: 30, commission_pct: 0 };
+      next.markup_pct = defaults.markup_pct;
+      next.commission_pct = defaults.commission_pct;
+    }
     if (k === "start_date" || k === "end_date") {
       const n = daysBetween(k === "start_date" ? v : itn.start_date, k === "end_date" ? v : itn.end_date);
       next.duration_days = n;
@@ -285,9 +343,12 @@ export default function ItineraryBuilder() {
         </div>
 
         {/* Trip metadata */}
-        <div className="mt-6 grid grid-cols-4 gap-0 border border-clay-300">
+        <div className="mt-6 grid grid-cols-5 gap-0 border border-clay-300">
           <Field label="Viajero principal">
             <input data-testid="main-traveler" className="w-full bg-transparent outline-none text-sm" value={itn.main_traveler || ""} onChange={(e) => setField("main_traveler", e.target.value)} placeholder="Nombre Apellido" />
+          </Field>
+          <Field label="Fuente">
+            <PartnerSelector itn={itn} setField={setField} />
           </Field>
           <Field label="Inicio">
             <input data-testid="start-date" type="date" className="w-full bg-transparent outline-none text-sm tabular" value={itn.start_date || ""} onChange={(e) => setField("start_date", e.target.value)} />
@@ -326,6 +387,7 @@ export default function ItineraryBuilder() {
               onRemoveService={(sid) => removeService(day.day_id, sid)}
               onDragStart={onDragStart}
               onDropService={onDropService}
+              onOrient={openOrient}
             />
           ))}
           <button onClick={addDay} data-testid="add-day-btn" className="w-full border border-dashed border-clay-300 py-3 text-sm text-clay-700 hover:border-terracotta hover:text-terracotta transition-colors">
@@ -333,7 +395,7 @@ export default function ItineraryBuilder() {
           </button>
         </div>
 
-        <AccommodationsBlock itn={itn} schedSave={schedSave} markup={itn.markup_pct || 0} />
+        <AccommodationsBlock itn={itn} schedSave={schedSave} markup={itn.markup_pct || 0} onOrient={openOrient} />
       </div>
 
       {/* Right: search + cost summary */}
@@ -346,14 +408,30 @@ export default function ItineraryBuilder() {
               <Row label="Subtotal con IVA">{fmtEUR(totals.sub_incl)}</Row>
               <Row label={(
                 <div className="flex items-center gap-2">
-                  <span>Markup sobre IVA</span>
+                  <span>Markup</span>
                   <input data-testid="markup-input" type="number" step="0.5" min="0"
                     value={itn.markup_pct ?? 0}
                     onChange={(e) => setField("markup_pct", parseFloat(e.target.value || "0"))}
                     className="w-16 bg-transparent border border-clay-300 px-1 py-0.5 text-sm tabular text-right" />
                   <span className="text-xs text-clay-700">%</span>
                 </div>
-              )}>+ {fmtEUR(totals.sub_incl * (itn.markup_pct || 0) / 100)}</Row>
+              )}>+ {fmtEUR(totals.markup_eur)}</Row>
+              <Row label="Subtotal con markup">{fmtEUR(totals.sub_with_markup)}</Row>
+              {(itn.commission_pct ?? 0) > 0 && (
+                <Row label={(
+                  <div className="flex items-center gap-2">
+                    <span>Comisión <span className="text-clay-500 normal-case">({PARTNER_LABELS[itn.partner] || itn.partner})</span></span>
+                    <input
+                      data-testid="commission-input"
+                      type="number" step="0.5" min="0"
+                      value={itn.commission_pct ?? 0}
+                      onChange={(e) => setField("commission_pct", parseFloat(e.target.value || "0"))}
+                      className="w-16 bg-transparent border border-clay-300 px-1 py-0.5 text-sm tabular text-right"
+                    />
+                    <span className="text-xs text-clay-700">%</span>
+                  </div>
+                )}>+ {fmtEUR(totals.commission_eur)}</Row>
+              )}
               <div className="flex items-center justify-between py-3 bg-clay-900 text-white px-3 mt-2" data-testid="final-price">
                 <div className="smallcaps text-white/70">PVP final</div>
                 <div className="font-serif text-2xl tabular">{fmtEUR(totals.pvp)}</div>
@@ -412,11 +490,22 @@ export default function ItineraryBuilder() {
           </div>
         </div>
       </aside>
+
+      {orient && (
+        <OrientationModal
+          city={orient.city}
+          hotelName={orient.hotelName}
+          busy={orient.busy}
+          data={orient.data}
+          onClose={() => setOrient(null)}
+          onApply={(price) => { if (orient.onApply) orient.onApply(price); setOrient(null); }}
+        />
+      )}
     </div>
   );
 }
 
-function DayBlock({ day, idx, active, numTravelers, cityFacets, markup, onActivate, onUpdateDay, onAddBlank, onAddExperience, onRemoveDay, onUpdateService, onRemoveService, onDragStart, onDropService }) {
+function DayBlock({ day, idx, active, numTravelers, cityFacets, markup, onActivate, onUpdateDay, onAddBlank, onAddExperience, onRemoveDay, onUpdateService, onRemoveService, onDragStart, onDropService, onOrient }) {
   const [dragOverIdx, setDragOverIdx] = useState(null);
   return (
     <div className={`border ${active ? "border-terracotta" : "border-clay-300"} bg-white transition-colors`} data-testid={`day-${idx}`} onClick={onActivate}>
@@ -489,6 +578,8 @@ function DayBlock({ day, idx, active, numTravelers, cityFacets, markup, onActiva
                   unit_price_tax_excl: exp.price_tax_excl ?? 0, unit_price_tax_incl: exp.price_tax_incl ?? exp.price ?? 0,
                   unit_price: exp.price_tax_incl ?? exp.price ?? 0, currency: exp.currency || "EUR",
                 })}
+                onOrient={onOrient}
+                dayDate={day.date}
               />
             </div>
           ))}
@@ -504,13 +595,14 @@ function DayBlock({ day, idx, active, numTravelers, cityFacets, markup, onActiva
   );
 }
 
-function ServiceRow({ service, markup, dayCity, onChange, onRemove, onPickExperience, onDragStart }) {
+function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, onChange, onRemove, onPickExperience, onDragStart, onOrient }) {
   const totalExcl = (service.unit_price_tax_excl || 0) * (service.quantity || 0);
   const totalIncl = (service.unit_price_tax_incl || service.unit_price || 0) * (service.quantity || 0);
   const totalPVP = totalIncl * (1 + (markup || 0) / 100);
+  const isLodging = service.type === "alojamiento";
 
   return (
-    <div className="grid grid-cols-[28px_110px_1fr_60px_100px_100px_100px_30px] gap-2 items-center px-3 py-2.5 text-sm hover:bg-clay-50 transition-colors">
+    <div className={`grid ${isLodging ? "grid-cols-[28px_110px_1fr_60px_100px_100px_100px_28px_28px]" : "grid-cols-[28px_110px_1fr_60px_100px_100px_100px_30px]"} gap-2 items-center px-3 py-2.5 text-sm hover:bg-clay-50 transition-colors`}>
       <span
         draggable
         onDragStart={onDragStart}
@@ -545,6 +637,31 @@ function ServiceRow({ service, markup, dayCity, onChange, onRemove, onPickExperi
         <div>{fmtEUR(totalIncl)}</div>
         <div className="font-semibold text-clay-900">{fmtEUR(totalPVP)}</div>
       </div>
+      {isLodging && (
+        <button
+          data-testid="service-orient"
+          onClick={() => onOrient?.({
+            hotelName: service.name,
+            city: dayCity,
+            checkin: dayDate,
+            checkout: dayDate,  // single-night; user can re-edit if needed
+            adults: numTravelers || 2,
+            onApply: (pricePerNight) => {
+              // For a day-service hotel, assume 1 night × quantity (number of rooms or units).
+              const qty = service.quantity || 1;
+              const total = pricePerNight * qty;
+              onChange({
+                unit_price_tax_incl: pricePerNight,
+                unit_price_tax_excl: Math.round((pricePerNight / 1.10) * 100) / 100,
+                unit_price: pricePerNight,
+              });
+              toast.success(`${pricePerNight}€/noche aplicado`);
+            },
+          })}
+          className="text-clay-700 hover:text-terracotta hover:bg-clay-100 p-1 border border-clay-300 flex items-center justify-center"
+          title="Buscar precio orientativo · histórico + Expedia"
+        ><Search size={13}/></button>
+      )}
       <button onClick={onRemove} className="text-clay-500 hover:text-destructive p-1" title="Quitar"><Trash2 size={14}/></button>
     </div>
   );
@@ -656,10 +773,7 @@ function Row({ label, children }) {
   );
 }
 
-function AccommodationsBlock({ itn, schedSave, markup }) {
-  const [orientCity, setOrientCity] = useState(null);
-  const [orientData, setOrientData] = useState(null);
-  const [orientBusy, setOrientBusy] = useState(false);
+function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
   const add = () => {
     schedSave({ ...itn, accommodations: [...(itn.accommodations || []), { acc_id: uid("acc"), date_from: itn.start_date, date_to: itn.end_date, name: "", price_tax_excl: 0, price_tax_incl: 0, price: 0, currency: "EUR" }] });
   };
@@ -673,70 +787,22 @@ function AccommodationsBlock({ itn, schedSave, markup }) {
   const del = (idx) => {
     schedSave({ ...itn, accommodations: (itn.accommodations || []).filter((_, i) => i !== idx) });
   };
-  const fetchOrient = async (idx, a) => {
-    // Resolve the city for this hotel:
-    // 1. If the hotel name matches an entry in the catalog (library OR imported),
-    //    use that hotel's city.
-    // 2. Else, scan the daily plan for a city visited around the stay dates.
-    // 3. Else, prompt the user.
-    let city = null;
-    const name = (a.name || "").trim();
-    if (name) {
-      try {
-        const { data } = await api.get("/hotels", { params: { q: name, include_imported: true } });
-        const hit = (data || []).find((h) => (h.name || "").toLowerCase() === name.toLowerCase())
-                 || (data || [])[0];
-        if (hit && hit.city) city = hit.city;
-      } catch { /* fall through */ }
-    }
-    if (!city && itn.days?.length) {
-      // Use the first day's city that overlaps the stay date range
-      const dFrom = a.date_from ? new Date(a.date_from) : null;
-      for (const d of itn.days) {
-        if (!d.city) continue;
-        if (!dFrom) { city = d.city; break; }
-        if (!d.date) { city = d.city; break; }
-        const dd = new Date(d.date);
-        if (dd >= dFrom) { city = d.city; break; }
-      }
-    }
-    if (!city) {
-      city = window.prompt(`¿Ciudad para buscar precio orientativo de "${name || 'este alojamiento'}"?`, "");
-      if (!city) return;
-    }
-    setOrientCity({ idx, city });
-    setOrientBusy(true);
-    setOrientData(null);
-    try {
-      const { data } = await api.get("/hotels/price-orientation", {
-        params: {
-          city,
-          checkin: a.date_from || itn.start_date,
-          checkout: a.date_to || itn.end_date,
-          adults: itn.num_travelers || 2,
-        },
-        timeout: 45000,
-      });
-      setOrientData(data);
-    } catch (e) {
-      toast.error("Error consultando precio orientativo");
-    } finally {
-      setOrientBusy(false);
-    }
-  };
-  const applyOrient = (price) => {
-    if (!orientCity || !price) return;
-    const nights = orientData?.training_data?.n_trips ? 1 : 1;  // unused, price is per night
-    // Calculate total = price/night × number of nights between dates
-    const a = itn.accommodations[orientCity.idx];
-    const dFrom = a.date_from ? new Date(a.date_from) : null;
-    const dTo = a.date_to ? new Date(a.date_to) : null;
-    const n = (dFrom && dTo) ? Math.max(1, Math.round((dTo - dFrom) / 86400000)) : 1;
-    const total = price * n;
-    upd(orientCity.idx, { price_tax_incl: total, price_tax_excl: total / 1.10 });
-    toast.success(`Aplicado · ${price}€/noche × ${n} noches = ${Math.round(total)}€`);
-    setOrientCity(null);
-    setOrientData(null);
+  const fetchOrient = (idx, a) => {
+    onOrient?.({
+      hotelName: a.name,
+      city: null,  // resolved upstream from hotel catalog or day plan
+      checkin: a.date_from || itn.start_date,
+      checkout: a.date_to || itn.end_date,
+      adults: itn.num_travelers || 2,
+      onApply: (pricePerNight) => {
+        const dFrom = a.date_from ? new Date(a.date_from) : null;
+        const dTo = a.date_to ? new Date(a.date_to) : null;
+        const n = (dFrom && dTo) ? Math.max(1, Math.round((dTo - dFrom) / 86400000)) : 1;
+        const total = pricePerNight * n;
+        upd(idx, { price_tax_incl: total, price_tax_excl: total / 1.10 });
+        toast.success(`Aplicado · ${pricePerNight}€/noche × ${n} noches = ${Math.round(total)}€`);
+      },
+    });
   };
   return (
     <div className="mt-10">
@@ -779,21 +845,11 @@ function AccommodationsBlock({ itn, schedSave, markup }) {
           </>
         )}
       </div>
-
-      {orientCity && (
-        <OrientationModal
-          city={orientCity.city}
-          busy={orientBusy}
-          data={orientData}
-          onClose={() => { setOrientCity(null); setOrientData(null); }}
-          onApply={applyOrient}
-        />
-      )}
     </div>
   );
 }
 
-function OrientationModal({ city, busy, data, onClose, onApply }) {
+function OrientationModal({ city, hotelName, busy, data, onClose, onApply }) {
   const rec = data?.recommendation;
   const td = data?.training_data;
   const ex = data?.expedia;
@@ -803,7 +859,8 @@ function OrientationModal({ city, busy, data, onClose, onApply }) {
         <div className="flex items-center justify-between mb-3">
           <div>
             <div className="smallcaps">Precio orientativo</div>
-            <div className="font-serif text-xl">{city}</div>
+            <div className="font-serif text-xl">{hotelName || city}</div>
+            {hotelName && city && <div className="text-xs text-clay-700">{city}</div>}
           </div>
           <button onClick={onClose} className="text-clay-500 hover:text-clay-900">✕</button>
         </div>
@@ -927,5 +984,27 @@ function FxConverter({ fx, setFx, totals }) {
         <div className="font-serif text-2xl tabular">{fmtUSD(pvpUsd)}</div>
       </div>
     </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// PartnerSelector — controls the Itinerary.partner field. Changing it
+// auto-applies the per-partner markup % and commission % defaults defined
+// in setField above, but agents can override each number afterwards.
+// ---------------------------------------------------------------------------
+function PartnerSelector({ itn, setField }) {
+  return (
+    <select
+      data-testid="itin-partner"
+      value={itn.partner || "kimkim"}
+      onChange={(e) => setField("partner", e.target.value)}
+      className="w-full bg-transparent outline-none text-sm cursor-pointer"
+      title="Fuente del cliente · ajusta markup y comisión automáticamente"
+    >
+      {PARTNER_OPTIONS.map((p) => (
+        <option key={p.value} value={p.value}>{p.label}</option>
+      ))}
+    </select>
   );
 }

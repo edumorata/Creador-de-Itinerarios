@@ -197,6 +197,34 @@
   `window.prompt` requiring the literal word `RESET` to be typed. Any other
   text cancels with an "info" toast. Prevents accidental LLM-budget burns.
 
+### Iteration 10 (2026-05-31) — Partner-based pricing on every itinerary + day-service lupa
+- **Itinerary.partner + commission_pct fields added** (Pydantic `Literal`).
+  Backfilled all 5 existing itineraries with `partner=kimkim, commission_pct=15`.
+- **Cabecera ahora tiene 5 columnas**: Viajero · **Fuente** · Inicio · Fin · Pax.
+  Cambiar la Fuente auto-aplica los defaults por partner:
+  - KimKim   → markup 33% + comisión 15%
+  - Zicasso  → markup 30% + comisión 10.5%
+  - Resp.Tr. → markup 30% + comisión 10%
+  - Directo  → markup 35% + comisión 0%
+  - Otro     → markup 30% + comisión 0% (manual)
+- **Bloque "Coste" reorganizado** con 5 líneas:
+  1. Subtotal sin IVA
+  2. Subtotal con IVA
+  3. Markup (editable, %)
+  4. Subtotal con markup
+  5. Comisión partner (editable, % — solo se muestra si > 0)
+  → PVP final = sub_with_IVA × (1 + markup/100) × (1 + commission/100)
+  Both `markup_pct` and `commission_pct` are agent-editable inline at any time.
+- **Lupa en servicios de día tipo `alojamiento`**: al cambiar el tipo de un
+  servicio a "alojamiento" aparece automáticamente el botón 🔍 que reusa el
+  mismo modal de orientación (histórico + Expedia) con la ciudad del día y
+  las fechas concretas. "Aplicar" rellena el precio del servicio.
+- **OrientationModal global**: el state se levantó al top-level
+  `ItineraryBuilder` para que tanto `AccommodationsBlock` como `ServiceRow`
+  (y futuros consumidores) compartan un único modal y resolución de ciudad.
+- Verificado en UI: Amalfi Coast itinerary con partner=Zicasso →
+  11.055,50€ × 1,30 × 1,105 = **15.881,23 €** PVP final.
+
 ## Known minor items
 - Autocomplete payload returns full Experience docs (could be slimmed)
 - CORS regex `.*` is permissive (lock down to frontend origin for production)

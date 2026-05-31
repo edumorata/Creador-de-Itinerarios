@@ -248,7 +248,17 @@ class Itinerary(BaseModel):
     travelers: List[Traveler] = Field(default_factory=list)
     days: List[ItineraryDay] = Field(default_factory=list)
     accommodations: List[Accommodation] = Field(default_factory=list)
-    markup_pct: float = 0.0
+    # Pricing model:
+    #   PVP = subtotal_with_IVA × (1 + markup_pct/100) × (1 + commission_pct/100)
+    # Defaults per partner (auto-applied on partner change, editable by agent):
+    #   kimkim             → markup 33 + commission 15
+    #   zicasso            → markup 30 + commission 10.5
+    #   responsible_travel → markup 30 + commission 10
+    #   direct             → markup 35 + commission  0
+    #   other              → markup 30 + commission  0
+    markup_pct: float = 33.0
+    commission_pct: float = 15.0
+    partner: Optional[PartnerKind] = "kimkim"
     currency: str = "EUR"
     status: Literal["draft", "sold", "not_sold"] = "draft"
     created_by: Optional[str] = None
@@ -267,6 +277,8 @@ class ItineraryUpsert(BaseModel):
     days: Optional[List[ItineraryDay]] = None
     accommodations: Optional[List[Accommodation]] = None
     markup_pct: Optional[float] = None
+    commission_pct: Optional[float] = None
+    partner: Optional[PartnerKind] = None
     currency: Optional[str] = None
     status: Optional[Literal["draft", "sold", "not_sold"]] = None
 
