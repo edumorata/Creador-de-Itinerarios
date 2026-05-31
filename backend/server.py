@@ -3044,7 +3044,28 @@ AP) TUSCANY / CHIANTI / TOSCANA  →  WRITE THE EXACT VILLAGE NAME.
    - "Amalfi Coast" → Sorrento / Praiano / Positano / Atrani (decide per W)
    - "Costa Brava" → Cadaqués or Begur
    - "Algarve" → Lagos (most active) or Albufeira (more relaxed)
-   - "Andalucía" → Sevilla + Granada (NOT generic "Andalucia")"""
+   - "Andalucía" → Sevilla + Granada (NOT generic "Andalucia")
+
+AQ) STAFF-LEARNED PATTERNS — WHAT THE BEST CLOSERS DO.
+   The agency's top-performing sales agents (Beatriz, Marina, Rita; ranked best to 3rd)
+   share a very specific style across 63 of their sold trips:
+   - **Activity density 1.0/day**, never 1.3+. Their drafts have 10-11 paid activities
+     for 10-12 day trips, with 2-3 free days interleaved. The bottom-half closers (Giorgia,
+     Anita) consistently push 13 activities for the same trip length — over-programming
+     is a closing inhibitor.
+   - **4 hotels per trip**, occasionally 3 for tight Italy circuits. Match this.
+   - **Median margin $2,400-3,000 per trip**, never under $2,000. They are not afraid to
+     mark up because the trip quality justifies it.
+   - **Food experiences = 15% of activities** (Beatriz's signature). Less wine, more food
+     tours and cooking classes. Reflects the buyer profile.
+   - **Transfers = ~20% of activity lines, never above 25%**. Anita (lower closer) hits
+     37% transfers — symptom of overspending on logistics vs experiences.
+   - **Specialise the destination**: Rita is 93% Italy, Marina is mostly Iberia. When the
+     destination matches a "specialist" pattern (Italy-Italy-Italy, or Portugal/Spain),
+     lean on their styles in the retrieval.
+   - **Beatriz is the only "premium generalist"**: 45% Italy + Portugal + Spain + Morocco +
+     long-tail. When the request is truly multi-country or exotic, copy Beatriz's
+     pattern from the retrieval examples."""
 
 
 async def _call_claude_json(system_prompt: str, user_prompt: str) -> dict:
