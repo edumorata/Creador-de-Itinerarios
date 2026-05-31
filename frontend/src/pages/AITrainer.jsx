@@ -688,6 +688,7 @@ function PendingRequestsSection({ items, onSaved }) {
 function PendingCard({ ex, onSaved }) {
   const [text, setText] = useState("");
   const [name, setName] = useState(ex.client_name || "");
+  const [partner, setPartner] = useState(ex.partner || "kimkim");
   const [saving, setSaving] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const struct = ex.itinerary_structured_ops;
@@ -700,6 +701,7 @@ function PendingCard({ ex, onSaved }) {
       await api.patch(`/training-examples/${ex.example_id}`, {
         client_request: text.trim(),
         client_name: name.trim() || ex.client_name,
+        partner,
       });
       toast.success("Solicitud guardada · ejemplo completo");
       onSaved();
@@ -769,7 +771,24 @@ function PendingCard({ ex, onSaved }) {
       )}
 
       <div className="border-t border-clay-200 px-4 py-3">
-        <div className="smallcaps text-terracotta mb-1.5 text-[10px]">Solicitud original del cliente</div>
+        <div className="flex items-center gap-3 mb-1.5">
+          <div className="smallcaps text-terracotta text-[10px]">Solicitud original del cliente</div>
+          <div className="ml-auto flex items-center gap-2 text-[10px]">
+            <span className="smallcaps text-clay-700">Partner</span>
+            <select
+              data-testid={`pending-partner-${ex.example_id}`}
+              value={partner}
+              onChange={(e) => setPartner(e.target.value)}
+              className="bg-white border border-clay-300 px-2 py-1 text-xs outline-none focus:border-terracotta"
+            >
+              <option value="kimkim">KimKim</option>
+              <option value="zicasso">Zicasso</option>
+              <option value="responsible_travel">Responsible Travel</option>
+              <option value="direct">Direct</option>
+              <option value="other">Otro</option>
+            </select>
+          </div>
+        </div>
         <textarea
           data-testid={`pending-request-${ex.example_id}`}
           value={text}
@@ -997,7 +1016,26 @@ function CalibrationCard() {
         <Stat l="Composición (objetivo 1.0)" v={g.median_composition ?? "—"} cls={`${compColor} border-l border-clay-300`} />
       </div>
 
-      <div className="p-5 grid grid-cols-2 gap-6">
+      <div className="p-5 grid grid-cols-3 gap-6">
+        <div>
+          <div className="smallcaps mb-2">Por partner</div>
+          <table className="w-full text-sm tabular">
+            <thead><tr className="text-[10px] tracking-widest uppercase text-clay-700">
+              <th className="text-left py-1">Partner</th><th className="text-right py-1">N</th>
+              <th className="text-right py-1">Ratio</th><th className="text-right py-1">Comp.</th>
+            </tr></thead>
+            <tbody>
+              {Object.entries(status.by_partner || {}).sort(([,a],[,b]) => b.n - a.n).map(([p, s]) => (
+                <tr key={p} className="border-t border-clay-200">
+                  <td className="py-1.5">{p === "responsible_travel" ? "Responsible Travel" : p.charAt(0).toUpperCase() + p.slice(1)}</td>
+                  <td className="text-right py-1.5">{s.n}</td>
+                  <td className={`text-right py-1.5 ${s.median_ratio && Math.abs(s.median_ratio - 1.0) > 0.3 ? "text-destructive" : ""}`}>{s.median_ratio ?? "—"}</td>
+                  <td className={`text-right py-1.5 ${s.median_composition && s.median_composition < 0.55 ? "text-destructive" : ""}`}>{s.median_composition ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         <div>
           <div className="smallcaps mb-2">Por destino</div>
           <table className="w-full text-sm tabular">

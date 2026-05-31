@@ -280,6 +280,14 @@ class TrainingExample(BaseModel):
     itinerary_text_ops: Optional[str] = None
     itinerary_structured_ops: Optional[dict] = None
     outcome: TripOutcome = "pending"
+    # Partner / source of the request. Each partner has a different commission
+    # model that the AI generator must respect when pricing the draft.
+    #  - kimkim             : KimKim adds 15% ON TOP of our price (additive)
+    #  - zicasso            : Zicasso keeps 10.5% OF our price (deductive)
+    #  - responsible_travel : Responsible Travel keeps 10% OF our price (deductive)
+    #  - direct             : Direct booking, no partner commission
+    #  - other              : catch-all for partners not yet modelled
+    partner: Optional[str] = "kimkim"
     notes: Optional[str] = None
     sales_agent: Optional[str] = None
     owner_agent: Optional[str] = None
@@ -297,6 +305,7 @@ class TrainingExampleUpsert(BaseModel):
     itinerary_text_ops: Optional[str] = None
     itinerary_structured_ops: Optional[dict] = None
     outcome: Optional[TripOutcome] = None
+    partner: Optional[str] = None
     notes: Optional[str] = None
     sales_agent: Optional[str] = None
     owner_agent: Optional[str] = None

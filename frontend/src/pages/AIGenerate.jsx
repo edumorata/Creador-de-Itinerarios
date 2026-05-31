@@ -7,6 +7,7 @@ import api from "@/lib/api";
 export default function AIGenerate() {
   const [clientName, setClientName] = useState("");
   const [request, setRequest] = useState("");
+  const [partner, setPartner] = useState("kimkim");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const navigate = useNavigate();
@@ -19,6 +20,7 @@ export default function AIGenerate() {
       const { data } = await api.post("/ai/generate-itinerary", {
         client_request: request,
         client_name: clientName,
+        partner,
         save: true,
       });
       setResult(data);
@@ -43,9 +45,26 @@ export default function AIGenerate() {
       </div>
 
       <div className="border border-clay-300 bg-white p-6">
-        <div className="mb-4">
-          <div className="smallcaps mb-1">Nombre del cliente (opcional)</div>
-          <input data-testid="gen-name" placeholder="ej. John & Sarah Miller" value={clientName} onChange={(e) => setClientName(e.target.value)} className="w-full bg-white border border-clay-300 px-3 py-2 text-sm outline-none focus:border-terracotta" />
+        <div className="grid grid-cols-2 gap-4 mb-4">
+          <div>
+            <div className="smallcaps mb-1">Nombre del cliente (opcional)</div>
+            <input data-testid="gen-name" placeholder="ej. John & Sarah Miller" value={clientName} onChange={(e) => setClientName(e.target.value)} className="w-full bg-white border border-clay-300 px-3 py-2 text-sm outline-none focus:border-terracotta" />
+          </div>
+          <div>
+            <div className="smallcaps mb-1">Partner / Source <span className="text-clay-500 normal-case tracking-normal">— afecta a la comisión y al markup</span></div>
+            <select
+              data-testid="gen-partner"
+              value={partner}
+              onChange={(e) => setPartner(e.target.value)}
+              className="w-full bg-white border border-clay-300 px-3 py-2 text-sm outline-none focus:border-terracotta"
+            >
+              <option value="kimkim">KimKim (+15% encima)</option>
+              <option value="zicasso">Zicasso (cobra 10,5% de nuestro precio)</option>
+              <option value="responsible_travel">Responsible Travel (cobra 10% de nuestro precio)</option>
+              <option value="direct">Direct (sin comisión)</option>
+              <option value="other">Otro</option>
+            </select>
+          </div>
         </div>
         <div>
           <div className="flex items-baseline gap-2 mb-1">

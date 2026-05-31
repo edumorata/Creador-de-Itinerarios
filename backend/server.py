@@ -1443,7 +1443,7 @@ def _composition_score(r: dict) -> Optional[float]:
 
 
 @api.get("/calibration/status")
-async def calibration_status(_: Annotated[User, Depends(current_user)]):
+async def calibration_status(_: Annotated[User, Depends(require_admin)]):
     """Aggregated metrics from the latest batch eval run."""
     import statistics as _stats
 
@@ -1492,6 +1492,29 @@ async def calibration_status(_: Annotated[User, Depends(current_user)]):
             "median_composition": round(_stats.median(comps), 2) if comps else None,
         }
 
+    # By partner — needs a DB lookup since the JSONL doesn't store the partner.
+    eval_ids = [r["example_id"] for r in rows if r.get("example_id")]
+    partner_lookup: dict[str, str] = {}
+    if eval_ids:
+        async for doc in db.training_examples.find(
+            {"example_id": {"$in": eval_ids}}, {"example_id": 1, "partner": 1, "_id": 0}
+        ):
+            partner_lookup[doc["example_id"]] = doc.get("partner") or "unknown"
+    by_partner: dict = {}
+    for r in rows:
+        p = partner_lookup.get(r.get("example_id"), "unknown")
+        by_partner.setdefault(p, []).append(r)
+    partner_stats = {}
+    for p, lst in by_partner.items():
+        comps = [_composition_score(x) for x in lst]
+        comps = [s for s in comps if s is not None]
+        rats = [x["ratio_draft_over_real"] for x in lst if x.get("ratio_draft_over_real")]
+        partner_stats[p] = {
+            "n": len(lst),
+            "median_ratio": round(_stats.median(rats), 2) if rats else None,
+            "median_composition": round(_stats.median(comps), 2) if comps else None,
+        }
+
     return {
         "trips_total_sold_with_request": total_sold,
         "trips_analyzed": analyzed_in_db,
@@ -1505,6 +1528,7 @@ async def calibration_status(_: Annotated[User, Depends(current_user)]):
         },
         "by_country": country_stats,
         "by_sales_agent": agent_stats,
+        "by_partner": partner_stats,
         "last_run": rows[-1].get("duration_seconds") if rows else None,
         "job": await db.calibration_jobs.find_one(
             {}, {"_id": 0}, sort=[("started_at", -1)]
@@ -1513,7 +1537,7 @@ async def calibration_status(_: Annotated[User, Depends(current_user)]):
 
 
 @api.get("/calibration/rules")
-async def calibration_rules(_: Annotated[User, Depends(current_user)]):
+async def calibration_rules(_: Annotated[User, Depends(require_admin)]):
     """Parse the rules section of SYSTEM_PROMPT_GENERATE for display in the UI."""
     import re
     # Each rule starts with a letter+`)` at column 0 of the prompt, e.g.
@@ -1534,7 +1558,7 @@ async def calibration_rules(_: Annotated[User, Depends(current_user)]):
 
 @api.post("/calibration/run")
 async def calibration_run(
-    user: Annotated[User, Depends(current_user)],
+    user: Annotated[User, Depends(require_admin)],
     payload: dict = Body(default={}),
 ):
     """Kick off the batch_eval_v2 script as a background subprocess. The script
@@ -1601,13 +1625,13 @@ async def calibration_run(
 
 
 @api.get("/calibration/jobs")
-async def calibration_jobs_list(_: Annotated[User, Depends(current_user)]):
+async def calibration_jobs_list(_: Annotated[User, Depends(require_admin)]):
     items = await db.calibration_jobs.find({}, {"_id": 0}).sort("started_at", -1).limit(20).to_list(20)
     return items
 
 
 @api.get("/calibration/jobs/{job_id}/log")
-async def calibration_job_log(job_id: str, _: Annotated[User, Depends(current_user)]):
+async def calibration_job_log(job_id: str, _: Annotated[User, Depends(require_admin)]):
     doc = await db.calibration_jobs.find_one({"job_id": job_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="job not found")
@@ -1868,13 +1892,13 @@ async def import_all_hotels_server(
         "files": file_results,
     }
 @api.get("/training-examples", response_model=List[TrainingExample])
-async def list_training_examples(_: Annotated[User, Depends(current_user)]):
+async def list_training_examples(_: Annotated[User, Depends(require_admin)]):
     items = await db.training_examples.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
     return items
 
 
 @api.get("/training-examples/pending-request", response_model=List[TrainingExample])
-async def list_pending_request_examples(_: Annotated[User, Depends(current_user)]):
+async def list_pending_request_examples(_: Annotated[User, Depends(require_admin)]):
     """Training examples imported from gestion that still need a client request."""
     items = await db.training_examples.find(
         {"$or": [{"client_request": ""}, {"client_request": None}]},
@@ -1884,13 +1908,13 @@ async def list_pending_request_examples(_: Annotated[User, Depends(current_user)
 
 
 @api.get("/training-examples/bulk-import-jobs", response_model=List[BulkImportJob])
-async def list_bulk_import_jobs(_: Annotated[User, Depends(current_user)]):
+async def list_bulk_import_jobs(_: Annotated[User, Depends(require_admin)]):
     docs = await db.bulk_import_jobs.find({}, {"_id": 0}).sort("started_at", -1).to_list(30)
     return docs
 
 
 @api.get("/training-examples/bulk-import-jobs/{job_id}", response_model=BulkImportJob)
-async def get_bulk_import_job(job_id: str, _: Annotated[User, Depends(current_user)]):
+async def get_bulk_import_job(job_id: str, _: Annotated[User, Depends(require_admin)]):
     doc = await db.bulk_import_jobs.find_one({"job_id": job_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1898,7 +1922,7 @@ async def get_bulk_import_job(job_id: str, _: Annotated[User, Depends(current_us
 
 
 @api.post("/training-examples/bulk-import-jobs/{job_id}/cancel", response_model=BulkImportJob)
-async def cancel_bulk_import_job(job_id: str, _: Annotated[User, Depends(current_user)]):
+async def cancel_bulk_import_job(job_id: str, _: Annotated[User, Depends(require_admin)]):
     """Mark a running job as cancelled. The background worker polls this status
     between actions and stops cleanly, scraping whatever it has already listed."""
     doc = await db.bulk_import_jobs.find_one({"job_id": job_id}, {"_id": 0})
@@ -1916,7 +1940,7 @@ async def cancel_bulk_import_job(job_id: str, _: Annotated[User, Depends(current
 
 
 @api.post("/training-examples/bulk-import-jobs/{job_id}/resume", response_model=BulkImportJob)
-async def resume_bulk_import_job(job_id: str, user: User = Depends(current_user)):
+async def resume_bulk_import_job(job_id: str, user: User = Depends(require_admin)):
     """Pick up an interrupted/failed/cancelled job exactly where it stopped.
     Listing IDs already discovered are kept; only un-processed trip_ids will be
     re-scraped. URL-level dedup also prevents duplicates if any race occurs."""
@@ -1943,7 +1967,7 @@ async def resume_bulk_import_job(job_id: str, user: User = Depends(current_user)
 @api.post("/training-examples", response_model=TrainingExample)
 async def create_training_example(
     payload: TrainingExampleUpsert,
-    user: Annotated[User, Depends(current_user)],
+    user: Annotated[User, Depends(require_admin)],
 ):
     if not payload.client_request:
         raise HTTPException(status_code=400, detail="client_request es obligatorio")
@@ -1953,6 +1977,7 @@ async def create_training_example(
         itinerary_url=payload.itinerary_url,
         itinerary_text=payload.itinerary_text,
         outcome=payload.outcome or "pending",
+        partner=payload.partner or "kimkim",
         notes=payload.notes,
         created_by=user.email,
     )
@@ -1965,7 +1990,7 @@ async def create_training_example(
 async def update_training_example(
     example_id: str,
     payload: TrainingExampleUpsert,
-    _: Annotated[User, Depends(current_user)],
+    _: Annotated[User, Depends(require_admin)],
 ):
     patch = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
     if patch:
@@ -1978,7 +2003,7 @@ async def update_training_example(
 
 
 @api.delete("/training-examples/{example_id}")
-async def delete_training_example(example_id: str, _: Annotated[User, Depends(current_user)]):
+async def delete_training_example(example_id: str, _: Annotated[User, Depends(require_admin)]):
     res = await db.training_examples.delete_one({"example_id": example_id})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1987,7 +2012,7 @@ async def delete_training_example(example_id: str, _: Annotated[User, Depends(cu
 
 
 @api.get("/ai/retrieval/stats")
-async def retrieval_stats(_: Annotated[User, Depends(current_user)]):
+async def retrieval_stats(_: Annotated[User, Depends(require_admin)]):
     """Inspect the TF-IDF index status (size + vocabulary)."""
     r = await get_retriever(db)
     return {
@@ -2005,7 +2030,7 @@ async def retrieval_stats(_: Annotated[User, Depends(current_user)]):
 @api.post("/ai/retrieval/search")
 async def retrieval_search(
     payload: dict = Body(...),
-    _: Annotated[User, Depends(current_user)] = None,
+    _: Annotated[User, Depends(require_admin)] = None,
 ):
     """Manual semantic search over training examples — useful to preview what the
     AI generator will see for a given client request."""
@@ -2030,7 +2055,7 @@ async def retrieval_search(
 @api.post("/training-examples/bulk-import-gestion", response_model=BulkImportJob)
 async def bulk_import_gestion(
     payload: dict = Body(...),
-    user: User = Depends(current_user),
+    user: User = Depends(require_admin),
 ):
     """Kick off a background job that logs in to gestion.viajadverdad.com, lists
     /trips matching the given filters and scrapes each one into a TrainingExample.
@@ -2153,6 +2178,20 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
     date_to = (params.get("date_to") or "").strip()
     raw_outcome = (params.get("outcome") or "sold").strip().lower()
     outcome: TripOutcome = raw_outcome if raw_outcome in ("sold", "not_sold", "pending") else "sold"
+    # Partner / source — saved on every imported TrainingExample so the AI
+    # generator can later adjust pricing per commission model.
+    raw_partner = (params.get("partner") or params.get("source") or "kimkim").strip().lower()
+    partner_map = {
+        "kimkim": "kimkim",
+        "zicasso": "zicasso",
+        "responsibletravel": "responsible_travel",
+        "responsible travel": "responsible_travel",
+        "responsible_travel": "responsible_travel",
+        "direct": "direct",
+        "directo": "direct",
+        "direct booking": "direct",
+    }
+    partner: str = partner_map.get(raw_partner, "other")
     try:
         limit = max(1, min(int(params.get("limit") or 500), 2000))
     except Exception:
@@ -2489,6 +2528,7 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
                 itinerary_text_ops=text,
                 itinerary_structured_ops=structured,
                 outcome=outcome,    # selectable per-import (sold / not_sold / pending)
+                partner=partner,    # selectable per-import (kimkim / zicasso / ...)
                 notes=notes_tag,
                 sales_agent=agents.get("sales_agent"),
                 owner_agent=agents.get("owner_agent"),
@@ -2741,7 +2781,7 @@ def _summ_hotel(h: dict) -> dict:
 @api.post("/ai/generate-itinerary")
 async def ai_generate(
     payload: dict = Body(...),
-    user: User = Depends(current_user),
+    user: User = Depends(require_admin),
 ):
     """Generate an itinerary draft from a client request.
 
@@ -2753,6 +2793,11 @@ async def ai_generate(
         raise HTTPException(status_code=400, detail="client_request es obligatorio")
     client_name = (payload.get("client_name") or "").strip()
     save = bool(payload.get("save", True))
+    # Partner / source for this client. Determines the commission model the AI
+    # must apply when pricing the draft.
+    partner: str = (payload.get("partner") or "kimkim").strip().lower()
+    if partner not in ("kimkim", "zicasso", "responsible_travel", "direct", "other"):
+        partner = "other"
     # Optional: skip these training-example IDs during retrieval. Used for offline
     # self-evaluation so the system doesn't cheat by retrieving the very example
     # we're trying to predict.
@@ -2862,8 +2907,48 @@ async def ai_generate(
         "top_score": (examples[0].get("_score") if examples and examples[0].get("_score") is not None else None),
     }
 
+    # Partner pricing instructions — injected into every call so the AI
+    # respects each partner's commission model.
+    partner_pricing = {
+        "kimkim": (
+            "PARTNER = KIMKIM (15% on top of agency price)\n"
+            "All 167 trips in the training data were sold via KimKim. The PVPs you "
+            "see in PAST EXAMPLES already include KimKim's 15% commission ON TOP of "
+            "our cost. Match those PVP figures directly — do NOT add a second markup. "
+            "Use markup_pct = 15 (default)."
+        ),
+        "zicasso": (
+            "PARTNER = ZICASSO (keeps 10.5% OF the agency price — DEDUCTIVE).\n"
+            "Zicasso clients pay our PVP and Zicasso takes 10.5% from us. To keep the "
+            "same NET revenue per trip as a KimKim trip, INCREASE the PVP by "
+            "dividing by 0.895 (i.e. price the trip ~12% HIGHER than the KimKim-trained "
+            "PAST EXAMPLES suggest). Use markup_pct ≈ 28 (15% inherited + ~12% Zicasso uplift) "
+            "so the EUR totals on screen line up. Mention Zicasso in the summary."
+        ),
+        "responsible_travel": (
+            "PARTNER = RESPONSIBLE TRAVEL (keeps 10% OF the agency price — DEDUCTIVE).\n"
+            "Same logic as Zicasso but the cut is 10%. Divide the KimKim-style PVP by "
+            "0.90 (price ~11% HIGHER). Use markup_pct ≈ 27."
+        ),
+        "direct": (
+            "PARTNER = DIRECT (no platform commission).\n"
+            "Direct clients book straight with the agency — no partner cut. The PAST "
+            "EXAMPLES are KimKim-trained, so DROP the 15% KimKim uplift: divide the "
+            "PVP figures you see by 1.15 to get the real agency-only price. Use "
+            "markup_pct = 15 (or higher, per Rule S) since the agency keeps the full "
+            "markup. Mention 'Direct client — no platform commission' in the summary."
+        ),
+        "other": (
+            "PARTNER = OTHER (commission unknown to this assistant).\n"
+            "Default to KimKim behaviour (15% on top). A human agent will adjust."
+        ),
+    }
+    partner_block = partner_pricing.get(partner, partner_pricing["other"])
+
     user_prompt_parts = [
         f"NEW CLIENT REQUEST:\n{request_text}",
+        "",
+        partner_block,
         "",
         (
             f"DETECTED CONTEXT — country={country or 'unknown'} · cities={', '.join(cities) if cities else 'none'}.\n"
@@ -2916,7 +3001,7 @@ async def ai_generate(
     if save:
         await db.itineraries.insert_one(dict(draft))  # avoid mutating draft with _id
     draft.pop("_id", None)
-    return {"itinerary": draft, "ai_summary": data.get("summary", ""), "retrieval": retrieval_meta}
+    return {"itinerary": draft, "ai_summary": data.get("summary", ""), "retrieval": retrieval_meta, "partner": partner}
 
 
 def _re_escape(s: str) -> str:
