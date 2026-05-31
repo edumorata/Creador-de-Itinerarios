@@ -2749,7 +2749,12 @@ S) DIRECT CLIENT vs KIMKIM — DEFAULT PARTNER COMMISSION BY SOURCE PATTERN.
      mention → assume Partner Commission 0% (direct client). Use markup 30-40% on
      cotizado to land on a healthy margin.
    - "Source: KimKim" or short request via partner platform → KK commission 15% default
-     (range 8-30%). Use markup 15-20% on cotizado.
+     (range 8-30%). Use markup **35-50%** on cotizado — the agency needs to cover the
+     KK fee AND keep its own ~25-28% margin on ingresado.
+     Example: cotizado $3,754 → PVP $8,329 → ingresado $5,528 → margin $1,774 (32%).
+     The markup over cotizado here was 1.22x = 122%, but most of that goes to KK and
+     payment fees. Don't be afraid to apply a 1.4-2.2x markup on cotizado for KK
+     trips.
    - Source: Zicasso → 8-10.5%.
    - Source: ResponsibleTravel → check the partner row in the spreadsheet.
    When in doubt, prefer the higher markup — clients can negotiate down but you rarely
@@ -2951,9 +2956,26 @@ AL) ENFORCED PRICING TARGETS — DATA FROM 67 SOLD TRIPS ANALYSED.
    Calibration after running the draft generator against every sold trip in the database:
    - Mean draft/real ratio: 1.10x · median: 0.99x · stdev: 0.72
    - 38/67 trips were OVER-PROGRAMMED on activities by +30% on average.
-   - REAL sold trips have MEDIAN 1.09 paid activities/day. NEVER target above 1.3/day.
-   - HOTEL COUNT: real sold trips have MEDIAN 4 hotels, MEAN 3.9. Drafts often pack 3 hotels
-     when 4 would be the right answer (longer trip = more bases, not fewer).
+   - REAL sold trips have MEDIAN **0.9** paid activities/day. NEVER target above 1.2/day.
+   - For a 9-day trip the target is **6-9 paid activities total** (one per day max, with
+     1-2 "free days" interspersed). The Vraj Patel sold trip had EXACTLY 6 paid activities
+     over 9 days (0.67/day) and still felt full because each was substantial.
+   - HOTEL COUNT: real sold trips have MEDIAN 4 hotels, MEAN 3.9.
+
+AL2) ZERO-TOLERANCE FOR DUPLICATE ACTIVITY TYPES.
+   The Vraj Patel sold trip had ONE food experience (Food Lover's Rome) and ONE wine
+   experience (none, replaced by Cicchetti in Venice) — NOT two food tours in the same
+   trip. Audit your draft: if you have 2+ activities of the same type
+   (food tour, wine tasting, archaeological tour) across the trip, drop the redundant one
+   and replace with a "free day". Sold trips diversify activity TYPES across days, not
+   stack them.
+
+AL3) "PREFERRED HOTEL CITY = PREFERRED ACTIVITY CITY" CHECK.
+   Hotels and activities must be in the SAME city per day. The most common silent bug is
+   picking a Naples B&B as the "Sorrento" hotel because the LLM saw "Sorrento → Naples"
+   in the transit pattern. Always verify: if the day says city=Sorrento, the hotel.city
+   must equal "Sorrento" (not "Naples", not "Amalfi"). Same for "Costa del Sol" vs
+   "Málaga", "Algarve" vs "Lagos", etc.
 
 AM) LONG TRIPS (>14 DAYS) ARE SYSTEMATICALLY UNDER-PRICED — ADD MORE BASES, NOT JUST DAYS.
    Long trips (>14 days) draft-vs-real ratio is 0.73x in batch evaluation, vs 1.04x for
