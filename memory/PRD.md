@@ -111,6 +111,42 @@
   - `GET  /api/calibration/jobs`
   - `GET  /api/calibration/jobs/{job_id}/log`
 
+### Iteration 7 (2026-05-31) — Partner support + admin lock-down
+- **All `/api/training-examples/*`, `/api/ai/*` and `/api/calibration/*` endpoints
+  switched from `current_user` to `require_admin`**. Agent-role users now get
+  403 on every AI/training surface.
+- **Sidebar "Asistente IA" section hidden for non-admin users** (only "Trabajo"
+  visible). Admin still sees Trabajo + Asistente IA + Administración.
+- **`TrainingExample.partner` field added** with `Literal['kimkim','zicasso',
+  'responsible_travel','direct','other']`. Pydantic rejects unknown values
+  with 422.
+- **Retro-tag**: 167 existing training_examples updated to `partner='kimkim'`
+  (one-shot DB migration, idempotent).
+- **Bulk import from gestión** now persists the partner per example. The
+  existing "Source" filter (KimKim/Zicasso/…) is mapped to the partner field
+  on save. ResponsibleTravel and Responsible Travel normalise to the same key.
+- **Manual edit (PendingCard)**: dropdown to set partner per training-example
+  when filling in the original client request — for future Travefy imports.
+- **AI generation** (`POST /api/ai/generate-itinerary`) accepts `partner` in
+  the payload. The system prompt now receives an explicit per-partner pricing
+  block:
+  - **KimKim** (additive +15%): use prices from training examples as-is,
+    markup_pct=15
+  - **Zicasso** (deductive 10.5%): divide KimKim PVPs by 0.895 to keep net
+    revenue intact, markup_pct≈28
+  - **Responsible Travel** (deductive 10%): divide by 0.90, markup_pct≈27
+  - **Direct** (no commission): divide KimKim PVPs by 1.15, markup_pct=15
+  - **Other**: defaults to KimKim behaviour
+- **`AIGenerate` page** (`/ai/generate`) gained a "Partner / Source" dropdown
+  with the four partner options + their commission semantics in labels.
+- **Calibration card** gained a third "Por partner" table (the existing
+  by_country and by_sales_agent are unchanged). Currently shows only
+  `kimkim · 158 trips · ratio 1.26 · composition 0.64` since that's the only
+  partner in the dataset.
+- **Tests**: testing_agent_v3_fork ran 27 backend cases · all green · no
+  critical bugs · only maintainability suggestions (server.py size, fx cache
+  sweeper, calibration_run watchdog).
+
 ## Known minor items
 - Autocomplete payload returns full Experience docs (could be slimmed)
 - CORS regex `.*` is permissive (lock down to frontend origin for production)

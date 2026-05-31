@@ -33,6 +33,7 @@ ServiceType = Literal[
 ]
 HotelTier = Literal["luxury", "upscale", "comfort", "standard", "budget"]
 TripOutcome = Literal["sold", "not_sold", "pending"]
+PartnerKind = Literal["kimkim", "zicasso", "responsible_travel", "direct", "other"]
 BulkJobStatus = Literal[
     "queued", "running", "completed", "failed", "cancelled", "interrupted",
 ]
@@ -287,7 +288,7 @@ class TrainingExample(BaseModel):
     #  - responsible_travel : Responsible Travel keeps 10% OF our price (deductive)
     #  - direct             : Direct booking, no partner commission
     #  - other              : catch-all for partners not yet modelled
-    partner: Optional[str] = "kimkim"
+    partner: Optional[PartnerKind] = "kimkim"
     notes: Optional[str] = None
     sales_agent: Optional[str] = None
     owner_agent: Optional[str] = None
@@ -305,7 +306,7 @@ class TrainingExampleUpsert(BaseModel):
     itinerary_text_ops: Optional[str] = None
     itinerary_structured_ops: Optional[dict] = None
     outcome: Optional[TripOutcome] = None
-    partner: Optional[str] = None
+    partner: Optional[PartnerKind] = None
     notes: Optional[str] = None
     sales_agent: Optional[str] = None
     owner_agent: Optional[str] = None
