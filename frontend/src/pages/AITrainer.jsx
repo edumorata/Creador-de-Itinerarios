@@ -235,6 +235,9 @@ export default function AITrainer() {
         jobsHistory={jobsHistory}
       />
 
+      {/* ---------- AI CALIBRATION ---------- */}
+      <CalibrationCard />
+
       {/* ---------- PENDING REQUESTS ---------- */}
       {pending.length > 0 && (
         <PendingRequestsSection items={pending} onSaved={load} />
@@ -864,6 +867,206 @@ function Modal({ title, children, onClose }) {
           <button onClick={onClose} className="p-1 hover:bg-clay-200"><X size={16}/></button>
         </div>
         {children}
+      </div>
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// CALIBRATION CARD — shows how well the AI generator is composing itineraries
+// (price ratio + composition score), lists learned business rules, and lets
+// the user trigger a re-evaluation against newly imported sold trips.
+// ---------------------------------------------------------------------------
+function CalibrationCard() {
+  const [status, setStatus] = React.useState(null);
+  const [rules, setRules] = React.useState([]);
+  const [showRules, setShowRules] = React.useState(false);
+  const [running, setRunning] = React.useState(false);
+  const [log, setLog] = React.useState("");
+  const pollRef = React.useRef(null);
+
+  const refresh = React.useCallback(async () => {
+    try {
+      const [s, r] = await Promise.all([
+        api.get("/calibration/status"),
+        api.get("/calibration/rules"),
+      ]);
+      setStatus(s.data);
+      setRules(r.data?.rules || []);
+      // If a job is running, attach polling
+      const job = s.data?.job;
+      if (job && job.status === "running" && !pollRef.current) {
+        setRunning(true);
+        pollRef.current = setInterval(async () => {
+          try {
+            const { data } = await api.get(`/calibration/jobs/${job.job_id}/log`);
+            setLog(data.log_tail || "");
+            if (data.job?.status !== "running") {
+              clearInterval(pollRef.current);
+              pollRef.current = null;
+              setRunning(false);
+              await refresh();
+            } else {
+              setStatus((prev) => ({ ...prev, job: data.job }));
+            }
+          } catch {}
+        }, 5000);
+      } else if (!job || job.status !== "running") {
+        if (pollRef.current) clearInterval(pollRef.current);
+        pollRef.current = null;
+        setRunning(false);
+      }
+    } catch (e) {
+      // silently ignore — endpoint may not exist in older deployments
+    }
+  }, []);
+
+  React.useEffect(() => {
+    refresh();
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [refresh]);
+
+  const startRun = async (reset = false) => {
+    if (running) return;
+    if (reset && !window.confirm("¿Re-evaluar TODOS los viajes? (consume mucho LLM budget)")) return;
+    setRunning(true);
+    setLog("Lanzando…");
+    try {
+      await api.post("/calibration/run", { reset_markers: reset });
+      toast.success(reset ? "Re-evaluación completa lanzada" : "Analizando viajes nuevos…");
+      refresh();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Error al lanzar");
+      setRunning(false);
+    }
+  };
+
+  if (!status) {
+    return (
+      <div className="border border-clay-300 bg-white p-5 mb-8" data-testid="calibration-card">
+        <div className="smallcaps mb-1">Calibración IA</div>
+        <div className="text-sm text-clay-600">Cargando…</div>
+      </div>
+    );
+  }
+
+  const g = status.global || {};
+  const ratioColor = !g.median_ratio ? "text-clay-700"
+    : Math.abs(g.median_ratio - 1.0) < 0.15 ? "text-pine"
+    : Math.abs(g.median_ratio - 1.0) < 0.30 ? "text-terracotta" : "text-destructive";
+  const compColor = !g.median_composition ? "text-clay-700"
+    : g.median_composition >= 0.75 ? "text-pine"
+    : g.median_composition >= 0.55 ? "text-terracotta" : "text-destructive";
+
+  return (
+    <div className="border border-clay-300 bg-white mb-8" data-testid="calibration-card">
+      <div className="p-5 border-b border-clay-300">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="smallcaps">Calibración IA</div>
+            <div className="font-serif text-2xl mt-1">¿Qué tan bien aprende el agente?</div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              data-testid="cal-run-new"
+              disabled={running || (status.trips_pending_eval || 0) === 0}
+              onClick={() => startRun(false)}
+              className="px-3 py-2 text-xs tracking-wider uppercase bg-clay-900 text-white hover:bg-terracotta disabled:opacity-40"
+              title="Analiza solo los viajes que aún no se han evaluado"
+            >
+              {running ? "Analizando…" : `Analizar nuevos (${status.trips_pending_eval || 0})`}
+            </button>
+            <button
+              data-testid="cal-run-all"
+              disabled={running}
+              onClick={() => startRun(true)}
+              className="px-3 py-2 text-xs tracking-wider uppercase border border-clay-400 text-clay-700 hover:bg-clay-100 disabled:opacity-40"
+              title="Re-evaluar todos los viajes (gasta presupuesto LLM)"
+            >
+              Reset y re-evaluar
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-4 gap-0 border-b border-clay-300">
+        <Stat l="Viajes analizados" v={`${status.trips_analyzed}/${status.trips_total_sold_with_request}`} />
+        <Stat l="Pendientes eval" v={status.trips_pending_eval} />
+        <Stat l="Ratio precio (objetivo 1.0)" v={g.median_ratio ?? "—"} cls={`${ratioColor} border-l border-clay-300`} />
+        <Stat l="Composición (objetivo 1.0)" v={g.median_composition ?? "—"} cls={`${compColor} border-l border-clay-300`} />
+      </div>
+
+      <div className="p-5 grid grid-cols-2 gap-6">
+        <div>
+          <div className="smallcaps mb-2">Por destino</div>
+          <table className="w-full text-sm tabular">
+            <thead><tr className="text-[10px] tracking-widest uppercase text-clay-700">
+              <th className="text-left py-1">País</th><th className="text-right py-1">N</th>
+              <th className="text-right py-1">Ratio</th><th className="text-right py-1">Comp.</th>
+            </tr></thead>
+            <tbody>
+              {Object.entries(status.by_country || {}).sort(([,a],[,b]) => b.n - a.n).map(([c, s]) => (
+                <tr key={c} className="border-t border-clay-200">
+                  <td className="py-1.5">{c}</td>
+                  <td className="text-right py-1.5">{s.n}</td>
+                  <td className={`text-right py-1.5 ${s.median_ratio && Math.abs(s.median_ratio - 1.0) > 0.3 ? "text-destructive" : ""}`}>{s.median_ratio ?? "—"}</td>
+                  <td className={`text-right py-1.5 ${s.median_composition && s.median_composition < 0.55 ? "text-destructive" : ""}`}>{s.median_composition ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <div className="smallcaps mb-2">Por sales agent</div>
+          <table className="w-full text-sm tabular">
+            <thead><tr className="text-[10px] tracking-widest uppercase text-clay-700">
+              <th className="text-left py-1">Agente</th><th className="text-right py-1">N</th>
+              <th className="text-right py-1">Ratio</th><th className="text-right py-1">Comp.</th>
+            </tr></thead>
+            <tbody>
+              {Object.entries(status.by_sales_agent || {}).sort(([,a],[,b]) => b.n - a.n).map(([a, s]) => (
+                <tr key={a} className="border-t border-clay-200">
+                  <td className="py-1.5">{a}</td>
+                  <td className="text-right py-1.5">{s.n}</td>
+                  <td className={`text-right py-1.5 ${s.median_ratio && Math.abs(s.median_ratio - 1.0) > 0.3 ? "text-destructive" : ""}`}>{s.median_ratio ?? "—"}</td>
+                  <td className={`text-right py-1.5 ${s.median_composition && s.median_composition < 0.55 ? "text-destructive" : ""}`}>{s.median_composition ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {running && (
+        <div className="px-5 pb-3" data-testid="cal-running">
+          <div className="text-xs text-clay-700 mb-1">Worker activo · pid {status.job?.pid}</div>
+          <pre className="text-[11px] bg-clay-900 text-clay-100 p-3 max-h-40 overflow-auto whitespace-pre-wrap">{log || "Esperando primeras líneas…"}</pre>
+        </div>
+      )}
+
+      <div className="border-t border-clay-300">
+        <button
+          data-testid="cal-toggle-rules"
+          onClick={() => setShowRules((s) => !s)}
+          className="w-full text-left px-5 py-3 hover:bg-clay-50 flex items-center justify-between"
+        >
+          <span className="smallcaps">{rules.length} reglas aprendidas en el system prompt</span>
+          <span className="text-xs text-clay-500">{showRules ? "Ocultar ▲" : "Mostrar ▼"}</span>
+        </button>
+        {showRules && (
+          <div className="border-t border-clay-200 max-h-96 overflow-auto" data-testid="cal-rules-list">
+            {rules.map((r) => (
+              <details key={r.key} className="border-b border-clay-200 px-5 py-2 hover:bg-clay-50">
+                <summary className="cursor-pointer text-sm">
+                  <span className="inline-block w-12 font-semibold text-terracotta">{r.key})</span>
+                  <span className="text-clay-900">{r.title}</span>
+                </summary>
+                <pre className="mt-2 text-[11px] text-clay-700 whitespace-pre-wrap pl-12">{r.body}</pre>
+              </details>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -80,6 +80,37 @@
   - "Entrenamientos pendientes de solicitud" section with one card per pending example: link to gestion, optional structured-day summary, free textarea for the original client request, and a "Guardar y marcar entrenado" button.
 - Verified end-to-end: trips imported with both `outcome=sold` and `outcome=not_sold` correctly tagged.
 
+### Iteration 6 (2026-05-31) — Refactor + Currency converter + Calibration UI
+- **Refactor (Phase 4 conservative)**: `server.py` shrunk from 3,598 → 2,983 lines.
+  - `prompts.py` (new, 620 lines) — `SYSTEM_PROMPT_GENERATE` extracted.
+  - `models.py` (new, 350 lines) — all Pydantic models + type aliases extracted.
+  - Routes stayed in `server.py` to keep this refactor risk-free.
+- **Currency converter** (Itinerary Builder):
+  - Backend `GET /api/fx/rate?base=EUR&quote=USD` proxies the Frankfurter API
+    (ECB data, free, no auth), caches per-day in `db.fx_rates`, falls back to
+    last known rate on network failures.
+  - Frontend `FxConverter` block under the PVP card: shows "1 € = X.XXXX USD"
+    editable, "Auto" button to refresh, and PVP-in-USD on a pine pill.
+- **AI Calibration card** in `/ai/trainer`:
+  - Stat row: trips analysed (158/167), pending eval (9), median price ratio
+    (1.26x), median composition score (0.64).
+  - Composition score combines city overlap (40%) + hotel count match (20%) +
+    activity count match (20%) + country hit (20%).
+  - Tables: per-destination and per-sales-agent breakdown of ratio + composition.
+  - "Analizar nuevos" button starts the async batch_eval subprocess; only
+    processes trips without `last_learned_at`. "Reset y re-evaluar" wipes the
+    markers for a full re-run (LLM-budget intensive).
+  - Collapsible "54 reglas aprendidas en el system prompt" — parses A→AX rules
+    directly from `SYSTEM_PROMPT_GENERATE` so the user sees what the model is
+    trained on.
+- **New endpoints**:
+  - `GET  /api/fx/rate`
+  - `GET  /api/calibration/status`
+  - `GET  /api/calibration/rules`
+  - `POST /api/calibration/run`
+  - `GET  /api/calibration/jobs`
+  - `GET  /api/calibration/jobs/{job_id}/log`
+
 ## Known minor items
 - Autocomplete payload returns full Experience docs (could be slimmed)
 - CORS regex `.*` is permissive (lock down to frontend origin for production)
