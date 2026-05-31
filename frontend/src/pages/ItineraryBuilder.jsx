@@ -674,16 +674,48 @@ function AccommodationsBlock({ itn, schedSave, markup }) {
     schedSave({ ...itn, accommodations: (itn.accommodations || []).filter((_, i) => i !== idx) });
   };
   const fetchOrient = async (idx, a) => {
-    // Use the hotel name as a search seed if no city is present elsewhere.
-    const city = (a.name || "").split(",")[0].trim() || prompt("¿Ciudad para buscar precio orientativo?");
-    if (!city) return;
+    // Resolve the city for this hotel:
+    // 1. If the hotel name matches an entry in the catalog (library OR imported),
+    //    use that hotel's city.
+    // 2. Else, scan the daily plan for a city visited around the stay dates.
+    // 3. Else, prompt the user.
+    let city = null;
+    const name = (a.name || "").trim();
+    if (name) {
+      try {
+        const { data } = await api.get("/hotels", { params: { q: name, include_imported: true } });
+        const hit = (data || []).find((h) => (h.name || "").toLowerCase() === name.toLowerCase())
+                 || (data || [])[0];
+        if (hit && hit.city) city = hit.city;
+      } catch { /* fall through */ }
+    }
+    if (!city && itn.days?.length) {
+      // Use the first day's city that overlaps the stay date range
+      const dFrom = a.date_from ? new Date(a.date_from) : null;
+      for (const d of itn.days) {
+        if (!d.city) continue;
+        if (!dFrom) { city = d.city; break; }
+        if (!d.date) { city = d.city; break; }
+        const dd = new Date(d.date);
+        if (dd >= dFrom) { city = d.city; break; }
+      }
+    }
+    if (!city) {
+      city = window.prompt(`¿Ciudad para buscar precio orientativo de "${name || 'este alojamiento'}"?`, "");
+      if (!city) return;
+    }
     setOrientCity({ idx, city });
     setOrientBusy(true);
     setOrientData(null);
     try {
       const { data } = await api.get("/hotels/price-orientation", {
-        params: { city, checkin: a.date_from || itn.start_date, checkout: a.date_to || itn.end_date, adults: itn.num_travelers || 2 },
-        timeout: 40000,
+        params: {
+          city,
+          checkin: a.date_from || itn.start_date,
+          checkout: a.date_to || itn.end_date,
+          adults: itn.num_travelers || 2,
+        },
+        timeout: 45000,
       });
       setOrientData(data);
     } catch (e) {
@@ -737,8 +769,8 @@ function AccommodationsBlock({ itn, schedSave, markup }) {
                   <button
                     data-testid={`orient-${idx}`}
                     onClick={() => fetchOrient(idx, a)}
-                    title="Precio orientativo basado en histórico + Expedia"
-                    className="text-clay-500 hover:text-terracotta p-1"
+                    title="Buscar precio orientativo · histórico + Expedia"
+                    className="text-clay-700 hover:text-terracotta hover:bg-clay-100 p-1 border border-clay-300 flex items-center justify-center"
                   ><Search size={14}/></button>
                   <button onClick={() => del(idx)} className="text-clay-500 hover:text-destructive p-1"><Trash2 size={14}/></button>
                 </div>

@@ -176,6 +176,27 @@
   Expedia results (when not blocked). "Aplicar a este alojamiento" button
   fills in the price × nights automatically.
 
+### Iteration 9 (2026-05-31) — Hotel orientation in /hotels page + Reset safeguard
+- **Hotels management page (`/hotels`) gained**:
+  - Toggle "Incluir importados del histórico" → reveals the 316 trip-imported
+    hotels (otherwise hidden). Each row shows an "ORIGEN" pill: `library`
+    (pine) or `histórico` (grey).
+  - Per-row lupa button (`hotel-orient-<id>`) opens the same price-orientation
+    modal as the Itinerary Builder. "Aplicar y guardar en este hotel" patches
+    the hotel's `price_per_night_incl` directly with the recommended price.
+  - Per-row "promote" button (Tag icon, only on histórico rows) lets the admin
+    move an auto-imported hotel into the official `library`.
+- **Itinerary Builder lupa fix**:
+  - Smart city resolution: looks up the hotel by name in the catalog (incl.
+    `imported_from_trip`); falls back to the day plan; finally falls back to
+    a manual prompt.
+  - Lupa now has a visible border + hover-fill so it's discoverable (previous
+    icon-only style blended in with delete).
+- **"Reset y re-evaluar" double confirmation**: clicking the button now
+  triggers (1) a `window.confirm` with ⚠️ warning + cost estimate, then (2) a
+  `window.prompt` requiring the literal word `RESET` to be typed. Any other
+  text cancels with an "info" toast. Prevents accidental LLM-budget burns.
+
 ## Known minor items
 - Autocomplete payload returns full Experience docs (could be slimmed)
 - CORS regex `.*` is permissive (lock down to frontend origin for production)

@@ -948,7 +948,28 @@ function CalibrationCard() {
 
   const startRun = async (reset = false) => {
     if (running) return;
-    if (reset && !window.confirm("¿Re-evaluar TODOS los viajes? (consume mucho LLM budget)")) return;
+    if (reset) {
+      // Double confirmation to prevent accidental clicks that would burn the
+      // LLM budget by re-evaluating every trip from scratch.
+      const yes1 = window.confirm(
+        "⚠️ RESET COMPLETO\n\n"
+        + "Esto borrará TODA la marca de viajes ya analizados y re-evaluará "
+        + "los 167 viajes desde cero.\n\n"
+        + "Coste estimado: ~$22 de presupuesto LLM y ~2 horas de ejecución.\n\n"
+        + "¿Quieres continuar?"
+      );
+      if (!yes1) return;
+      const yes2 = window.prompt(
+        "Confirmación final.\n\n"
+        + "Escribe la palabra RESET (en mayúsculas) para confirmar que entiendes "
+        + "que se consumirá presupuesto LLM y todos los viajes serán re-evaluados.",
+        ""
+      );
+      if (yes2 !== "RESET") {
+        toast.info("Cancelado · texto de confirmación incorrecto");
+        return;
+      }
+    }
     setRunning(true);
     setLog("Lanzando…");
     try {
