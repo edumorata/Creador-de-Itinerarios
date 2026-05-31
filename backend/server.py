@@ -1791,6 +1791,8 @@ class TrainingExample(BaseModel):
     itinerary_structured_ops: Optional[dict] = None
     outcome: TripOutcome = "pending"
     notes: Optional[str] = None
+    sales_agent: Optional[str] = None
+    owner_agent: Optional[str] = None
     created_by: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
 
@@ -1806,6 +1808,8 @@ class TrainingExampleUpsert(BaseModel):
     itinerary_structured_ops: Optional[dict] = None
     outcome: Optional[TripOutcome] = None
     notes: Optional[str] = None
+    sales_agent: Optional[str] = None
+    owner_agent: Optional[str] = None
 
 
 BulkJobStatus = Literal["queued", "running", "completed", "failed", "cancelled", "interrupted"]
@@ -2042,6 +2046,33 @@ def _extract_client_name(text: str) -> str:
             if ln and ln.lower() not in ("teléfono", "telefono", "phone", "email", "agente", "agent"):
                 return ln[:80]
     return ""
+
+
+_AGENT_NOISE = {"please select", "", "—", "-", "select", "elegir"}
+
+
+def _extract_agents(text: str) -> dict:
+    """Return {sales_agent, owner_agent} extracted from the gestion ops view text.
+    Uses the same regex pattern that worked on 166/166 imports in the backfill."""
+    out: dict = {"sales_agent": None, "owner_agent": None}
+    if not text:
+        return out
+    lines = text.split("\n")
+    for i, ln in enumerate(lines):
+        s = ln.strip().lower()
+        if s == "agente ventas":
+            for j in range(i + 1, min(i + 4, len(lines))):
+                v = lines[j].strip()
+                if v and v.lower() not in _AGENT_NOISE and not v.lower().startswith("agente") and len(v) < 50:
+                    out["sales_agent"] = v
+                    break
+        elif s == "agente" and out["owner_agent"] is None:
+            for j in range(i + 1, min(i + 4, len(lines))):
+                v = lines[j].strip()
+                if v and v.lower() not in _AGENT_NOISE and not v.lower().startswith("agente") and len(v) < 50:
+                    out["owner_agent"] = v
+                    break
+    return out
 
 
 def _clean_trip_name(raw: str) -> str:
@@ -2419,6 +2450,7 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
                 {"days": [], "notes": rendered.get("error") or "scrape_failed"}
             )
             client_name = trip_names.get(tid) or _extract_client_name(text)
+            agents = _extract_agents(text)
             ex = TrainingExample(
                 client_name=client_name,
                 client_request="",  # pending — user fills later
@@ -2428,6 +2460,8 @@ async def _run_bulk_import_gestion(job_id: str, params: dict, user_email: str):
                 itinerary_structured_ops=structured,
                 outcome=outcome,    # selectable per-import (sold / not_sold / pending)
                 notes=notes_tag,
+                sales_agent=agents.get("sales_agent"),
+                owner_agent=agents.get("owner_agent"),
                 created_by=user_email,
             )
             await db.training_examples.insert_one(ex.model_dump())
