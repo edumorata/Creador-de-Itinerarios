@@ -480,6 +480,27 @@ async def list_experiences(
     return items
 
 
+# ---------------------------------------------------------------------------
+# IVA helpers — Spanish VAT applies ONLY to items located in España.
+# Outside Spain (Portugal/Italy/Morocco/etc.) the agency books at the
+# tax-included rate quoted by the local supplier, so we treat the two
+# fields as identical to avoid double-bookkeeping.
+# ---------------------------------------------------------------------------
+def _force_no_vat_outside_spain(data: dict, country_field: str = "country",
+                                 incl_field: str = "price_tax_incl",
+                                 excl_field: str = "price_tax_excl") -> None:
+    """In-place: if the item's country isn't Spain, align excl == incl using
+    whichever value is non-zero (incl preferred)."""
+    country = (data.get(country_field) or "").strip().lower()
+    if country in ("españa", "espana", "spain"):
+        return
+    incl = data.get(incl_field) or 0
+    excl = data.get(excl_field) or 0
+    target = incl or excl
+    data[incl_field] = target
+    data[excl_field] = target
+
+
 @api.post("/experiences", response_model=Experience)
 async def create_experience(payload: ExperienceCreate, _: Annotated[User, Depends(current_user)]):
     prov = await db.providers.find_one({"provider_id": payload.provider_id}, {"_id": 0})
@@ -491,6 +512,9 @@ async def create_experience(payload: ExperienceCreate, _: Annotated[User, Depend
         data["price"] = data.get("price_tax_incl") or 0.0
     if not data.get("price_tax_incl"):
         data["price_tax_incl"] = data.get("price") or 0.0
+    # Outside Spain → no IVA differential
+    _force_no_vat_outside_spain(data)
+    data["price"] = data["price_tax_incl"]
     exp = Experience(**data, provider_name=prov["name"])
     await db.experiences.insert_one(exp.model_dump())
     return exp
@@ -513,6 +537,15 @@ async def update_experience(
         patch["price"] = patch["price_tax_incl"]
     if "price" in patch and "price_tax_incl" not in patch:
         patch["price_tax_incl"] = patch["price"]
+    # Resolve current country if not in patch (to know whether IVA applies)
+    if any(k in patch for k in ("price_tax_excl", "price_tax_incl", "price", "country")):
+        current = await db.experiences.find_one({"experience_id": experience_id}, {"_id": 0, "country": 1, "price_tax_excl": 1, "price_tax_incl": 1})
+        if current:
+            merged = {**current, **patch}
+            _force_no_vat_outside_spain(merged)
+            patch["price_tax_incl"] = merged["price_tax_incl"]
+            patch["price_tax_excl"] = merged["price_tax_excl"]
+            patch["price"] = merged["price_tax_incl"]
     if patch:
         await db.experiences.update_one({"experience_id": experience_id}, {"$set": patch})
     doc = await db.experiences.find_one({"experience_id": experience_id}, {"_id": 0})
@@ -1850,7 +1883,12 @@ async def list_hotels(
 
 @api.post("/hotels", response_model=Hotel)
 async def create_hotel(payload: HotelCreate, _: Annotated[User, Depends(current_user)]):
-    h = Hotel(**payload.model_dump())
+    data = payload.model_dump()
+    # Outside Spain → no IVA differential
+    _force_no_vat_outside_spain(
+        data, incl_field="price_per_night_incl", excl_field="price_per_night_excl"
+    )
+    h = Hotel(**data)
     await db.hotels.insert_one(h.model_dump())
     return h
 
@@ -1858,6 +1896,18 @@ async def create_hotel(payload: HotelCreate, _: Annotated[User, Depends(current_
 @api.patch("/hotels/{hotel_id}", response_model=Hotel)
 async def update_hotel(hotel_id: str, payload: HotelUpdate, _: Annotated[User, Depends(current_user)]):
     patch = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if any(k in patch for k in ("price_per_night_excl", "price_per_night_incl", "country")):
+        current = await db.hotels.find_one(
+            {"hotel_id": hotel_id},
+            {"_id": 0, "country": 1, "price_per_night_excl": 1, "price_per_night_incl": 1},
+        )
+        if current:
+            merged = {**current, **patch}
+            _force_no_vat_outside_spain(
+                merged, incl_field="price_per_night_incl", excl_field="price_per_night_excl"
+            )
+            patch["price_per_night_excl"] = merged["price_per_night_excl"]
+            patch["price_per_night_incl"] = merged["price_per_night_incl"]
     if patch:
         await db.hotels.update_one({"hotel_id": hotel_id}, {"$set": patch})
     doc = await db.hotels.find_one({"hotel_id": hotel_id}, {"_id": 0})

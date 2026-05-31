@@ -225,6 +225,19 @@
 - Verificado en UI: Amalfi Coast itinerary con partner=Zicasso →
   11.055,50€ × 1,30 × 1,105 = **15.881,23 €** PVP final.
 
+### Iteration 11 (2026-05-31) — VAT outside Spain bug fix
+- **Bug**: 160 experiences + 22 hotels outside España (Portugal, Italia,
+  Marruecos) had `price_tax_excl ≠ price_tax_incl` due to legacy import logic.
+  These countries don't apply Spanish IVA so both fields must match.
+- **Backfill**: aggregation update aligned both fields using the non-zero
+  one (incl preferred) for every non-Spain row.
+- **Server-side guard**: `_force_no_vat_outside_spain()` helper applied to
+  `POST/PATCH /api/experiences` and `POST/PATCH /api/hotels`. If the item's
+  country is not Spain, the server forces `excl = incl` on every write
+  (regardless of what the client sends). Verified:
+  - Portugal item: PATCH excl=100 incl=150 → server normalises both to 150
+  - España item: PATCH excl=100 incl=110 → server preserves IVA differential
+
 ## Known minor items
 - Autocomplete payload returns full Experience docs (could be slimmed)
 - CORS regex `.*` is permissive (lock down to frontend origin for production)
