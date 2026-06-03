@@ -276,6 +276,20 @@
   Palazzo Galla (10-25→10-27) y Maison Kalea (10-28→10-31) produce dos
   filas: "1 día en conflicto" + "2 días en conflicto".
 
+### Iteration 15 (2026-06-03) — Mutation-in-place + Expedia via Google
+- **Bug fix**: "Aplicar a estancia" desde un servicio de día ya no duplica el row.
+  La matriz (el row creado por el usuario, identificado por `service_id`) se
+  **muta in-place** convirtiéndose en el carrier "Check-in", y solo los demás
+  días reciben servicios nuevos.
+- **Expedia deep-link cambia a Google con `site:expedia.es "HotelName"`**:
+  Expedia.es no resolvía correctamente nombres de hotel propios y caía siempre
+  a la ciudad. Ahora abrimos Google con la consulta site-filtered y el
+  primer resultado lleva al usuario directo a la página del hotel en Expedia.
+  Funciona para 1908 Lisboa Hotel, 7 Islas Hotel, Pestana Churchill Bay, etc.
+- Verificado: 7 Islas Hotel + check-out manual → Día 1 muestra "Check-in · 7
+  Islas Hotel" (un solo row, 3 noches × 200€); Días 2-3 muestran "Alojamiento
+  · 7 Islas Hotel"; Día 4 muestra "Check-out · 7 Islas Hotel".
+
 ## Known minor items
 - Autocomplete payload returns full Experience docs (could be slimmed)
 - CORS regex `.*` is permissive (lock down to frontend origin for production)

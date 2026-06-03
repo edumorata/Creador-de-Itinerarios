@@ -282,16 +282,18 @@ export default function Hotels() {
             )}
             <a
               href={(() => {
-                // Expedia: target the HOTEL name (Expedia matches by property name).
-                const dest = orient.hotel.name?.trim() || orient.hotel.city || "";
-                const params = new URLSearchParams({ destination: dest, adults: "2" });
+                if (orient.hotel.name?.trim()) {
+                  const q = `site:expedia.es "${orient.hotel.name.trim()}" ${orient.hotel.city || ""}`.trim();
+                  return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
+                }
+                const params = new URLSearchParams({ destination: orient.hotel.city || "", adults: "2" });
                 return `https://www.expedia.es/Hotel-Search?${params.toString()}`;
               })()}
               target="_blank" rel="noopener noreferrer"
               data-testid="hotel-open-expedia"
               className="mt-3 flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-clay-900 text-white hover:bg-terracotta transition uppercase text-xs tracking-wider"
             >
-              Abrir Expedia con "{orient.hotel.name}"
+              Ver "{orient.hotel.name}" en Expedia (vía Google)
             </a>
           </div>
         </div>

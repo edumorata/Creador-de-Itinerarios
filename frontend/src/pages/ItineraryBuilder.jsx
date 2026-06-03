@@ -258,6 +258,11 @@ export default function ItineraryBuilder() {
   //    auto-spread to every covered day (check-in / mid / check-out).
   //  - Subsequent calls (acc_id linked) → UPDATE the parent accommodation and
   //    re-spread idempotently.
+  //
+  // CRITICAL: the matrix row (the user-edited service) is mutated IN PLACE
+  // — we do NOT add a new service to its day, we just promote the existing
+  // service to the "Check-in" carrier by prefixing the name and tagging it
+  // with the acc_id. Otherwise the day would carry two hotel rows.
   // -------------------------------------------------------------------------
   const upsertAccommodationFromService = (dayId, service, dateFrom, dateTo) => {
     if (!service.name || !dateFrom || !dateTo) return;
@@ -270,18 +275,47 @@ export default function ItineraryBuilder() {
     const nightlyExcl = service.unit_price_tax_excl || nightlyIncl;
     const totalIncl = nightlyIncl * nights;
     const totalExcl = nightlyExcl * nights;
+    const baseName = (service.name || "").replace(/^Check-in · |^Check-out · |^Alojamiento · /, "");
 
-    // Spread across covered days (idempotent: strip prior services for this acc_id).
     const newDays = (itn.days || []).map((d) => {
-      const filtered = (d.services || []).filter((s) => s.acc_id !== accId);
+      // Strip any previous spread for THIS acc_id (idempotent re-runs),
+      // but preserve the matrix row by its service_id — we mutate it in place.
+      const filtered = (d.services || []).filter((s) =>
+        s.acc_id !== accId || s.service_id === service.service_id
+      );
       if (!d.date) return { ...d, services: filtered };
       const dd = new Date(d.date);
-      if (isNaN(dd) || dd < dFrom || dd > dTo) return { ...d, services: filtered };
+      if (isNaN(dd) || dd < dFrom || dd > dTo) {
+        // Day is outside the stay: drop any orphan row that may have been
+        // created previously for this acc_id (don't keep the matrix here).
+        return { ...d, services: filtered.filter((s) => s.acc_id !== accId) };
+      }
       const isCheckIn = dd.getTime() === dFrom.getTime();
       const isCheckOut = dd.getTime() === dTo.getTime();
-      const label = isCheckIn ? `Check-in · ${service.name}`
-                  : isCheckOut ? `Check-out · ${service.name}`
-                  : `Alojamiento · ${service.name}`;
+      const label = isCheckIn ? `Check-in · ${baseName}`
+                  : isCheckOut ? `Check-out · ${baseName}`
+                  : `Alojamiento · ${baseName}`;
+
+      const matrixIdx = filtered.findIndex((s) => s.service_id === service.service_id);
+      if (matrixIdx !== -1) {
+        // Mutate the user's original service row IN PLACE.
+        const updated = {
+          ...filtered[matrixIdx],
+          acc_id: accId,
+          type: "alojamiento",
+          name: label,
+          quantity: isCheckIn ? nights : 0,
+          unit_price_tax_excl: isCheckIn ? nightlyExcl : 0,
+          unit_price_tax_incl: isCheckIn ? nightlyIncl : 0,
+          unit_price: isCheckIn ? nightlyIncl : 0,
+          currency: "EUR",
+          notes: isCheckIn && nightlyIncl ? `${nights} noches × ${nightlyIncl}€` : "",
+        };
+        const services = [...filtered];
+        services[matrixIdx] = updated;
+        return { ...d, services };
+      }
+      // Other days: append a fresh service tagged with the acc_id.
       return {
         ...d,
         services: [
@@ -304,12 +338,12 @@ export default function ItineraryBuilder() {
       };
     });
 
-    // Upsert the accommodation in the summary list.
+    // Upsert the parent accommodation in the summary list.
     const accs = [...(itn.accommodations || [])];
     const existingIdx = accs.findIndex((a) => a.acc_id === accId);
     const accRow = {
       acc_id: accId,
-      name: service.name,
+      name: baseName,
       date_from: dateFrom,
       date_to: dateTo,
       price_tax_excl: totalExcl,
@@ -1180,14 +1214,20 @@ function OrientationModal({ city, hotelName, checkin, checkout, adults, busy, da
   const td = data?.training_data;
   const ex = data?.expedia;
 
-  // Always-available Expedia deep link, even when scraper got blocked.
-  // We target the HOTEL name as destination (Expedia resolves it to the
-  // specific property). The city is appended only when we don't know the
-  // hotel, so the user still lands on a meaningful SERP.
+  // Open Expedia.es search FOR THE SPECIFIC HOTEL by name. Expedia's own
+  // destination autocomplete struggles to deep-link to a single property
+  // (it tends to fall back to the city), so we redirect through Google with
+  // a `site:expedia.es "<HotelName>"` query: the very first result is
+  // reliably the right Expedia hotel page, with prices and availability for
+  // the dates the agent already plugged in upstream.
   const expediaUrl = (() => {
-    const destStr = hotelName?.trim() ? hotelName.trim() : (city || "");
+    if (hotelName?.trim()) {
+      const q = `site:expedia.es "${hotelName.trim()}" ${city || ""}`.trim();
+      return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
+    }
+    // No hotel name yet → fall back to a city-wide Expedia SERP.
     const params = new URLSearchParams({
-      destination: destStr,
+      destination: city || "",
       adults: String(adults || 2),
     });
     if (checkin) params.set("startDate", checkin);
@@ -1267,7 +1307,7 @@ function OrientationModal({ city, hotelName, checkin, checkout, adults, busy, da
           className="mt-3 flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-clay-900 text-white hover:bg-terracotta transition uppercase text-xs tracking-wider"
         >
           <ExternalLink size={14}/>
-          Abrir Expedia con {hotelName ? `"${hotelName}"` : "la ciudad"} y fechas
+          {hotelName ? `Ver "${hotelName}" en Expedia (vía Google)` : "Buscar en Expedia"}
         </a>
       </div>
     </div>
