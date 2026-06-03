@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Compass-rose star: 4 long cardinal points + 4 short diagonal points,
+       evoking both a star (itineraries) and a wayfinder rose (travel). -->
+  <rect width="64" height="64" rx="10" fill="#1F1A17"/>
+  <!-- Long cardinal points (terracotta) -->
+  <polygon points="32,6 36,32 32,58 28,32" fill="#C9683B"/>
+  <polygon points="6,32 32,28 58,32 32,36" fill="#C9683B"/>
+  <!-- Short diagonal points (warm gold) -->
+  <polygon points="14,14 32,30 50,14 32,32" fill="#D7B27A" opacity="0.85"/>
+  <polygon points="14,50 32,32 50,50 32,34" fill="#D7B27A" opacity="0.85"/>
+  <!-- Center dot -->
+  <circle cx="32" cy="32" r="3.5" fill="#FAF6F0"/>
+</svg>
