@@ -485,6 +485,15 @@ export default function ItineraryBuilder() {
           </Field>
         </div>
 
+        {/* Default room configuration — applied when adding new accommodations */}
+        <div className="mt-6">
+          <RoomConfigEditor
+            config={itn.room_config || []}
+            numTravelers={itn.num_travelers}
+            onChange={(next) => schedSave({ ...itn, room_config: next })}
+          />
+        </div>
+
         {/* Days */}
         <div className="mt-8 space-y-6">
           {(itn.days || []).map((day, idx) => (
@@ -1008,8 +1017,6 @@ const ROOM_TYPES = ["single", "doble", "twin", "triple", "cuadruple", "suite", "
 const ROOM_PAX_DEFAULT = { single: 1, doble: 2, twin: 2, triple: 3, cuadruple: 4, suite: 2, family: 4, otro: 2 };
 
 function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
-  const roomConfig = itn.room_config || [];
-
   // Total nights across a stay
   const nightsBetween = (df, dt) => {
     if (!df || !dt) return 0;
@@ -1031,7 +1038,8 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
   // Build rooms from the itinerary default config.
   const buildDefaultRooms = () => {
     const out = [];
-    (roomConfig.length > 0 ? roomConfig : [{ room_type: "doble", pax: 2, quantity: 1 }]).forEach((rc) => {
+    const cfg = itn.room_config || [];
+    (cfg.length > 0 ? cfg : [{ room_type: "doble", pax: 2, quantity: 1 }]).forEach((rc) => {
       for (let i = 0; i < (rc.quantity || 1); i++) {
         out.push({
           room_id: uid("room"),
@@ -1103,10 +1111,6 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
       return merged;
     });
     updateRooms(idx, rooms);
-  };
-
-  const setRoomConfig = (nextConfig) => {
-    schedSave({ ...itn, room_config: nextConfig });
   };
   const del = (idx) => {
     schedSave({ ...itn, accommodations: (itn.accommodations || []).filter((_, i) => i !== idx) });
@@ -1343,9 +1347,6 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
           <Plus size={12}/> Añadir alojamiento
         </button>
       </div>
-
-      {/* Default room config — applied to every NEW accommodation. */}
-      <RoomConfigEditor config={roomConfig} numTravelers={itn.num_travelers} onChange={setRoomConfig} />
 
       {overlaps.length > 0 && (
         <div
