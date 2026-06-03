@@ -789,7 +789,7 @@ function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, onChange,
       )}
       <button onClick={onRemove} className="text-clay-500 hover:text-destructive p-1" title="Quitar"><Trash2 size={14}/></button>
     </div>
-    {isLodging && (
+    {isLodging && (!service.acc_id || /^Check-in/.test(service.name || "")) && (
       <div className="grid grid-cols-[28px_110px_1fr_60px_100px_100px_100px_28px_28px] gap-2 items-center px-3 pb-2 -mt-1 text-[11px] text-clay-700">
         <span />
         <span />
@@ -1214,21 +1214,20 @@ function OrientationModal({ city, hotelName, checkin, checkout, adults, busy, da
   const td = data?.training_data;
   const ex = data?.expedia;
 
-  // Open Expedia.es search FOR THE SPECIFIC HOTEL by name. Expedia's own
-  // destination autocomplete struggles to deep-link to a single property
-  // (it tends to fall back to the city), so we redirect through Google with
-  // a `site:expedia.es "<HotelName>"` query: the very first result is
-  // reliably the right Expedia hotel page, with prices and availability for
-  // the dates the agent already plugged in upstream.
+  // Open Expedia.es with the hotel name as destination + check-in/out dates.
+  // We add `searchType=HOTEL` so Expedia treats the destination string as a
+  // property-name lookup (not a city). Combined with the comma-separated
+  // "Hotel, City" format, this lands on the specific hotel page in most cases.
+  // When the hotel is not in Expedia's inventory, it falls back to the city
+  // SERP — still useful for the agent to verify a price.
   const expediaUrl = (() => {
-    if (hotelName?.trim()) {
-      const q = `site:expedia.es "${hotelName.trim()}" ${city || ""}`.trim();
-      return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
-    }
-    // No hotel name yet → fall back to a city-wide Expedia SERP.
+    const destStr = hotelName?.trim()
+      ? `${hotelName.trim()}${city ? `, ${city}` : ""}`
+      : (city || "");
     const params = new URLSearchParams({
-      destination: city || "",
+      destination: destStr,
       adults: String(adults || 2),
+      searchType: "HOTEL",
     });
     if (checkin) params.set("startDate", checkin);
     if (checkout) params.set("endDate", checkout);
@@ -1307,7 +1306,7 @@ function OrientationModal({ city, hotelName, checkin, checkout, adults, busy, da
           className="mt-3 flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-clay-900 text-white hover:bg-terracotta transition uppercase text-xs tracking-wider"
         >
           <ExternalLink size={14}/>
-          {hotelName ? `Ver "${hotelName}" en Expedia (vía Google)` : "Buscar en Expedia"}
+          {hotelName ? `Abrir "${hotelName}" en Expedia` : "Buscar en Expedia"}
         </a>
       </div>
     </div>
