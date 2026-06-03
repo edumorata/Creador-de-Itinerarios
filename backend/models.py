@@ -201,6 +201,10 @@ class ItineraryService(BaseModel):
     """A single line inside an itinerary day."""
     service_id: str = Field(default_factory=lambda: new_id("svc"))
     experience_id: Optional[str] = None
+    # Link back to a parent Accommodation row when this service was auto-created
+    # by the "spread accommodation across days" flow (check-in / mid / check-out).
+    # The UI uses this to clean up previous spreads when the hotel name or dates change.
+    acc_id: Optional[str] = None
     type: ServiceType = "actividad"
     name: str
     provider_name: Optional[str] = None

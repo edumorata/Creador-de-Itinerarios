@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Plus, Search, Trash2, GripVertical, FileDown, Bed, MapPin, Calendar } from "lucide-react";
+import { ArrowLeft, Plus, Search, Trash2, GripVertical, FileDown, Bed, MapPin, Calendar, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import api, { API_BASE } from "@/lib/api";
 
@@ -804,6 +804,157 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
       },
     });
   };
+
+  // ---------------------------------------------------------------------
+  // Auto-spread the accommodation across day services.
+  // Behaviour (matches user's spec):
+  //   - On day = date_from   → service "CHECK-IN: <hotel>"
+  //   - On days BETWEEN      → service "Alojamiento: <hotel>"
+  //   - On day = date_to     → service "CHECK-OUT: <hotel>"
+  //   Each service is tagged with acc_id so we can clean up the previous
+  //   spread before re-spreading after a name/date change.
+  // ---------------------------------------------------------------------
+  const spreadAccommodation = (acc, hotelRecord) => {
+    if (!acc.name || !acc.date_from || !acc.date_to) return;
+    const dFrom = new Date(acc.date_from);
+    const dTo = new Date(acc.date_to);
+    if (isNaN(dFrom) || isNaN(dTo) || dTo < dFrom) return;
+    const dailyPrice = hotelRecord?.price_per_night_incl
+      || (acc.price_tax_incl && Math.round(acc.price_tax_incl / Math.max(1, Math.round((dTo - dFrom) / 86400000)) * 100) / 100)
+      || 0;
+    const dailyExcl = hotelRecord?.price_per_night_excl
+      || dailyPrice;
+    // Build a fresh days array, dropping any previous spread for THIS acc_id.
+    const newDays = (itn.days || []).map((d) => {
+      const filtered = (d.services || []).filter((s) => s.acc_id !== acc.acc_id);
+      if (!d.date) return { ...d, services: filtered };
+      const dd = new Date(d.date);
+      if (isNaN(dd) || dd < dFrom || dd > dTo) return { ...d, services: filtered };
+      // Decide tag
+      let label;
+      if (dd.getTime() === dFrom.getTime()) label = `Check-in · ${acc.name}`;
+      else if (dd.getTime() === dTo.getTime()) label = `Check-out · ${acc.name}`;
+      else label = `Alojamiento · ${acc.name}`;
+      // Only the check-in day carries the nightly price (so we don't multi-count).
+      // Mid + check-out rows carry price 0 (just a marker).
+      const isPriceCarrier = dd.getTime() === dFrom.getTime();
+      const service = {
+        service_id: uid("svc"),
+        acc_id: acc.acc_id,
+        experience_id: hotelRecord?.hotel_id || null,
+        type: "alojamiento",
+        name: label,
+        provider_name: hotelRecord ? "Hotel · catálogo" : null,
+        quantity: isPriceCarrier ? Math.max(1, Math.round((dTo - dFrom) / 86400000)) : 0,
+        unit_price_tax_excl: isPriceCarrier ? dailyExcl : 0,
+        unit_price_tax_incl: isPriceCarrier ? dailyPrice : 0,
+        unit_price: isPriceCarrier ? dailyPrice : 0,
+        currency: "EUR",
+        notes: isPriceCarrier ? `${Math.max(1, Math.round((dTo - dFrom) / 86400000))} noches × ${dailyPrice}€` : "",
+      };
+      return { ...d, services: [...filtered, service] };
+    });
+    // Total in the accommodation row reflects the spread when we have a catalog price.
+    if (hotelRecord?.price_per_night_incl) {
+      const nights = Math.max(1, Math.round((dTo - dFrom) / 86400000));
+      const total = nights * hotelRecord.price_per_night_incl;
+      const totalExcl = nights * (hotelRecord.price_per_night_excl || hotelRecord.price_per_night_incl);
+      schedSave({
+        ...itn,
+        days: newDays,
+        accommodations: (itn.accommodations || []).map((x) =>
+          x.acc_id === acc.acc_id ? { ...x, name: acc.name, price_tax_incl: total, price_tax_excl: totalExcl, price: total } : x
+        ),
+      });
+    } else {
+      schedSave({ ...itn, days: newDays });
+    }
+  };
+
+  // Drop any spread for this acc_id from all day services (used on delete or
+  // when the user clears the name/dates).
+  const unspreadAccommodation = (acc_id) => {
+    const newDays = (itn.days || []).map((d) => ({
+      ...d,
+      services: (d.services || []).filter((s) => s.acc_id !== acc_id),
+    }));
+    return newDays;
+  };
+
+  const updWithSpread = (idx, patch, hotelRecord = null) => {
+    const synced = { ...patch };
+    if ("price_tax_incl" in synced) synced.price = synced.price_tax_incl;
+    const list = [...(itn.accommodations || [])];
+    const newAcc = { ...list[idx], ...synced };
+    list[idx] = newAcc;
+    // If name+dates are all set, spread; else just save
+    if (newAcc.name && newAcc.date_from && newAcc.date_to) {
+      // schedSave will be called inside spreadAccommodation
+      const tmpItn = { ...itn, accommodations: list };
+      const dFrom = new Date(newAcc.date_from);
+      const dTo = new Date(newAcc.date_to);
+      const newDays = (tmpItn.days || []).map((d) => {
+        const filtered = (d.services || []).filter((s) => s.acc_id !== newAcc.acc_id);
+        if (!d.date) return { ...d, services: filtered };
+        const dd = new Date(d.date);
+        if (isNaN(dd) || dd < dFrom || dd > dTo) return { ...d, services: filtered };
+        let label;
+        if (dd.getTime() === dFrom.getTime()) label = `Check-in · ${newAcc.name}`;
+        else if (dd.getTime() === dTo.getTime()) label = `Check-out · ${newAcc.name}`;
+        else label = `Alojamiento · ${newAcc.name}`;
+        const isPriceCarrier = dd.getTime() === dFrom.getTime();
+        const nightly = hotelRecord?.price_per_night_incl || 0;
+        const nightlyExcl = hotelRecord?.price_per_night_excl || nightly;
+        const nights = Math.max(1, Math.round((dTo - dFrom) / 86400000));
+        return {
+          ...d,
+          services: [
+            ...filtered,
+            {
+              service_id: uid("svc"),
+              acc_id: newAcc.acc_id,
+              experience_id: hotelRecord?.hotel_id || null,
+              type: "alojamiento",
+              name: label,
+              provider_name: hotelRecord ? "Hotel · catálogo" : null,
+              quantity: isPriceCarrier ? nights : 0,
+              unit_price_tax_excl: isPriceCarrier ? nightlyExcl : 0,
+              unit_price_tax_incl: isPriceCarrier ? nightly : 0,
+              unit_price: isPriceCarrier ? nightly : 0,
+              currency: "EUR",
+              notes: isPriceCarrier && nightly ? `${nights} noches × ${nightly}€` : "",
+            },
+          ],
+        };
+      });
+      // If we have catalog pricing, also override the row total
+      if (hotelRecord?.price_per_night_incl) {
+        const nights = Math.max(1, Math.round((dTo - dFrom) / 86400000));
+        const total = nights * hotelRecord.price_per_night_incl;
+        const totalExcl = nights * (hotelRecord.price_per_night_excl || hotelRecord.price_per_night_incl);
+        list[idx] = { ...list[idx], price_tax_incl: total, price_tax_excl: totalExcl, price: total };
+      }
+      schedSave({ ...tmpItn, accommodations: list, days: newDays });
+    } else {
+      schedSave({ ...itn, accommodations: list });
+    }
+  };
+
+  // Pick a hotel from the catalogue → fills name and triggers spread with prices.
+  const pickHotel = (idx, hotel) => {
+    updWithSpread(idx, { name: hotel.name }, hotel);
+  };
+
+  // Wrap delete to also remove related day services.
+  const delAndUnspread = (idx) => {
+    const accId = (itn.accommodations || [])[idx]?.acc_id;
+    const newDays = unspreadAccommodation(accId);
+    schedSave({
+      ...itn,
+      accommodations: (itn.accommodations || []).filter((_, i) => i !== idx),
+      days: newDays,
+    });
+  };
   return (
     <div className="mt-10">
       <div className="flex items-center justify-between mb-3">
@@ -826,9 +977,14 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
               const pvp = incl * (1 + (markup || 0) / 100);
               return (
                 <div key={a.acc_id} className="grid grid-cols-[1fr_120px_120px_90px_90px_90px_28px_28px] gap-2 px-3 py-2 items-center border-t border-clay-300 text-sm">
-                  <input className="bg-transparent outline-none font-semibold" placeholder="Nombre del hotel" value={a.name} onChange={(e) => upd(idx, { name: e.target.value })} />
-                  <input type="date" className="bg-transparent outline-none tabular" value={a.date_from || ""} onChange={(e) => upd(idx, { date_from: e.target.value })} />
-                  <input type="date" className="bg-transparent outline-none tabular" value={a.date_to || ""} onChange={(e) => upd(idx, { date_to: e.target.value })} />
+                  <HotelAutocomplete
+                    value={a.name}
+                    onTextChange={(v) => updWithSpread(idx, { name: v })}
+                    onPick={(h) => pickHotel(idx, h)}
+                    placeholder="Buscar hotel del catálogo…"
+                  />
+                  <input type="date" className="bg-transparent outline-none tabular" value={a.date_from || ""} onChange={(e) => updWithSpread(idx, { date_from: e.target.value })} />
+                  <input type="date" className="bg-transparent outline-none tabular" value={a.date_to || ""} onChange={(e) => updWithSpread(idx, { date_to: e.target.value })} />
                   <input type="number" min="0" step="0.01" className="bg-transparent text-right outline-none tabular" value={a.price_tax_excl || 0} onChange={(e) => upd(idx, { price_tax_excl: parseFloat(e.target.value || "0") })} />
                   <input type="number" min="0" step="0.01" className="bg-transparent text-right outline-none tabular" value={incl} onChange={(e) => upd(idx, { price_tax_incl: parseFloat(e.target.value || "0") })} />
                   <div className="text-right tabular font-semibold">{fmtEUR(pvp)}</div>
@@ -838,7 +994,7 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
                     title="Buscar precio orientativo · histórico + Expedia"
                     className="text-clay-700 hover:text-terracotta hover:bg-clay-100 p-1 border border-clay-300 flex items-center justify-center"
                   ><Search size={14}/></button>
-                  <button onClick={() => del(idx)} className="text-clay-500 hover:text-destructive p-1"><Trash2 size={14}/></button>
+                  <button onClick={() => delAndUnspread(idx)} className="text-clay-500 hover:text-destructive p-1"><Trash2 size={14}/></button>
                 </div>
               );
             })}
@@ -849,10 +1005,24 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
   );
 }
 
-function OrientationModal({ city, hotelName, busy, data, onClose, onApply }) {
+function OrientationModal({ city, hotelName, checkin, checkout, adults, busy, data, onClose, onApply }) {
   const rec = data?.recommendation;
   const td = data?.training_data;
   const ex = data?.expedia;
+
+  // Always-available Expedia deep link, even when scraper got blocked.
+  // We include the hotel name in the destination string so Expedia opens its
+  // SERP filtered to that property (when it exists in their inventory).
+  const expediaUrl = (() => {
+    const destStr = [hotelName, city].filter(Boolean).join(" ");
+    const params = new URLSearchParams({
+      destination: destStr,
+      adults: String(adults || 2),
+    });
+    if (checkin) params.set("startDate", checkin);
+    if (checkout) params.set("endDate", checkout);
+    return `https://www.expedia.es/Hotel-Search?${params.toString()}`;
+  })();
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onClose} data-testid="orient-modal">
       <div className="bg-white border border-clay-300 max-w-xl w-full p-5" onClick={(e) => e.stopPropagation()}>
@@ -909,14 +1079,25 @@ function OrientationModal({ city, hotelName, busy, data, onClose, onApply }) {
               </div>
             ))}
             {ex.error && !ex.blocked && <div className="text-clay-700">{ex.error}</div>}
-            {ex.source_url && <a href={ex.source_url} target="_blank" rel="noopener noreferrer" className="block mt-2 text-terracotta underline">Abrir en Expedia →</a>}
           </div>
         )}
         {!busy && !rec?.price_per_night_eur && !td && (
-          <div className="text-sm text-clay-700">
-            Sin datos suficientes para esta ciudad. Estima manualmente con la fórmula del prompt: <code className="bg-clay-100 px-1">budget_mid_usd × travelers × 0.27 / nights</code>.
+          <div className="text-sm text-clay-700 mb-3">
+            Sin datos suficientes para esta ciudad. Usa el botón de Expedia para verificarlo manualmente o estima con la Regla H (budget × pax × 0.27 / noches).
           </div>
         )}
+
+        {/* Always show the Expedia deep-link, even when our scraper was blocked. */}
+        <a
+          href={expediaUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          data-testid="open-expedia"
+          className="mt-3 flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-clay-900 text-white hover:bg-terracotta transition uppercase text-xs tracking-wider"
+        >
+          <ExternalLink size={14}/>
+          Abrir Expedia con {hotelName ? `"${hotelName}"` : "la ciudad"} y fechas
+        </a>
       </div>
     </div>
   );
@@ -1008,3 +1189,102 @@ function PartnerSelector({ itn, setField }) {
     </select>
   );
 }
+
+// ---------------------------------------------------------------------------
+// HotelAutocomplete — minimal autocomplete that queries /api/hotels?q=…
+// and surfaces library hotels first, falling back to imported_from_trip so
+// the user can also recall a hotel they saw in a past trip.
+// ---------------------------------------------------------------------------
+function HotelAutocomplete({ value, onTextChange, onPick, placeholder = "Buscar hotel…" }) {
+  const [open, setOpen] = useState(false);
+  const [results, setResults] = useState([]);
+  const [highlight, setHighlight] = useState(0);
+  const wrapRef = useRef(null);
+  const timer = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const search = useCallback(async (text) => {
+    const t = (text || "").trim();
+    if (t.length < 2) { setResults([]); return; }
+    try {
+      // Library first
+      const lib = await api.get("/hotels", { params: { q: t } });
+      let combined = (lib.data || []).slice(0, 20);
+      // Pad with imported_from_trip when library is thin
+      if (combined.length < 8) {
+        const imp = await api.get("/hotels", { params: { q: t, include_imported: true } });
+        const have = new Set(combined.map((h) => h.hotel_id));
+        for (const h of imp.data || []) {
+          if (!have.has(h.hotel_id) && h.source === "imported_from_trip") {
+            combined.push(h);
+            if (combined.length >= 12) break;
+          }
+        }
+      }
+      setResults(combined);
+      setHighlight(0);
+    } catch (e) {
+      setResults([]);
+    }
+  }, []);
+
+  const handleChange = (e) => {
+    const v = e.target.value;
+    onTextChange(v);
+    setOpen(true);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => search(v), 200);
+  };
+
+  const handleKey = (e) => {
+    if (!open) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); setHighlight((h) => Math.min(h + 1, results.length - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setHighlight((h) => Math.max(h - 1, 0)); }
+    else if (e.key === "Enter" && results[highlight]) { e.preventDefault(); onPick(results[highlight]); setOpen(false); }
+    else if (e.key === "Escape") { setOpen(false); }
+  };
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <input
+        data-testid="hotel-name-input"
+        className="w-full bg-transparent outline-none font-semibold"
+        value={value}
+        onChange={handleChange}
+        onFocus={() => { setOpen(true); search(value); }}
+        onKeyDown={handleKey}
+        placeholder={placeholder}
+      />
+      {open && results.length > 0 && (
+        <div className="absolute left-0 right-0 top-full mt-1 z-40 bg-white border border-clay-300 shadow-lg max-h-72 overflow-auto" data-testid="hotel-autocomplete">
+          {results.map((h, i) => (
+            <button
+              key={h.hotel_id}
+              data-testid={`hotel-ac-${h.hotel_id}`}
+              onClick={() => { onPick(h); setOpen(false); }}
+              onMouseEnter={() => setHighlight(i)}
+              className={`w-full text-left px-3 py-2 text-sm border-b border-clay-200 last:border-0 ${i === highlight ? "bg-terracotta/10" : "hover:bg-clay-50"}`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="font-semibold truncate">{h.name}</div>
+                  <div className="text-[11px] text-clay-700 truncate">{[h.city, h.country, h.tier].filter(Boolean).join(" · ")}</div>
+                </div>
+                <div className="text-right text-xs tabular text-clay-700">
+                  {h.price_per_night_incl ? `${Math.round(h.price_per_night_incl)}€/n` : "—"}
+                  {h.source === "imported_from_trip" && <div className="text-[9px] text-clay-500 uppercase">histórico</div>}
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+

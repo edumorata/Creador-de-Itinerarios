@@ -238,6 +238,32 @@
   - Portugal item: PATCH excl=100 incl=150 → server normalises both to 150
   - España item: PATCH excl=100 incl=110 → server preserves IVA differential
 
+### Iteration 12 (2026-05-31) — Hotel auto-spread + autocomplete + Expedia always available
+- **`ItineraryService.acc_id` field added** to persist the back-link from
+  auto-spread day services to their parent Accommodation row.
+- **Auto-spread accommodation across days**: in `AccommodationsBlock`, when an
+  accommodation row has `name + date_from + date_to`, the system writes one
+  day-service per matching day:
+  - `date == date_from` → "Check-in · <hotel>"  (price carrier, qty = nights)
+  - `date_from < date < date_to` → "Alojamiento · <hotel>"
+  - `date == date_to` → "Check-out · <hotel>"
+  Previous services for the same `acc_id` are removed before re-spreading, so
+  editing the hotel name or dates updates the day plan idempotently.
+- **HotelAutocomplete component**: the name field of every Accommodation row
+  is now a typeahead that queries `/api/hotels` (library first, then imported
+  fallback). Picking a result loads name + €/night + spread in one click.
+- **Expedia deep-link always visible**: `OrientationModal` now renders a
+  prominent dark pine button "Abrir Expedia con <hotel> y fechas" at the
+  bottom even when the in-app Expedia scrape was blocked. The URL bundles
+  the hotel name, city, check-in/out dates and adult count so Expedia.es
+  opens the right SERP with all filters pre-applied.
+- **Fixed double-URL-encoding bug** in the Hotels-page Expedia link (was
+  producing `%2520` from a `encodeURIComponent` over a string that
+  `URLSearchParams` was about to encode again).
+- Verified end-to-end: typing "Pestana" → selecting "Pestana Churchill Bay"
+  on a 2027-09-11 → 2027-09-18 itinerary correctly created:
+  Check-in (Day 1) → Alojamiento (Days 2-7) → Check-out (Day 8).
+
 ## Known minor items
 - Autocomplete payload returns full Experience docs (could be slimmed)
 - CORS regex `.*` is permissive (lock down to frontend origin for production)

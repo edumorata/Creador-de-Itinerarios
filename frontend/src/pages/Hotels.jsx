@@ -273,14 +273,25 @@ export default function Hotels() {
                     <div className="tabular font-semibold ml-3">€ {Math.round(h.price_per_night_eur)}/n</div>
                   </div>
                 ))}
-                {orient.data.expedia.source_url && <a href={orient.data.expedia.source_url} target="_blank" rel="noopener noreferrer" className="block mt-2 text-terracotta underline">Abrir búsqueda en Expedia →</a>}
               </div>
             )}
             {!orient.busy && !orient.data?.recommendation?.price_per_night_eur && !orient.data?.training_data && (
               <div className="text-sm text-clay-700 p-3 bg-clay-50">
-                Sin datos para esta ciudad. Edita el hotel manualmente con tu precio negociado.
+                Sin datos para esta ciudad. Usa el botón de Expedia o edita el hotel manualmente.
               </div>
             )}
+            <a
+              href={(() => {
+                const dest = [orient.hotel.name, orient.hotel.city].filter(Boolean).join(" ");
+                const params = new URLSearchParams({ destination: dest, adults: "2" });
+                return `https://www.expedia.es/Hotel-Search?${params.toString()}`;
+              })()}
+              target="_blank" rel="noopener noreferrer"
+              data-testid="hotel-open-expedia"
+              className="mt-3 flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-clay-900 text-white hover:bg-terracotta transition uppercase text-xs tracking-wider"
+            >
+              Abrir Expedia con "{orient.hotel.name}"
+            </a>
           </div>
         </div>
       )}
