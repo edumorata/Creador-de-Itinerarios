@@ -56,6 +56,7 @@ Your output MUST be a single JSON object matching exactly this schema (no markdo
 Rules:
 - ALWAYS prefer experiences from the library. Use their experience_id, exact title, provider_name, currency, and BOTH prices unchanged.
 - ALWAYS prefer hotels from the library. Use their hotel_id, exact name, and the nightly price multiplied by nights, splitting excl/incl.
+- CATALOG "pax" FIELD: every experience in the library is priced for a specific number of pax (the `pax` field). The price quoted is for that exact group size, NOT a per-pax rate. When choosing experiences, prefer the variant whose `pax` matches `num_travelers`. If the exact-pax variant doesn't exist, you may pick the closest pax variant but DO NOT scale the price linearly — private guided tours and transfers price per group, not per person, so the same activity for 2 vs 4 pax has only marginally higher price (€500 → €600, not €1,000). Per-pax services (museum tickets, ferries) DO scale linearly.
 - If a needed service or hotel is not in the library, you may add a free-form item with name only and prices=0, so the human agent can fill it in.
 - Respect dietary, mobility, occasion (anniversary etc.) and tier preferences expressed in the request.
 - Aim for the pacing seen in SOLD examples; avoid the over-/under-packing patterns of NOT_SOLD examples.

@@ -719,11 +719,43 @@ async def import_provider_sheet(
     return result
 
 
+@api.post("/catalog/import-operators-csv")
+async def import_operators_csv_upload(
+    admin: Annotated[User, Depends(require_admin)],
+    file: UploadFile = File(...),
+    wipe_experiences: bool = Query(True, description="Wipe existing experiences before import"),
+    wipe_imported_hotels: bool = Query(False, description="Also wipe hotels with source=imported_from_trip"),
+):
+    """Upload a fresh app_operators.csv and rebuild the experiences catalog.
+
+    Saves the file to the canonical server path then delegates to
+    `import_catalog_from_trips_csv` with `wipe=True` so the catalog is
+    rebuilt cleanly with the new schema (incl. `pax`).
+    """
+    import pathlib as _p
+    fname = (file.filename or "").lower()
+    if not fname.endswith(".csv"):
+        raise HTTPException(status_code=400, detail="El archivo debe ser .csv")
+    target_dir = _p.Path("/app/artifacts/catalog_db")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / "app_operators.csv"
+    raw = await file.read()
+    target.write_bytes(raw)
+    # Reuse the main importer (handles encoding, classify, pax, providers, etc.)
+    return await import_catalog_from_trips_csv(
+        admin=admin,
+        file_path=str(target),
+        wipe=wipe_experiences,
+        wipe_hotels=wipe_imported_hotels,
+    )
+
+
 @api.post("/catalog/import-from-trips-csv")
 async def import_catalog_from_trips_csv(
     admin: Annotated[User, Depends(require_admin)],
     file_path: str = Query("/app/artifacts/catalog_db/app_operators.csv", description="Server-side CSV path"),
-    wipe: bool = Query(False, description="Wipe experiences + hotels first"),
+    wipe: bool = Query(False, description="Wipe experiences first"),
+    wipe_hotels: bool = Query(False, description="Also wipe hotels with source=imported_from_trip"),
 ):
     """Build the catalog from a CSV of services used in past trips.
 
@@ -732,7 +764,10 @@ async def import_catalog_from_trips_csv(
 
     Each row → either an Experience (activity/transfer/train/etc.) or a Hotel
     (when Servicio matches hotel/apartament/resort keywords). Dedup by
-    (name + provider + city), keeping the median price across occurrences.
+    (name + provider + city + pax), keeping the most recent NON-ZERO price.
+    The total pax for each entry is AD + CH (defaults to 2 when missing) and
+    is stored on the Experience so the agent knows whether a given price is
+    for 1 pax, 2 pax, or more.
     Providers are upserted automatically.
     """
     import csv as _csv
@@ -813,7 +848,9 @@ async def import_catalog_from_trips_csv(
 
     if wipe:
         await db.experiences.delete_many({})
-        await db.hotels.delete_many({})
+    if wipe_hotels:
+        # Only wipe hotels imported from past trips, never the curated library
+        await db.hotels.delete_many({"source": "imported_from_trip"})
 
     # Try UTF-8 then fall back to Latin-1
     try:
@@ -823,7 +860,27 @@ async def import_catalog_from_trips_csv(
 
     rows = list(_csv.DictReader(text.splitlines(), delimiter=";"))
 
-    # Group rows by (service_name, provider, city) → aggregate prices
+    def _num(v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        if not s or s.upper() == "NULL":
+            return None
+        try:
+            return float(s.replace(",", "."))
+        except ValueError:
+            return None
+
+    def _pax(r) -> int:
+        ad = _num(r.get("AD")) or 0
+        ch = _num(r.get("CH")) or 0
+        total = int(ad) + int(ch)
+        if total <= 0:
+            return 2  # default 2 pax when AD/CH missing
+        return min(total, 20)  # cap at 20 to filter corrupted source data
+
+    # Group rows by (service_name, provider, city, pax) → aggregate prices
+    # Track most recent NON-ZERO price by Fecha_venta as the canonical price.
     grouped: dict = {}
     for r in rows:
         svc = (r.get("Servicio") or "").strip()
@@ -832,28 +889,31 @@ async def import_catalog_from_trips_csv(
         if not svc or not prov or not city_raw:
             continue
         city = city_aliases.get(city_raw, city_raw)
-        key = (svc, prov, city)
-        excl = r.get("Sin_IVA")
-        incl = r.get("Con_IVA")
-        def _num(v):
-            if not v or v == "NULL":
-                return None
-            try:
-                return float(v)
-            except ValueError:
-                return None
-        e = _num(excl)
-        i = _num(incl)
-        grouped.setdefault(key, {"excl": [], "incl": []})
+        pax = _pax(r)
+        key = (svc, prov, city, pax)
+        e = _num(r.get("Sin_IVA"))
+        i = _num(r.get("Con_IVA"))
+        sale_date = (r.get("Fecha_venta") or "").strip()
+        bucket = grouped.setdefault(key, {
+            "excl_all": [], "incl_all": [],
+            "best_excl": None, "best_incl": None, "best_date": "",
+        })
         if e is not None:
-            grouped[key]["excl"].append(e)
+            bucket["excl_all"].append(e)
         if i is not None:
-            grouped[key]["incl"].append(i)
+            bucket["incl_all"].append(i)
+        # Keep the most recent non-zero price as canonical
+        non_zero = (i and i > 0) or (e and e > 0)
+        if non_zero and sale_date >= bucket["best_date"]:
+            bucket["best_date"] = sale_date
+            bucket["best_excl"] = e
+            bucket["best_incl"] = i
 
     def _median(lst):
-        if not lst:
+        vals = [v for v in lst if v is not None]
+        if not vals:
             return 0.0
-        s = sorted(lst)
+        s = sorted(vals)
         n = len(s)
         return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
 
@@ -864,7 +924,7 @@ async def import_catalog_from_trips_csv(
     hotel_created = 0
     hotel_skipped = 0
 
-    for (svc, prov_name, city), agg in grouped.items():
+    for (svc, prov_name, city, pax), agg in grouped.items():
         country = city_country.get(city)
         # Upsert provider
         if prov_name not in provider_cache:
@@ -874,8 +934,19 @@ async def import_catalog_from_trips_csv(
                 await db.providers.insert_one(dict(doc))
             provider_cache[prov_name] = doc
         provider = provider_cache[prov_name]
-        price_excl = round(_median(agg["excl"]), 2)
-        price_incl = round(_median(agg["incl"]) or price_excl, 2)
+        # Canonical price: most recent non-zero. Fallback to median of all.
+        price_excl = agg["best_excl"] if agg["best_excl"] is not None else _median(agg["excl_all"])
+        price_incl = agg["best_incl"] if agg["best_incl"] is not None else _median(agg["incl_all"])
+        # When one tier is missing, mirror the other
+        if not price_incl:
+            price_incl = price_excl
+        if not price_excl:
+            price_excl = price_incl
+        price_excl = round(price_excl or 0.0, 2)
+        price_incl = round(price_incl or 0.0, 2)
+        # Outside Spain → no IVA differential
+        if (country or "").strip().lower() not in ("españa", "espana", "spain"):
+            price_excl = price_incl
 
         kind = classify(svc)
         if kind == "hotel":
@@ -901,8 +972,10 @@ async def import_catalog_from_trips_csv(
             await db.hotels.insert_one(h.model_dump())
             hotel_created += 1
         else:
+            # Dedup now includes pax — same service for 2 pax vs 4 pax are
+            # different rows because the price differs.
             existing = await db.experiences.find_one(
-                {"title": svc, "provider_id": provider["provider_id"], "city": city},
+                {"title": svc, "provider_id": provider["provider_id"], "city": city, "pax": pax},
                 {"_id": 0},
             )
             if existing:
@@ -919,6 +992,7 @@ async def import_catalog_from_trips_csv(
                 price_tax_incl=price_incl,
                 price=price_incl,
                 currency="EUR",
+                pax=pax,
             )
             await db.experiences.insert_one(exp.model_dump())
             exp_created += 1
@@ -932,6 +1006,7 @@ async def import_catalog_from_trips_csv(
         "hotels_skipped": hotel_skipped,
         "providers_total": len(provider_cache),
         "wiped": wipe,
+        "wiped_hotels": wipe_hotels,
     }
 
 
@@ -1016,6 +1091,7 @@ async def experience_autocomplete(
     city: Optional[str] = None,
     country: Optional[str] = None,
     type: Optional[ServiceType] = None,
+    pax: Optional[int] = Query(None, description="Prefer experiences priced for this pax count"),
     limit: int = Query(20, le=50),
 ):
     """Smart typeahead across the catalog.
@@ -1084,8 +1160,14 @@ async def experience_autocomplete(
     if type:
         flt["type"] = type
     proj = {"_id": 0, "experience_id": 1, "title": 1, "provider_name": 1, "city": 1, "country": 1,
-            "type": 1, "price_tax_excl": 1, "price_tax_incl": 1, "price": 1, "currency": 1}
-    items = await db.experiences.find(flt, proj).sort("title", 1).limit(limit).to_list(limit)
+            "type": 1, "price_tax_excl": 1, "price_tax_incl": 1, "price": 1, "currency": 1, "pax": 1}
+    items = await db.experiences.find(flt, proj).sort("title", 1).limit(limit * 2 if pax else limit).to_list(limit * 2 if pax else limit)
+    if pax:
+        # Sort so that exact-pax matches come first, then closest pax, then the rest.
+        def _rank(it):
+            p = it.get("pax", 2) or 2
+            return (0 if p == pax else 1, abs(p - pax), it.get("title", ""))
+        items = sorted(items, key=_rank)[:limit]
     return items
 
 
@@ -2995,6 +3077,7 @@ def _summ_experience(e: dict) -> dict:
         "city": e.get("city"),
         "country": e.get("country"),
         "type": e.get("type"),
+        "pax": e.get("pax") or 2,
         "price_tax_excl": e.get("price_tax_excl") or e.get("price") or 0,
         "price_tax_incl": e.get("price_tax_incl") or e.get("price") or 0,
         "currency": e.get("currency") or "EUR",

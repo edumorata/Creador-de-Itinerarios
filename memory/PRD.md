@@ -328,3 +328,43 @@
 - **Batch eval is now resumable & idempotent**: re-running `python -m tests.batch_eval_v2`
   skips trips that already have `last_learned_at` set. New imports flagged as `sold`
   (or `not_sold` when phase 2 lands) are picked up automatically on the next run.
+
+
+### Iteration 8 (2026-06-03) — Pax-aware Experiences catalog
+- **NEW**: every Experience now stores a `pax` field (int, default 2) representing the
+  number of pax the price is quoted for. Same service for 2 vs 4 vs 5 pax → separate
+  rows with their own prices. Pax is capped at 20 to filter corrupted source data
+  (the CSV had one row with CH=740 — a data-entry mistake).
+- **CSV import endpoint upgrade**:
+  - `POST /api/catalog/import-operators-csv` (admin) accepts a fresh
+    `app_operators.csv` upload, persists it to `/app/artifacts/catalog_db/`, then
+    rebuilds the experiences catalog (preserves curated hotels by default).
+  - Underlying `POST /api/catalog/import-from-trips-csv` now keys dedup by
+    `(service, provider, city, pax)` and stores the latest non-zero price by
+    `Fecha_venta` (was: median over all occurrences).
+- **Experiences page UI**:
+  - New "Pax" column in the listing.
+  - New "Pax: todos" filter (1–12 pax).
+  - New "Pax" field in the create/edit modal.
+  - New "Subir CSV operadores" button (admin only) opens a modal with file picker
+    + checkboxes to wipe experiences and/or imported-from-trip hotels.
+- **Itinerary Builder**:
+  - Autocomplete `GET /api/experiences/autocomplete?pax=N` now ranks
+    exact-pax matches first, then closest pax, then the rest. Pax mismatch
+    warnings shown in amber.
+  - Sidebar experience cards display the pax count alongside the price.
+- **AI Generator**:
+  - `_summ_experience` includes pax in the context passed to the LLM.
+  - System prompt rule added: "CATALOG pax FIELD" — the AI is instructed to
+    pick the variant matching `num_travelers`, and is told NOT to scale group
+    services (private tours, transfers) linearly with pax because they price
+    per group, not per person.
+- **Seed snapshot** (`backend/data/seed.json.gz`) regenerated — production
+  deploys will load 2430 pax-tagged experiences + 568 providers + 848 hotels.
+- **Regression test**: `python -m backend.tests.test_pax_field` covers DB
+  state, list endpoint exposure, and autocomplete ranking. All passing.
+
+Stats after import:
+- 3144 source rows → 2430 unique (service, provider, city, pax) experiences.
+- Pax distribution: 1→109, 2→1340, 3→196, 4→456, 5→189, 6→67, 7→12, 8→31,
+  9→19, 11→9, 14→1, 20→1.

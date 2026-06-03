@@ -15,7 +15,7 @@ const TYPE_BADGE = {
 };
 const TYPES = ["alojamiento", "actividad", "transporte", "restaurante", "transfer", "vuelo", "otro"];
 
-const EMPTY = { title: "", description: "", provider_id: "", country: "", city: "", type: "actividad", price_tax_excl: 0, price_tax_incl: 0, currency: "EUR" };
+const EMPTY = { title: "", description: "", provider_id: "", country: "", city: "", type: "actividad", price_tax_excl: 0, price_tax_incl: 0, currency: "EUR", pax: 2 };
 
 export default function Experiences() {
   const { user } = useAuth();
@@ -26,8 +26,10 @@ export default function Experiences() {
   const [filterCountry, setFilterCountry] = useState("");
   const [filterCity, setFilterCity] = useState("");
   const [filterType, setFilterType] = useState("");
+  const [filterPax, setFilterPax] = useState("");
   const [editing, setEditing] = useState(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [csvUploadOpen, setCsvUploadOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [bulkBusy, setBulkBusy] = useState(false);
 
@@ -44,11 +46,13 @@ export default function Experiences() {
         api.get("/providers"),
         api.get("/experiences/facets"),
       ]);
-      setItems(a.data); setProviders(b.data); setFacets(c.data);
+      let rows = a.data;
+      if (filterPax) rows = rows.filter((r) => String(r.pax || 2) === filterPax);
+      setItems(rows); setProviders(b.data); setFacets(c.data);
     } finally { setLoading(false); }
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load(); }, [q, filterCountry, filterCity, filterType]);
+  useEffect(() => { load(); }, [q, filterCountry, filterCity, filterType, filterPax]);
 
   const save = async () => {
     if (!editing.provider_id) { toast.error("El proveedor es obligatorio"); return; }
@@ -84,21 +88,12 @@ export default function Experiences() {
           {user?.role === "admin" && (
             <>
               <button
-                data-testid="csv-import-btn"
+                data-testid="csv-upload-btn"
                 disabled={bulkBusy}
-                onClick={async () => {
-                  if (!window.confirm("Re-construir el catálogo desde el CSV histórico de viajes (servicios + hoteles + transfers)?\n\nWipe activado = se vacía experiencias y hoteles primero.")) return;
-                  setBulkBusy(true);
-                  try {
-                    const { data } = await api.post("/catalog/import-from-trips-csv?wipe=true");
-                    toast.success(`${data.experiences_created} experiencias + ${data.hotels_created} hoteles desde ${data.rows_scanned} filas`);
-                    load();
-                  } catch (e) { toast.error(e?.response?.data?.detail || "Error CSV import"); }
-                  finally { setBulkBusy(false); }
-                }}
+                onClick={() => setCsvUploadOpen(true)}
                 className="inline-flex items-center gap-2 px-4 py-2 border border-clay-300 hover:bg-clay-100 text-sm disabled:opacity-50"
               >
-                <Server size={14}/> Catálogo desde CSV histórico
+                <Upload size={14}/> Subir CSV operadores
               </button>
               <button
                 data-testid="bulk-import-btn"
@@ -129,7 +124,7 @@ export default function Experiences() {
       </div>
 
       {/* filters */}
-      <div className="grid grid-cols-[1fr_160px_160px_160px] gap-3 mb-4">
+      <div className="grid grid-cols-[1fr_160px_160px_140px_110px] gap-3 mb-4">
         <div className="relative">
           <Search size={14} className="absolute left-3 top-3 text-clay-500" />
           <input data-testid="exp-search-input" className="w-full pl-9 pr-3 py-2 bg-white border border-clay-300 text-sm outline-none focus:border-terracotta" placeholder="Buscar (palabras separadas, busca en cualquier orden)…" value={q} onChange={(e) => setQ(e.target.value)} />
@@ -146,14 +141,19 @@ export default function Experiences() {
           <option value="">Todos los tipos</option>
           {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
+        <select data-testid="filter-pax" className="bg-white border border-clay-300 px-3 py-2 text-sm" value={filterPax} onChange={(e) => setFilterPax(e.target.value)}>
+          <option value="">Pax: todos</option>
+          {[1,2,3,4,5,6,7,8,9,10,11,12].map((n) => <option key={n} value={n}>{n} pax</option>)}
+        </select>
       </div>
 
       <div className="border border-clay-300 bg-white">
-        <div className="grid grid-cols-[1.5fr_1fr_0.7fr_1fr_0.6fr_0.6fr_auto] bg-clay-100 text-[11px] tracking-[0.2em] uppercase text-clay-700 font-semibold">
+        <div className="grid grid-cols-[1.5fr_1fr_0.7fr_1fr_0.5fr_0.6fr_0.6fr_auto] bg-clay-100 text-[11px] tracking-[0.2em] uppercase text-clay-700 font-semibold">
           <div className="px-4 py-3">Título</div>
           <div className="px-4 py-3">Proveedor</div>
           <div className="px-4 py-3">Tipo</div>
           <div className="px-4 py-3">Ciudad / País</div>
+          <div className="px-4 py-3 text-center">Pax</div>
           <div className="px-4 py-3 text-right">Sin IVA</div>
           <div className="px-4 py-3 text-right">Con IVA</div>
           <div className="px-4 py-3 text-right">Acciones</div>
@@ -163,7 +163,7 @@ export default function Experiences() {
         ) : items.length === 0 ? (
           <div className="p-10 text-center text-sm text-clay-700" data-testid="exp-empty">No hay experiencias. Crea una nueva o importa un Excel de proveedor.</div>
         ) : items.map((e) => (
-          <div key={e.experience_id} className="grid grid-cols-[1.5fr_1fr_0.7fr_1fr_0.6fr_0.6fr_auto] border-t border-clay-300 text-sm hover:bg-clay-50 transition-colors" data-testid={`exp-row-${e.experience_id}`}>
+          <div key={e.experience_id} className="grid grid-cols-[1.5fr_1fr_0.7fr_1fr_0.5fr_0.6fr_0.6fr_auto] border-t border-clay-300 text-sm hover:bg-clay-50 transition-colors" data-testid={`exp-row-${e.experience_id}`}>
             <div className="px-4 py-3">
               <div className="font-semibold truncate">{e.title}</div>
               {e.description && <div className="text-[11px] text-clay-700 truncate">{e.description}</div>}
@@ -171,6 +171,7 @@ export default function Experiences() {
             <div className="px-4 py-3 text-clay-700 truncate">{e.provider_name}</div>
             <div className="px-4 py-3"><span className={`inline-block px-1.5 py-0.5 text-[9px] tracking-widest uppercase ${TYPE_BADGE[e.type] || TYPE_BADGE.otro}`}>{e.type}</span></div>
             <div className="px-4 py-3 text-clay-700">{[e.city, e.country].filter(Boolean).join(" · ") || "—"}</div>
+            <div className="px-4 py-3 text-center tabular font-semibold" data-testid={`pax-${e.experience_id}`}>{e.pax || 2}</div>
             <div className="px-4 py-3 text-right tabular text-clay-700">{Number(e.price_tax_excl || 0).toLocaleString("es-ES")}</div>
             <div className="px-4 py-3 text-right tabular font-semibold">{Number(e.price_tax_incl || e.price || 0).toLocaleString("es-ES")}</div>
             <div className="px-4 py-3 flex items-center justify-end gap-1">
@@ -195,6 +196,7 @@ export default function Experiences() {
             <Input label="Moneda" value={editing.currency} onChange={(v) => setEditing({ ...editing, currency: v })} />
             <NumberInput label="Precio sin IVA" value={editing.price_tax_excl} onChange={(v) => setEditing({ ...editing, price_tax_excl: v })} tid="exp-price-excl" />
             <NumberInput label="Precio con IVA" value={editing.price_tax_incl} onChange={(v) => setEditing({ ...editing, price_tax_incl: v, price: v })} tid="exp-price-incl" />
+            <NumberInput label="Pax (nº de personas para este precio) *" value={editing.pax || 2} onChange={(v) => setEditing({ ...editing, pax: Math.max(1, Math.round(v)) })} tid="exp-pax" />
             <Input label="País" value={editing.country || ""} onChange={(v) => setEditing({ ...editing, country: v })} />
             <Input label="Ciudad" value={editing.city || ""} onChange={(v) => setEditing({ ...editing, city: v })} />
             <div className="col-span-2">
@@ -210,6 +212,7 @@ export default function Experiences() {
       )}
 
       {importOpen && <ImportModal providers={providers} onClose={() => setImportOpen(false)} onDone={() => { setImportOpen(false); load(); }} />}
+      {csvUploadOpen && <CsvUploadModal onClose={() => setCsvUploadOpen(false)} onDone={() => { setCsvUploadOpen(false); load(); }} />}
     </div>
   );
 }
@@ -281,6 +284,74 @@ function ImportModal({ providers, onClose, onDone }) {
       <div className="flex justify-end gap-2 mt-6">
         <button onClick={onClose} className="px-4 py-2 border border-clay-300 text-sm hover:bg-clay-100">Cancelar</button>
         <button data-testid="import-submit" onClick={submit} disabled={busy} className="px-4 py-2 bg-terracotta text-white text-sm tracking-wider uppercase hover:bg-terracotta-hover disabled:opacity-50">{busy ? "Importando…" : "Importar"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+
+function CsvUploadModal({ onClose, onDone }) {
+  const [file, setFile] = useState(null);
+  const [wipeExperiences, setWipeExperiences] = useState(true);
+  const [wipeHotels, setWipeHotels] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const submit = async () => {
+    if (!file) { toast.error("Selecciona el archivo app_operators.csv"); return; }
+    const form = new FormData();
+    form.append("file", file);
+    const params = new URLSearchParams();
+    params.set("wipe_experiences", String(wipeExperiences));
+    params.set("wipe_imported_hotels", String(wipeHotels));
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/catalog/import-operators-csv?${params}`, form, { headers: { "Content-Type": "multipart/form-data" } });
+      setResult(data);
+      toast.success(`${data.experiences_created} experiencias creadas · ${data.hotels_created} hoteles · ${data.providers_total} proveedores`);
+      onDone();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Error al importar CSV");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <Modal title="Subir CSV de operadores" onClose={onClose}>
+      <div className="text-sm text-clay-700 mb-4 space-y-2">
+        <p>
+          Sube el archivo <code className="text-xs bg-clay-100 px-1">app_operators.csv</code> con columnas:
+          <code className="text-[10px] bg-clay-100 px-1 ml-1">ID_TRIP; Fecha_venta; Servicio; Ciudad; Proveedor; AD; CH; Sin_IVA; Con_IVA</code>
+        </p>
+        <p>
+          Cada experiencia se guarda con su número de <b>pax (AD + CH)</b>, así una misma actividad
+          para 2 pax vs 4 pax queda como filas separadas con su precio respectivo.
+        </p>
+      </div>
+      <div className="space-y-3 mb-4">
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={wipeExperiences} onChange={(e) => setWipeExperiences(e.target.checked)} data-testid="wipe-exp-toggle" />
+          Vaciar experiencias antes de importar
+        </label>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={wipeHotels} onChange={(e) => setWipeHotels(e.target.checked)} data-testid="wipe-hotels-toggle" />
+          También vaciar hoteles importados de viajes (no la biblioteca curada)
+        </label>
+      </div>
+      <div>
+        <div className="smallcaps mb-1">Archivo CSV</div>
+        <input data-testid="csv-file-input" type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] || null)} className="w-full text-sm" />
+      </div>
+      {result && (
+        <div className="mt-4 p-3 bg-clay-100 border border-clay-300 text-xs space-y-1">
+          <div>📊 <b>{result.rows_scanned}</b> filas escaneadas → <b>{result.unique_services}</b> únicas</div>
+          <div>✅ <b>{result.experiences_created}</b> experiencias creadas · {result.experiences_skipped} duplicadas</div>
+          <div>🏨 <b>{result.hotels_created}</b> hoteles · {result.hotels_skipped} duplicados</div>
+          <div>🏢 <b>{result.providers_total}</b> proveedores procesados</div>
+        </div>
+      )}
+      <div className="flex justify-end gap-2 mt-6">
+        <button onClick={onClose} className="px-4 py-2 border border-clay-300 text-sm hover:bg-clay-100">Cerrar</button>
+        <button data-testid="csv-upload-submit" onClick={submit} disabled={busy || !file} className="px-4 py-2 bg-terracotta text-white text-sm tracking-wider uppercase hover:bg-terracotta-hover disabled:opacity-50">{busy ? "Importando…" : "Importar"}</button>
       </div>
     </Modal>
   );

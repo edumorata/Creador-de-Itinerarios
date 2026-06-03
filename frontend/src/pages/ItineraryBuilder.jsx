@@ -591,7 +591,9 @@ export default function ItineraryBuilder() {
                     </div>
                     <div className="text-right shrink-0">
                       <div className="font-semibold tabular text-sm">{fmtEUR(e.price_tax_incl ?? e.price)}</div>
-                      <div className="text-[10px] text-clay-700 tabular">sin IVA {fmtEUR(e.price_tax_excl)}</div>
+                      <div className="text-[10px] text-clay-700 tabular">
+                        sin IVA {fmtEUR(e.price_tax_excl)} · <b>{e.pax || 2} pax</b>
+                      </div>
                       <span className={`inline-block mt-1 px-1.5 py-0.5 text-[9px] tracking-widest uppercase ${TYPE_BADGE[e.type] || TYPE_BADGE.otro}`}>{e.type}</span>
                     </div>
                   </div>
@@ -766,6 +768,7 @@ function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, onChange,
           value={service.name}
           dayCity={dayCity}
           serviceType={service.type}
+          pax={numTravelers}
           onTextChange={(v) => onChange({ name: v })}
           onPick={onPickExperience}
         />
@@ -847,7 +850,7 @@ function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, onChange,
   );
 }
 
-function AutocompleteInput({ value, dayCity, serviceType, onTextChange, onPick }) {
+function AutocompleteInput({ value, dayCity, serviceType, pax, onTextChange, onPick }) {
   const [open, setOpen] = useState(false);
   const [results, setResults] = useState([]);
   const [highlight, setHighlight] = useState(0);
@@ -868,17 +871,18 @@ function AutocompleteInput({ value, dayCity, serviceType, onTextChange, onPick }
     if (t) params.q = t;
     if (dayCity) params.city = dayCity;
     if (serviceType) params.type = serviceType;
+    if (pax) params.pax = pax;
     try {
       const { data } = await api.get("/experiences/autocomplete", { params });
       setResults(data); setHighlight(0);
     } catch (e) { setResults([]); }
-  }, [dayCity, serviceType]);
+  }, [dayCity, serviceType, pax]);
 
   // Auto-refresh dropdown when user changes type or city pre-filter while it's open
   useEffect(() => {
     if (open) search(value);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serviceType, dayCity]);
+  }, [serviceType, dayCity, pax]);
 
   const handleChange = (e) => {
     const v = e.target.value;
@@ -924,6 +928,11 @@ function AutocompleteInput({ value, dayCity, serviceType, onTextChange, onPick }
                 </div>
                 <div className="text-right shrink-0 text-xs">
                   <div className="tabular font-semibold">{fmtEUR(r.price_tax_incl ?? r.price)}</div>
+                  <div className="text-[9px] text-clay-700 tabular">
+                    <span className={pax && (r.pax || 2) !== pax ? "text-amber-700 font-semibold" : ""}>
+                      {r.pax || 2} pax
+                    </span>
+                  </div>
                   <span className={`inline-block mt-0.5 px-1 py-0.5 text-[8px] tracking-widest uppercase ${TYPE_BADGE[r.type] || TYPE_BADGE.otro}`}>{r.type}</span>
                 </div>
               </div>

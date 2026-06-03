@@ -110,6 +110,10 @@ class Experience(BaseModel):
     price_tax_incl: float = 0.0
     price: float = 0.0  # legacy alias = price_tax_incl
     currency: str = "EUR"
+    # Number of pax (adults + children) the price is quoted for. Critical for
+    # interpreting per-group services where price scales with group size.
+    # Default 2 to match the most common booking pattern.
+    pax: int = 2
     notes: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
 
@@ -125,6 +129,7 @@ class ExperienceCreate(BaseModel):
     price_tax_incl: float = 0.0
     price: Optional[float] = None
     currency: str = "EUR"
+    pax: int = 2
     notes: Optional[str] = None
 
 
@@ -139,6 +144,7 @@ class ExperienceUpdate(BaseModel):
     price_tax_incl: Optional[float] = None
     price: Optional[float] = None
     currency: Optional[str] = None
+    pax: Optional[int] = None
     notes: Optional[str] = None
 
 
