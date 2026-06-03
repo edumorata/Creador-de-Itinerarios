@@ -264,6 +264,18 @@
   on a 2027-09-11 → 2027-09-18 itinerary correctly created:
   Check-in (Day 1) → Alojamiento (Days 2-7) → Check-out (Day 8).
 
+### Iteration 13 (2026-05-31) — Accommodation overlap detection
+- **Banner de aviso** en `AccommodationsBlock`: si dos o más alojamientos
+  tienen rangos `[date_from, date_to]` que se solapan, aparece un panel rojo
+  destructivo con icono `AlertTriangle` listando cada conflicto con el número
+  exacto de días en disputa.
+- Lógica O(n²) sobre `itn.accommodations` con `useMemo`. Detecta el solape
+  estricto (`aFrom < bTo && bFrom < aTo`) y descarta el caso "check-out de A
+  = check-in de B" porque no es conflicto (mismo día, mañana vs tarde).
+- Verificado: Pestana Overlap (10-26→10-30) en un itinerario con H10
+  Palazzo Galla (10-25→10-27) y Maison Kalea (10-28→10-31) produce dos
+  filas: "1 día en conflicto" + "2 días en conflicto".
+
 ## Known minor items
 - Autocomplete payload returns full Experience docs (could be slimmed)
 - CORS regex `.*` is permissive (lock down to frontend origin for production)

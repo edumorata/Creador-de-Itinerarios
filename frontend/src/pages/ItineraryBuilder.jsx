@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Plus, Search, Trash2, GripVertical, FileDown, Bed, MapPin, Calendar, ExternalLink } from "lucide-react";
+import { ArrowLeft, Plus, Search, Trash2, GripVertical, FileDown, Bed, MapPin, Calendar, ExternalLink, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import api, { API_BASE } from "@/lib/api";
 
@@ -955,6 +955,31 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
       days: newDays,
     });
   };
+
+  // Detect date-range overlaps between accommodations. Two stays overlap when
+  // [a.date_from, a.date_to) ∩ [b.date_from, b.date_to) is non-empty.
+  // Touching at check-out day is NOT a conflict (a guest checks out in the
+  // morning, into the next hotel the same day).
+  const overlaps = useMemo(() => {
+    const accs = (itn.accommodations || []).filter((a) => a.name && a.date_from && a.date_to);
+    const out = [];
+    for (let i = 0; i < accs.length; i++) {
+      for (let j = i + 1; j < accs.length; j++) {
+        const a = accs[i], b = accs[j];
+        const aFrom = new Date(a.date_from), aTo = new Date(a.date_to);
+        const bFrom = new Date(b.date_from), bTo = new Date(b.date_to);
+        if (isNaN(aFrom) || isNaN(aTo) || isNaN(bFrom) || isNaN(bTo)) continue;
+        if (aFrom < bTo && bFrom < aTo) {
+          const overlapStart = aFrom > bFrom ? aFrom : bFrom;
+          const overlapEnd = aTo < bTo ? aTo : bTo;
+          const days = Math.max(0, Math.round((overlapEnd - overlapStart) / 86400000));
+          if (days > 0) out.push({ a, b, days });
+        }
+      }
+    }
+    return out;
+  }, [itn.accommodations]);
+
   return (
     <div className="mt-10">
       <div className="flex items-center justify-between mb-3">
@@ -963,6 +988,27 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
           <Plus size={12}/> Añadir alojamiento
         </button>
       </div>
+      {overlaps.length > 0 && (
+        <div
+          data-testid="acc-overlap-warning"
+          className="mb-3 border border-destructive bg-destructive/5 px-3 py-2 text-sm text-destructive"
+        >
+          <div className="font-semibold mb-1 flex items-center gap-2">
+            <AlertTriangle size={14}/>
+            {overlaps.length === 1 ? "Solapamiento detectado en alojamientos" : `${overlaps.length} solapamientos detectados en alojamientos`}
+          </div>
+          <ul className="list-disc pl-5 space-y-0.5 text-[12px]">
+            {overlaps.map((o, i) => (
+              <li key={i}>
+                <span className="font-semibold">{o.a.name}</span> ({o.a.date_from} → {o.a.date_to})
+                {" "}solapa con{" "}
+                <span className="font-semibold">{o.b.name}</span> ({o.b.date_from} → {o.b.date_to})
+                {" "}— {o.days} {o.days === 1 ? "día" : "días"} en conflicto.
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className="border border-clay-300 bg-white">
         {(itn.accommodations || []).length === 0 ? (
           <div className="p-4 text-sm text-clay-700">Opcional. Añade alojamientos resumidos por estancia.</div>
