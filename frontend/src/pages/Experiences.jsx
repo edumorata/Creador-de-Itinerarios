@@ -47,6 +47,7 @@ export default function Experiences() {
       setItems(a.data); setProviders(b.data); setFacets(c.data);
     } finally { setLoading(false); }
   };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [q, filterCountry, filterCity, filterType]);
 
   const save = async () => {

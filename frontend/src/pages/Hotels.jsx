@@ -36,6 +36,7 @@ export default function Hotels() {
       setItems(data);
     } finally { setLoading(false); }
   };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [q, filterTier, includeImported]);
 
   const save = async () => {

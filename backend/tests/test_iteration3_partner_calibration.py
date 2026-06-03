@@ -27,8 +27,9 @@ BASE_URL = os.environ.get(
     "REACT_APP_BACKEND_URL", "http://localhost:8001"
 ).rstrip("/")
 API = f"{BASE_URL}/api"
-ADMIN_TOKEN = "test_admin_session_token"
-AGENT_TOKEN = "test_agent_session_token"
+# Test-only opaque tokens — see backend_test.py for rationale.
+ADMIN_TOKEN = os.environ.get("TEST_ADMIN_TOKEN", "test_admin_session_token")
+AGENT_TOKEN = os.environ.get("TEST_AGENT_TOKEN", "test_agent_session_token")
 
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
 DB_NAME = os.environ.get("DB_NAME", "test_database")

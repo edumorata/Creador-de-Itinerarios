@@ -23,8 +23,11 @@ from pymongo import MongoClient
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://itinerary-builder-74.preview.emergentagent.com").rstrip("/")
 API = f"{BASE_URL}/api"
-ADMIN_TOKEN = "test_admin_session_token"
-AGENT_TOKEN = "test_agent_session_token"
+# Test-only session tokens. NOT real secrets — these are arbitrary opaque
+# strings the tests seed into Mongo for the duration of the run, then delete
+# in the fixture's finalizer. Override with env if you want different values.
+ADMIN_TOKEN = os.environ.get("TEST_ADMIN_TOKEN", "test_admin_session_token")
+AGENT_TOKEN = os.environ.get("TEST_AGENT_TOKEN", "test_agent_session_token")
 
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
 DB_NAME = os.environ.get("DB_NAME", "test_database")

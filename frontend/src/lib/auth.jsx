@@ -32,7 +32,9 @@ export function AuthProvider({ children }) {
     try {
       await api.post("/auth/logout");
     } catch (e) {
-      // ignore
+      // The session may have already expired server-side — that's fine,
+      // we still clear the client-side state. Logged for audit only.
+      console.debug("logout endpoint returned an error (ignored)", e?.message);
     }
     setUser(null);
   }, []);

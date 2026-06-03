@@ -119,7 +119,11 @@ export default function ItineraryBuilder() {
         const hit = (data || []).find((h) => (h.name || "").toLowerCase() === hotelName.toLowerCase())
                  || (data || [])[0];
         if (hit && hit.city) city = hit.city;
-      } catch { /* fallthrough */ }
+      } catch (e) {
+        // Hotel-name lookup is best-effort — falls through to the day-plan
+        // city detection if /api/hotels fails (offline, rate-limited, etc.).
+        console.debug("hotel city lookup failed (using fallback)", e?.message);
+      }
     }
     if (!city) {
       city = window.prompt(`¿Ciudad para buscar precio orientativo${hotelName ? ' de "' + hotelName + '"' : ""}?`, "");
@@ -1348,7 +1352,8 @@ function FxConverter({ fx, setFx, totals }) {
       const { data } = await api.get("/fx/rate", { params: { refresh: true } });
       if (data?.rate) setFx({ rate: Number(data.rate), source: data.source, date: data.date });
     } catch (e) {
-      // keep current rate
+      // FX refresh is best-effort; we keep showing the previously cached rate.
+      console.debug("FX refresh failed", e?.message);
     } finally {
       setBusy(false);
     }

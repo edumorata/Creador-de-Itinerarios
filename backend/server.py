@@ -1684,10 +1684,6 @@ async def calibration_job_log(job_id: str, _: Annotated[User, Depends(require_ad
     return {"job": doc, "log_tail": tail}
 
 
-    items = await db.hotels.find(flt, {"_id": 0}).sort("name", 1).to_list(2000)
-    return items
-
-
 # ===========================================================================
 # HOTEL PRICE ORIENTATION
 # Combines two sources, in order of reliability:
@@ -2815,6 +2811,7 @@ async def scrape_itinerary_url(
     if not url:
         raise HTTPException(status_code=400, detail="URL es obligatoria")
     from scraper import scrape_and_parse
+    result: dict = {}
     try:
         result = await scrape_and_parse(url)
     except Exception as e:

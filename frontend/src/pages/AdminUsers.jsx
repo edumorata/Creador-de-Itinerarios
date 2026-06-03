@@ -13,6 +13,7 @@ export default function AdminUsers() {
     const [a, b] = await Promise.all([api.get("/admin/allowed-emails"), api.get("/admin/users")]);
     setAllowed(a.data); setUsers(b.data);
   };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, []);
 
   const add = async () => {

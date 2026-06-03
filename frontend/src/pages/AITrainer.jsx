@@ -929,7 +929,10 @@ function CalibrationCard() {
             } else {
               setStatus((prev) => ({ ...prev, job: data.job }));
             }
-          } catch {}
+          } catch (e) {
+            // Single poll tick failed (network blip) — next interval will retry.
+            console.debug("calibration poll failed", e?.message);
+          }
         }, 5000);
       } else if (!job || job.status !== "running") {
         if (pollRef.current) clearInterval(pollRef.current);
@@ -937,7 +940,9 @@ function CalibrationCard() {
         setRunning(false);
       }
     } catch (e) {
-      // silently ignore — endpoint may not exist in older deployments
+      // /api/calibration/* not deployed yet in this environment — feature
+      // gracefully degrades (the card just won't render the live stats).
+      console.debug("calibration status fetch failed", e?.message);
     }
   }, []);
 

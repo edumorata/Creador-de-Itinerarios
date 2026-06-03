@@ -10,6 +10,10 @@ export default function AuthCallback() {
   const processed = useRef(false);
   const [error, setError] = useState(null);
 
+  // This effect must run exactly once per mount to process the session_id
+  // returned in the URL hash. We guard with `processed.current` so re-renders
+  // don't re-submit. Deps intentionally empty.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (processed.current) return;
     processed.current = true;

@@ -15,6 +15,10 @@ export default function Providers() {
     try { const { data } = await api.get("/providers"); setItems(data); }
     finally { setLoading(false); }
   };
+  // load() reads top-level state but is only invoked on mount + on the
+  // listed filter changes. We intentionally do not list `load` in deps to
+  // avoid an unstable identity loop.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, []);
 
   const save = async () => {
