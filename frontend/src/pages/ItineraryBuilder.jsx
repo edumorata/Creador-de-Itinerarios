@@ -251,6 +251,78 @@ export default function ItineraryBuilder() {
     schedSave(next);
   };
 
+  // -------------------------------------------------------------------------
+  // Accommodation from an in-day service. Triggered when the user sets
+  // check-in + check-out dates on an "alojamiento" service row.
+  //  - First call (no acc_id) → CREATE a new accommodation in the summary AND
+  //    auto-spread to every covered day (check-in / mid / check-out).
+  //  - Subsequent calls (acc_id linked) → UPDATE the parent accommodation and
+  //    re-spread idempotently.
+  // -------------------------------------------------------------------------
+  const upsertAccommodationFromService = (dayId, service, dateFrom, dateTo) => {
+    if (!service.name || !dateFrom || !dateTo) return;
+    const dFrom = new Date(dateFrom);
+    const dTo = new Date(dateTo);
+    if (isNaN(dFrom) || isNaN(dTo) || dTo < dFrom) return;
+    const accId = service.acc_id || uid("acc");
+    const nights = Math.max(1, Math.round((dTo - dFrom) / 86400000));
+    const nightlyIncl = service.unit_price_tax_incl || service.unit_price || 0;
+    const nightlyExcl = service.unit_price_tax_excl || nightlyIncl;
+    const totalIncl = nightlyIncl * nights;
+    const totalExcl = nightlyExcl * nights;
+
+    // Spread across covered days (idempotent: strip prior services for this acc_id).
+    const newDays = (itn.days || []).map((d) => {
+      const filtered = (d.services || []).filter((s) => s.acc_id !== accId);
+      if (!d.date) return { ...d, services: filtered };
+      const dd = new Date(d.date);
+      if (isNaN(dd) || dd < dFrom || dd > dTo) return { ...d, services: filtered };
+      const isCheckIn = dd.getTime() === dFrom.getTime();
+      const isCheckOut = dd.getTime() === dTo.getTime();
+      const label = isCheckIn ? `Check-in · ${service.name}`
+                  : isCheckOut ? `Check-out · ${service.name}`
+                  : `Alojamiento · ${service.name}`;
+      return {
+        ...d,
+        services: [
+          ...filtered,
+          {
+            service_id: uid("svc"),
+            acc_id: accId,
+            experience_id: service.experience_id || null,
+            type: "alojamiento",
+            name: label,
+            provider_name: service.provider_name || null,
+            quantity: isCheckIn ? nights : 0,
+            unit_price_tax_excl: isCheckIn ? nightlyExcl : 0,
+            unit_price_tax_incl: isCheckIn ? nightlyIncl : 0,
+            unit_price: isCheckIn ? nightlyIncl : 0,
+            currency: "EUR",
+            notes: isCheckIn && nightlyIncl ? `${nights} noches × ${nightlyIncl}€` : "",
+          },
+        ],
+      };
+    });
+
+    // Upsert the accommodation in the summary list.
+    const accs = [...(itn.accommodations || [])];
+    const existingIdx = accs.findIndex((a) => a.acc_id === accId);
+    const accRow = {
+      acc_id: accId,
+      name: service.name,
+      date_from: dateFrom,
+      date_to: dateTo,
+      price_tax_excl: totalExcl,
+      price_tax_incl: totalIncl,
+      price: totalIncl,
+      currency: "EUR",
+    };
+    if (existingIdx === -1) accs.push(accRow);
+    else accs[existingIdx] = { ...accs[existingIdx], ...accRow };
+
+    schedSave({ ...itn, days: newDays, accommodations: accs });
+  };
+
   // Drag & drop: move a service between days or reorder within a day.
   // targetIndex = -1 means "append at end".
   const onDragStart = (srcDayId, srcServiceId) => { dragRef.current = { srcDayId, srcServiceId }; };
@@ -388,6 +460,7 @@ export default function ItineraryBuilder() {
               onDragStart={onDragStart}
               onDropService={onDropService}
               onOrient={openOrient}
+              onAccommodate={(svc, dFrom, dTo) => upsertAccommodationFromService(day.day_id, svc, dFrom, dTo)}
             />
           ))}
           <button onClick={addDay} data-testid="add-day-btn" className="w-full border border-dashed border-clay-300 py-3 text-sm text-clay-700 hover:border-terracotta hover:text-terracotta transition-colors">
@@ -505,7 +578,7 @@ export default function ItineraryBuilder() {
   );
 }
 
-function DayBlock({ day, idx, active, numTravelers, cityFacets, markup, onActivate, onUpdateDay, onAddBlank, onAddExperience, onRemoveDay, onUpdateService, onRemoveService, onDragStart, onDropService, onOrient }) {
+function DayBlock({ day, idx, active, numTravelers, cityFacets, markup, onActivate, onUpdateDay, onAddBlank, onAddExperience, onRemoveDay, onUpdateService, onRemoveService, onDragStart, onDropService, onOrient, onAccommodate }) {
   const [dragOverIdx, setDragOverIdx] = useState(null);
   return (
     <div className={`border ${active ? "border-terracotta" : "border-clay-300"} bg-white transition-colors`} data-testid={`day-${idx}`} onClick={onActivate}>
@@ -579,6 +652,7 @@ function DayBlock({ day, idx, active, numTravelers, cityFacets, markup, onActiva
                   unit_price: exp.price_tax_incl ?? exp.price ?? 0, currency: exp.currency || "EUR",
                 })}
                 onOrient={onOrient}
+                onAccommodate={(dFrom, dTo) => onAccommodate(s, dFrom, dTo)}
                 dayDate={day.date}
               />
             </div>
@@ -595,13 +669,30 @@ function DayBlock({ day, idx, active, numTravelers, cityFacets, markup, onActiva
   );
 }
 
-function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, onChange, onRemove, onPickExperience, onDragStart, onOrient }) {
+function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, onChange, onRemove, onPickExperience, onDragStart, onOrient, onAccommodate }) {
   const totalExcl = (service.unit_price_tax_excl || 0) * (service.quantity || 0);
   const totalIncl = (service.unit_price_tax_incl || service.unit_price || 0) * (service.quantity || 0);
   const totalPVP = totalIncl * (1 + (markup || 0) / 100);
   const isLodging = service.type === "alojamiento";
 
+  // Local state for the in-line check-in/out date inputs (only used for lodging).
+  // Pre-fill with the day's date so the user only needs to set the check-out.
+  const [stayFrom, setStayFrom] = useState(dayDate || "");
+  const [stayTo, setStayTo] = useState("");
+  // Keep stayFrom in sync if the parent day's date later changes (rare).
+  useEffect(() => { if (!stayFrom && dayDate) setStayFrom(dayDate); }, [dayDate]);
+  const applyDates = () => {
+    const dFrom = stayFrom || dayDate;
+    const dTo = stayTo;
+    if (!dFrom || !dTo) return;
+    if (!service.name?.trim()) { toast.error("Pon primero el nombre del hotel"); return; }
+    onAccommodate?.(dFrom, dTo);
+    toast.success("Alojamiento aplicado a todos los días");
+    setStayFrom(""); setStayTo("");
+  };
+
   return (
+    <div className="border-b border-clay-200 last:border-0">
     <div className={`grid ${isLodging ? "grid-cols-[28px_110px_1fr_60px_100px_100px_100px_28px_28px]" : "grid-cols-[28px_110px_1fr_60px_100px_100px_100px_30px]"} gap-2 items-center px-3 py-2.5 text-sm hover:bg-clay-50 transition-colors`}>
       <span
         draggable
@@ -663,6 +754,39 @@ function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, onChange,
         ><Search size={13}/></button>
       )}
       <button onClick={onRemove} className="text-clay-500 hover:text-destructive p-1" title="Quitar"><Trash2 size={14}/></button>
+    </div>
+    {isLodging && (
+      <div className="grid grid-cols-[28px_110px_1fr_60px_100px_100px_100px_28px_28px] gap-2 items-center px-3 pb-2 -mt-1 text-[11px] text-clay-700">
+        <span />
+        <span />
+        <div className="flex items-center gap-2">
+          <span className="smallcaps text-[9px]">Check-in</span>
+          <input
+            type="date"
+            data-testid="svc-stay-from"
+            value={stayFrom}
+            onChange={(e) => setStayFrom(e.target.value)}
+            className="bg-white border border-clay-300 px-1 py-0.5 text-[11px] tabular outline-none focus:border-terracotta"
+          />
+          <span className="smallcaps text-[9px]">Check-out</span>
+          <input
+            type="date"
+            data-testid="svc-stay-to"
+            value={stayTo}
+            onChange={(e) => setStayTo(e.target.value)}
+            className="bg-white border border-clay-300 px-1 py-0.5 text-[11px] tabular outline-none focus:border-terracotta"
+          />
+          <button
+            data-testid="svc-stay-apply"
+            disabled={!stayFrom || !stayTo || !service.name?.trim()}
+            onClick={applyDates}
+            className="px-2 py-0.5 text-[10px] uppercase tracking-wider bg-clay-900 text-white hover:bg-terracotta disabled:opacity-40"
+          >
+            Aplicar a estancia
+          </button>
+        </div>
+      </div>
+    )}
     </div>
   );
 }
@@ -1057,10 +1181,11 @@ function OrientationModal({ city, hotelName, checkin, checkout, adults, busy, da
   const ex = data?.expedia;
 
   // Always-available Expedia deep link, even when scraper got blocked.
-  // We include the hotel name in the destination string so Expedia opens its
-  // SERP filtered to that property (when it exists in their inventory).
+  // We target the HOTEL name as destination (Expedia resolves it to the
+  // specific property). The city is appended only when we don't know the
+  // hotel, so the user still lands on a meaningful SERP.
   const expediaUrl = (() => {
-    const destStr = [hotelName, city].filter(Boolean).join(" ");
+    const destStr = hotelName?.trim() ? hotelName.trim() : (city || "");
     const params = new URLSearchParams({
       destination: destStr,
       adults: String(adults || 2),

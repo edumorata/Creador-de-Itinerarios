@@ -282,7 +282,8 @@ export default function Hotels() {
             )}
             <a
               href={(() => {
-                const dest = [orient.hotel.name, orient.hotel.city].filter(Boolean).join(" ");
+                // Expedia: target the HOTEL name (Expedia matches by property name).
+                const dest = orient.hotel.name?.trim() || orient.hotel.city || "";
                 const params = new URLSearchParams({ destination: dest, adults: "2" });
                 return `https://www.expedia.es/Hotel-Search?${params.toString()}`;
               })()}
