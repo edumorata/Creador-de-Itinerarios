@@ -132,6 +132,21 @@ async def ensure_playwright_browser():
 
 
 @app.on_event("startup")
+async def seed_database_if_empty():
+    """First-deploy seeding: if any operational collection is empty, restore
+    it from /app/backend/data/seed.json.gz. Idempotent on re-deploys (skips
+    any collection that already has rows)."""
+    try:
+        from tools.seed_loader import seed_if_empty
+        summary = await seed_if_empty(db)
+        non_zero = {k: v for k, v in summary.items() if v > 0}
+        if non_zero:
+            logger.warning("seed: bootstrapped collections: %s", non_zero)
+    except Exception as e:
+        logger.warning("seed: failed (continuing without it): %s", e)
+
+
+@app.on_event("startup")
 async def reap_orphan_bulk_jobs():
     """Any bulk_import_job left as queued/running from a previous process is
     orphaned — the in-memory asyncio task died with the restart. Mark them
