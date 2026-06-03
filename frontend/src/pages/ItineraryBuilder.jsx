@@ -713,8 +713,24 @@ function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, onChange,
   // Pre-fill with the day's date so the user only needs to set the check-out.
   const [stayFrom, setStayFrom] = useState(dayDate || "");
   const [stayTo, setStayTo] = useState("");
-  // Keep stayFrom in sync if the parent day's date later changes (rare).
-  useEffect(() => { if (!stayFrom && dayDate) setStayFrom(dayDate); }, [dayDate]);
+  // Keep state in sync with the persisted accommodation:
+  //  - For a fresh lodging service (no acc_id yet): stayFrom defaults to dayDate.
+  //  - For a "Check-in" carrier (already linked): show the real range so the
+  //    user can edit it and re-apply.
+  useEffect(() => {
+    if (!isLodging) return;
+    if (service.acc_id && /^Check-in/.test(service.name || "") && dayDate && (service.quantity || 0) > 0) {
+      const dFrom = new Date(dayDate);
+      const nights = service.quantity || 0;
+      const dTo = new Date(dFrom.getTime() + nights * 86400000);
+      setStayFrom(dayDate);
+      setStayTo(dTo.toISOString().slice(0, 10));
+    } else if (!service.acc_id && dayDate && !stayFrom) {
+      setStayFrom(dayDate);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dayDate, service.acc_id, service.quantity, service.name, isLodging]);
+
   const applyDates = () => {
     const dFrom = stayFrom || dayDate;
     const dTo = stayTo;
@@ -722,7 +738,9 @@ function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, onChange,
     if (!service.name?.trim()) { toast.error("Pon primero el nombre del hotel"); return; }
     onAccommodate?.(dFrom, dTo);
     toast.success("Alojamiento aplicado a todos los días");
-    setStayFrom(""); setStayTo("");
+    // Don't reset the inputs — keep them populated so the user can see the
+    // dates they just applied (and edit them later if they want to extend
+    // / shorten the stay).
   };
 
   return (
