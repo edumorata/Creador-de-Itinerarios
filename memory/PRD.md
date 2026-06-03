@@ -368,3 +368,51 @@ Stats after import:
 - 3144 source rows → 2430 unique (service, provider, city, pax) experiences.
 - Pax distribution: 1→109, 2→1340, 3→196, 4→456, 5→189, 6→67, 7→12, 8→31,
   9→19, 11→9, 14→1, 20→1.
+
+### Iteration 9 (2026-06-03) — Smart pax-quantity + multi-room accommodations
+- **Service-type taxonomy refactored** (Pydantic `Literal`):
+  - Removed: `restaurante`, `transporte`, `otro` (legacy DB rows migrated).
+  - Added: `entradas` (entry-only tickets, distinct from guided activities).
+  - Final set: `alojamiento, actividad, entradas, transfer, tren, vuelo` (+ `hotel`
+    internal). CSV importer's `classify()` updated to match.
+- **Smart quantity in the Itinerary Builder**:
+  - `addServiceToDay(...)` and the autocomplete `onPickExperience(...)` now
+    compute `qty = max(1, ceil(num_travelers / experience.pax))` for any
+    pax-scalable type. Concrete behaviour:
+    `tapas-for-2 + couple → qty=1`,
+    `tapas-for-2 + 4 travelers → qty=2`,
+    `transfer-for-3 + 4 travelers → qty=2`.
+    Per-pax services (`pax=1`) still scale linearly to num_travelers.
+  - Each service row shows a small badge "precio para N pax" (amber when
+    `num_travelers` isn't a clean multiple, neutral when it is).
+- **Multi-room accommodations**:
+  - `Accommodation.rooms[]` (new `Room` model): type (single/doble/twin/triple/
+    cuadruple/suite/family/otro), pax, price_per_night_excl, price_per_night_incl.
+  - `Itinerary.room_config[]` (new `RoomConfig` model): default room layout
+    applied when adding a new accommodation; editable per-hotel afterwards.
+  - Aggregate price = `Σ(rooms.price_per_night_incl) × nights`. When rooms
+    exist the flat `price_tax_excl/incl` become read-only and reflect the sum.
+  - The spread-across-days logic (Check-in / mid / Check-out service rows)
+    now uses the room sum when present, and the catalog-flat price otherwise.
+- **AI prompt** updated to document the new taxonomy and the accommodation
+  `rooms` block in the expected JSON schema.
+- **Migration script** `backend/scripts/migrate_service_types.py` patched
+  2430 experiences + 15 services in 6 itineraries to the new taxonomy.
+- **Seed snapshot** regenerated.
+- **Regression tests** added at `backend/tests/test_pax_taxonomy.py` (6 cases,
+  all passing) covering: taxonomy strictness, pax defaults, smart qty math,
+  Room/RoomConfig models, and a full Itinerary roundtrip.
+
+Files touched:
+- `backend/models.py` — ServiceType literal, RoomType literal, Room, RoomConfig,
+  Itinerary.room_config, Accommodation.rooms, ItineraryService.pax.
+- `backend/server.py` — CSV importer `classify()` updated, autocomplete still ranks by pax.
+- `backend/prompts.py` — taxonomy + rooms documented in the JSON schema.
+- `backend/scripts/migrate_service_types.py` (new).
+- `backend/tests/test_pax_taxonomy.py` (new).
+- `backend/tests/batch_eval_v2.py` — old `transporte` literal updated to `tren`.
+- `frontend/src/pages/ItineraryBuilder.jsx` — TYPES list, TYPE_BADGE, SCALES_WITH_PAX,
+  smart qty in addServiceToDay & onPickExperience, AccommodationsBlock fully
+  rewritten to render rooms + default config; new `RoomConfigEditor` component.
+- `frontend/src/pages/Experiences.jsx` — TYPES list and TYPE_BADGE updated.
+

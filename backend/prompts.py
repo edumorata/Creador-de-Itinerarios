@@ -29,10 +29,11 @@ Your output MUST be a single JSON object matching exactly this schema (no markdo
       "services": [
         {
           "experience_id": "exp_xxx",   // REQUIRED if picked from library
-          "type": "actividad",          // one of: alojamiento, actividad, transporte, restaurante, transfer, vuelo, otro
+          "type": "actividad",          // one of: actividad, entradas, transfer, tren, vuelo
           "name": "Tile museum private tour",
           "provider_name": "Provider X",
           "quantity": 2,
+          "pax": 2,                     // pax this UNIT price covers (mirror exp.pax)
           "unit_price_tax_excl": 100.0,
           "unit_price_tax_incl": 121.0,
           "currency": "EUR"
@@ -46,7 +47,10 @@ Your output MUST be a single JSON object matching exactly this schema (no markdo
       "name": "Bairro Alto Hotel",
       "date_from": "YYYY-MM-DD",
       "date_to": "YYYY-MM-DD",
-      "price_tax_excl": 0,
+      "rooms": [
+        {"room_type": "doble", "pax": 2, "price_per_night_excl": 0, "price_per_night_incl": 0}
+      ],
+      "price_tax_excl": 0,            // cached total (auto-computed from rooms × nights)
       "price_tax_incl": 0,
       "currency": "EUR"
     }

@@ -1,19 +1,22 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Plus, Search, Trash2, GripVertical, FileDown, Bed, MapPin, Calendar, ExternalLink, AlertTriangle } from "lucide-react";
+import { ArrowLeft, Plus, Search, Trash2, GripVertical, FileDown, Bed, MapPin, Calendar, ExternalLink, AlertTriangle, X } from "lucide-react";
 import { toast } from "sonner";
 import api, { API_BASE } from "@/lib/api";
 
 const TYPE_BADGE = {
   alojamiento: "bg-pine text-white",
   actividad: "bg-terracotta text-white",
-  transporte: "bg-clay-700 text-white",
-  restaurante: "bg-[#8C5A2B] text-white",
+  entradas: "bg-[#8C5A2B] text-white",
   transfer: "bg-clay-500 text-white",
+  tren: "bg-clay-700 text-white",
   vuelo: "bg-[#3C5A78] text-white",
-  otro: "bg-clay-400 text-white",
 };
-const TYPES = ["alojamiento", "actividad", "transporte", "restaurante", "transfer", "vuelo", "otro"];
+const TYPES = ["actividad", "entradas", "transfer", "tren", "vuelo"];
+// Types that scale with group size — for these, quantity = ceil(num_travelers / pax)
+const SCALES_WITH_PAX = new Set(["actividad", "entradas", "transfer", "tren", "vuelo"]);
+// Visual fallback for any unexpected legacy type strings
+const BADGE_FALLBACK = "bg-clay-400 text-white";
 
 const fmtEUR = (n) => `€ ${Number(n || 0).toLocaleString("es-ES", { maximumFractionDigits: 2, minimumFractionDigits: 2 })}`;
 const fmtUSD = (n) => `$ ${Number(n || 0).toLocaleString("en-US", { maximumFractionDigits: 0, minimumFractionDigits: 0 })}`;
@@ -231,13 +234,23 @@ export default function ItineraryBuilder() {
   };
 
   const addServiceToDay = (dayId, partial = {}) => {
+    // Smart default quantity: when adding a catalog experience, pick qty so
+    // the price covers exactly num_travelers (rounded up). For tickets/per-pax
+    // experiences (pax=1) this matches num_travelers; for a "for 2" private
+    // tour with a 2-pax trip qty becomes 1; for a "for 3" transfer with a
+    // 4-pax trip qty becomes 2; etc. Non-pax-scalable types default to 1.
+    const trav = itn.num_travelers || 1;
+    const expPax = Math.max(1, parseInt(partial.pax || 1, 10));
+    const type = partial.type || "actividad";
+    const autoQty = SCALES_WITH_PAX.has(type) ? Math.max(1, Math.ceil(trav / expPax)) : 1;
     const svc = {
       service_id: uid("svc"),
       experience_id: partial.experience_id || null,
-      type: partial.type || "actividad",
+      type,
       name: partial.name || "",
       provider_name: partial.provider_name || "",
-      quantity: partial.quantity ?? (itn.num_travelers || 1),
+      quantity: partial.quantity ?? autoQty,
+      pax: expPax,
       unit_price_tax_excl: partial.unit_price_tax_excl ?? 0,
       unit_price_tax_incl: partial.unit_price_tax_incl ?? 0,
       unit_price: partial.unit_price_tax_incl ?? 0,
@@ -401,6 +414,7 @@ export default function ItineraryBuilder() {
     addServiceToDay(targetDay, {
       experience_id: exp.experience_id, type: exp.type, name: exp.title,
       provider_name: exp.provider_name,
+      pax: exp.pax || 1,
       unit_price_tax_excl: exp.price_tax_excl ?? 0,
       unit_price_tax_incl: exp.price_tax_incl ?? exp.price ?? 0,
       currency: exp.currency || "EUR",
@@ -594,7 +608,7 @@ export default function ItineraryBuilder() {
                       <div className="text-[10px] text-clay-700 tabular">
                         sin IVA {fmtEUR(e.price_tax_excl)} · <b>{e.pax || 2} pax</b>
                       </div>
-                      <span className={`inline-block mt-1 px-1.5 py-0.5 text-[9px] tracking-widest uppercase ${TYPE_BADGE[e.type] || TYPE_BADGE.otro}`}>{e.type}</span>
+                      <span className={`inline-block mt-1 px-1.5 py-0.5 text-[9px] tracking-widest uppercase ${TYPE_BADGE[e.type] || BADGE_FALLBACK}`}>{e.type}</span>
                     </div>
                   </div>
                 </button>
@@ -686,11 +700,20 @@ function DayBlock({ day, idx, active, numTravelers, cityFacets, markup, onActiva
                 onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", s.service_id); onDragStart(day.day_id, s.service_id); }}
                 onChange={(patch) => onUpdateService(s.service_id, patch)}
                 onRemove={() => onRemoveService(s.service_id)}
-                onPickExperience={(exp) => onUpdateService(s.service_id, {
-                  experience_id: exp.experience_id, name: exp.title, type: exp.type, provider_name: exp.provider_name,
-                  unit_price_tax_excl: exp.price_tax_excl ?? 0, unit_price_tax_incl: exp.price_tax_incl ?? exp.price ?? 0,
-                  unit_price: exp.price_tax_incl ?? exp.price ?? 0, currency: exp.currency || "EUR",
-                })}
+                onPickExperience={(exp) => {
+                  // Recompute auto qty when an existing service is replaced
+                  // via the autocomplete so the quantity reflects the NEW pax.
+                  const expPax = Math.max(1, parseInt(exp.pax || 1, 10));
+                  const scales = SCALES_WITH_PAX.has(exp.type);
+                  const autoQty = scales ? Math.max(1, Math.ceil((numTravelers || 1) / expPax)) : 1;
+                  onUpdateService(s.service_id, {
+                    experience_id: exp.experience_id, name: exp.title, type: exp.type,
+                    provider_name: exp.provider_name, pax: expPax, quantity: autoQty,
+                    unit_price_tax_excl: exp.price_tax_excl ?? 0,
+                    unit_price_tax_incl: exp.price_tax_incl ?? exp.price ?? 0,
+                    unit_price: exp.price_tax_incl ?? exp.price ?? 0, currency: exp.currency || "EUR",
+                  });
+                }}
                 onOrient={onOrient}
                 onAccommodate={(dFrom, dTo) => onAccommodate(s, dFrom, dTo)}
                 dayDate={day.date}
@@ -760,7 +783,9 @@ function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, onChange,
       >
         <GripVertical size={14} />
       </span>
-      <select className={`text-[10px] tracking-widest uppercase px-1.5 py-1 ${TYPE_BADGE[service.type] || TYPE_BADGE.otro} border-none outline-none`} value={service.type} onChange={(e) => onChange({ type: e.target.value })}>
+      <select className={`text-[10px] tracking-widest uppercase px-1.5 py-1 ${TYPE_BADGE[service.type] || BADGE_FALLBACK} border-none outline-none`} value={service.type} onChange={(e) => onChange({ type: e.target.value })}>
+        {!TYPE_BADGE[service.type] && <option value={service.type}>{service.type}</option>}
+        <option value="alojamiento">alojamiento</option>
         {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
       </select>
       <div className="min-w-0">
@@ -772,7 +797,24 @@ function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, onChange,
           onTextChange={(v) => onChange({ name: v })}
           onPick={onPickExperience}
         />
-        {service.provider_name && <div className="text-[11px] text-clay-700 truncate">{service.provider_name}</div>}
+        {(service.provider_name || (service.pax && service.pax > 0)) && (
+          <div className="text-[11px] text-clay-700 truncate flex items-center gap-2">
+            {service.provider_name && <span className="truncate">{service.provider_name}</span>}
+            {!isLodging && service.pax > 0 && SCALES_WITH_PAX.has(service.type) && (
+              <span
+                className={`text-[10px] px-1 py-0.5 rounded ${
+                  numTravelers && (numTravelers % service.pax) !== 0
+                    ? "bg-amber-100 text-amber-800"
+                    : "bg-clay-100 text-clay-700"
+                }`}
+                title={`Precio para ${service.pax} pax · ${numTravelers ? `Viaje ${numTravelers} pax → necesitas ${Math.ceil((numTravelers||1)/service.pax)} unidades` : ""}`}
+                data-testid={`svc-pax-${service.service_id}`}
+              >
+                precio para {service.pax} pax
+              </span>
+            )}
+          </div>
+        )}
       </div>
       <input type="number" min="0" step="1" className="bg-transparent text-right outline-none tabular" value={service.quantity || 0} onChange={(e) => onChange({ quantity: parseFloat(e.target.value || "0") })} />
       <div className="flex items-center gap-1 justify-end">
@@ -933,7 +975,7 @@ function AutocompleteInput({ value, dayCity, serviceType, pax, onTextChange, onP
                       {r.pax || 2} pax
                     </span>
                   </div>
-                  <span className={`inline-block mt-0.5 px-1 py-0.5 text-[8px] tracking-widest uppercase ${TYPE_BADGE[r.type] || TYPE_BADGE.otro}`}>{r.type}</span>
+                  <span className={`inline-block mt-0.5 px-1 py-0.5 text-[8px] tracking-widest uppercase ${TYPE_BADGE[r.type] || BADGE_FALLBACK}`}>{r.type}</span>
                 </div>
               </div>
             </button>
@@ -962,16 +1004,109 @@ function Row({ label, children }) {
   );
 }
 
+const ROOM_TYPES = ["single", "doble", "twin", "triple", "cuadruple", "suite", "family", "otro"];
+const ROOM_PAX_DEFAULT = { single: 1, doble: 2, twin: 2, triple: 3, cuadruple: 4, suite: 2, family: 4, otro: 2 };
+
 function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
-  const add = () => {
-    schedSave({ ...itn, accommodations: [...(itn.accommodations || []), { acc_id: uid("acc"), date_from: itn.start_date, date_to: itn.end_date, name: "", price_tax_excl: 0, price_tax_incl: 0, price: 0, currency: "EUR" }] });
+  const roomConfig = itn.room_config || [];
+
+  // Total nights across a stay
+  const nightsBetween = (df, dt) => {
+    if (!df || !dt) return 0;
+    const a = new Date(df), b = new Date(dt);
+    if (isNaN(a) || isNaN(b)) return 0;
+    return Math.max(0, Math.round((b - a) / 86400000));
   };
+
+  // Sum room prices × nights → totals used by the Excel export and PVP.
+  const totalsFromRooms = (acc) => {
+    const nights = nightsBetween(acc.date_from, acc.date_to) || 1;
+    const rooms = acc.rooms || [];
+    if (rooms.length === 0) return null;
+    const excl = rooms.reduce((s, r) => s + (r.price_per_night_excl || 0), 0) * nights;
+    const incl = rooms.reduce((s, r) => s + (r.price_per_night_incl || r.price_per_night_excl || 0), 0) * nights;
+    return { excl, incl, nights };
+  };
+
+  // Build rooms from the itinerary default config.
+  const buildDefaultRooms = () => {
+    const out = [];
+    (roomConfig.length > 0 ? roomConfig : [{ room_type: "doble", pax: 2, quantity: 1 }]).forEach((rc) => {
+      for (let i = 0; i < (rc.quantity || 1); i++) {
+        out.push({
+          room_id: uid("room"),
+          room_type: rc.room_type, pax: rc.pax,
+          price_per_night_excl: 0, price_per_night_incl: 0, currency: "EUR",
+        });
+      }
+    });
+    return out;
+  };
+
+  const add = () => {
+    const newAcc = {
+      acc_id: uid("acc"),
+      date_from: itn.start_date, date_to: itn.end_date,
+      name: "", price_tax_excl: 0, price_tax_incl: 0, price: 0, currency: "EUR",
+      rooms: buildDefaultRooms(),
+    };
+    schedSave({ ...itn, accommodations: [...(itn.accommodations || []), newAcc] });
+  };
+
   const upd = (idx, patch) => {
     const synced = { ...patch };
     if ("price_tax_incl" in synced) synced.price = synced.price_tax_incl;
     const next = [...(itn.accommodations || [])];
     next[idx] = { ...next[idx], ...synced };
     schedSave({ ...itn, accommodations: next });
+  };
+
+  // Room CRUD on an accommodation. After any change we re-derive the
+  // accommodation aggregate totals so the cost summary and PVP stay consistent.
+  const updateRooms = (idx, newRooms) => {
+    const accs = [...(itn.accommodations || [])];
+    const acc = { ...accs[idx], rooms: newRooms };
+    const totals = totalsFromRooms(acc);
+    if (totals) {
+      acc.price_tax_excl = Math.round(totals.excl * 100) / 100;
+      acc.price_tax_incl = Math.round(totals.incl * 100) / 100;
+      acc.price = acc.price_tax_incl;
+    }
+    accs[idx] = acc;
+    schedSave({ ...itn, accommodations: accs });
+  };
+
+  const addRoom = (idx) => {
+    const acc = (itn.accommodations || [])[idx];
+    const rooms = [...(acc.rooms || []), {
+      room_id: uid("room"), room_type: "doble", pax: 2,
+      price_per_night_excl: 0, price_per_night_incl: 0, currency: "EUR",
+    }];
+    updateRooms(idx, rooms);
+  };
+
+  const removeRoom = (idx, room_id) => {
+    const acc = (itn.accommodations || [])[idx];
+    updateRooms(idx, (acc.rooms || []).filter((r) => r.room_id !== room_id));
+  };
+
+  const patchRoom = (idx, room_id, patch) => {
+    const acc = (itn.accommodations || [])[idx];
+    const rooms = (acc.rooms || []).map((r) => {
+      if (r.room_id !== room_id) return r;
+      const merged = { ...r, ...patch };
+      // If room type changed and pax wasn't manually overridden in this same
+      // patch, sync the default pax for the new type.
+      if ("room_type" in patch && !("pax" in patch)) {
+        merged.pax = ROOM_PAX_DEFAULT[patch.room_type] || merged.pax;
+      }
+      return merged;
+    });
+    updateRooms(idx, rooms);
+  };
+
+  const setRoomConfig = (nextConfig) => {
+    schedSave({ ...itn, room_config: nextConfig });
   };
   const del = (idx) => {
     schedSave({ ...itn, accommodations: (itn.accommodations || []).filter((_, i) => i !== idx) });
@@ -1008,11 +1143,19 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
     const dFrom = new Date(acc.date_from);
     const dTo = new Date(acc.date_to);
     if (isNaN(dFrom) || isNaN(dTo) || dTo < dFrom) return;
-    const dailyPrice = hotelRecord?.price_per_night_incl
-      || (acc.price_tax_incl && Math.round(acc.price_tax_incl / Math.max(1, Math.round((dTo - dFrom) / 86400000)) * 100) / 100)
-      || 0;
-    const dailyExcl = hotelRecord?.price_per_night_excl
-      || dailyPrice;
+    // Aggregate per-night price across rooms when present; otherwise fall back
+    // to the catalog hotel price; otherwise derive from the existing total.
+    const rooms = acc.rooms || [];
+    const roomsSumIncl = rooms.reduce((s, r) => s + (r.price_per_night_incl || r.price_per_night_excl || 0), 0);
+    const roomsSumExcl = rooms.reduce((s, r) => s + (r.price_per_night_excl || r.price_per_night_incl || 0), 0);
+    const dailyPrice = (rooms.length > 0 && roomsSumIncl > 0)
+      ? roomsSumIncl
+      : (hotelRecord?.price_per_night_incl
+        || (acc.price_tax_incl && Math.round(acc.price_tax_incl / Math.max(1, Math.round((dTo - dFrom) / 86400000)) * 100) / 100)
+        || 0);
+    const dailyExcl = (rooms.length > 0 && roomsSumExcl > 0)
+      ? roomsSumExcl
+      : (hotelRecord?.price_per_night_excl || dailyPrice);
     // Build a fresh days array, dropping any previous spread for THIS acc_id.
     const newDays = (itn.days || []).map((d) => {
       const filtered = (d.services || []).filter((s) => s.acc_id !== acc.acc_id);
@@ -1043,8 +1186,10 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
       };
       return { ...d, services: [...filtered, service] };
     });
-    // Total in the accommodation row reflects the spread when we have a catalog price.
-    if (hotelRecord?.price_per_night_incl) {
+    // Total in the accommodation row reflects the spread when we have a catalog price,
+    // unless the accommodation has multi-room pricing (rooms are the source of truth).
+    const hasRooms = (acc.rooms || []).length > 0;
+    if (hotelRecord?.price_per_night_incl && !hasRooms) {
       const nights = Math.max(1, Math.round((dTo - dFrom) / 86400000));
       const total = nights * hotelRecord.price_per_night_incl;
       const totalExcl = nights * (hotelRecord.price_per_night_excl || hotelRecord.price_per_night_incl);
@@ -1076,6 +1221,10 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
     const list = [...(itn.accommodations || [])];
     const newAcc = { ...list[idx], ...synced };
     list[idx] = newAcc;
+    // Aggregate per-night room price (if rooms exist) — wins over the catalog price.
+    const accRooms = newAcc.rooms || [];
+    const roomsSumIncl = accRooms.reduce((s, r) => s + (r.price_per_night_incl || r.price_per_night_excl || 0), 0);
+    const roomsSumExcl = accRooms.reduce((s, r) => s + (r.price_per_night_excl || r.price_per_night_incl || 0), 0);
     // If name+dates are all set, spread; else just save
     if (newAcc.name && newAcc.date_from && newAcc.date_to) {
       // schedSave will be called inside spreadAccommodation
@@ -1092,8 +1241,8 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
         else if (dd.getTime() === dTo.getTime()) label = `Check-out · ${newAcc.name}`;
         else label = `Alojamiento · ${newAcc.name}`;
         const isPriceCarrier = dd.getTime() === dFrom.getTime();
-        const nightly = hotelRecord?.price_per_night_incl || 0;
-        const nightlyExcl = hotelRecord?.price_per_night_excl || nightly;
+        const nightly = (accRooms.length > 0 && roomsSumIncl > 0) ? roomsSumIncl : (hotelRecord?.price_per_night_incl || 0);
+        const nightlyExcl = (accRooms.length > 0 && roomsSumExcl > 0) ? roomsSumExcl : (hotelRecord?.price_per_night_excl || nightly);
         const nights = Math.max(1, Math.round((dTo - dFrom) / 86400000));
         return {
           ...d,
@@ -1116,8 +1265,11 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
           ],
         };
       });
-      // If we have catalog pricing, also override the row total
-      if (hotelRecord?.price_per_night_incl) {
+      // If we have catalog pricing, also override the row total — UNLESS the
+      // accommodation has multiple rooms, in which case the rooms are the
+      // source of truth (already aggregated by updateRooms()).
+      const hasRooms = (list[idx].rooms || []).length > 0;
+      if (hotelRecord?.price_per_night_incl && !hasRooms) {
         const nights = Math.max(1, Math.round((dTo - dFrom) / 86400000));
         const total = nights * hotelRecord.price_per_night_incl;
         const totalExcl = nights * (hotelRecord.price_per_night_excl || hotelRecord.price_per_night_incl);
@@ -1129,8 +1281,22 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
     }
   };
 
-  // Pick a hotel from the catalogue → fills name and triggers spread with prices.
+  // Pick a hotel from the catalogue → fills name, populates rooms with the
+  // catalog nightly price, and triggers spread.
   const pickHotel = (idx, hotel) => {
+    const acc = (itn.accommodations || [])[idx];
+    // Apply the catalog nightly price to every existing room. If the
+    // accommodation still has zero rooms (legacy), seed them from the default
+    // config so the user sees a meaningful breakdown.
+    const existing = acc.rooms && acc.rooms.length > 0 ? acc.rooms : buildDefaultRooms();
+    const rooms = existing.map((r) => ({
+      ...r,
+      price_per_night_excl: hotel.price_per_night_excl || hotel.price_per_night_incl || 0,
+      price_per_night_incl: hotel.price_per_night_incl || hotel.price_per_night_excl || 0,
+    }));
+    // Update the accommodation row first so updWithSpread sees rooms+totals
+    updateRooms(idx, rooms);
+    // Then trigger the spread with the catalog hotel as the price carrier.
     updWithSpread(idx, { name: hotel.name }, hotel);
   };
 
@@ -1177,6 +1343,10 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
           <Plus size={12}/> Añadir alojamiento
         </button>
       </div>
+
+      {/* Default room config — applied to every NEW accommodation. */}
+      <RoomConfigEditor config={roomConfig} numTravelers={itn.num_travelers} onChange={setRoomConfig} />
+
       {overlaps.length > 0 && (
         <div
           data-testid="acc-overlap-warning"
@@ -1210,31 +1380,169 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
             {(itn.accommodations || []).map((a, idx) => {
               const incl = a.price_tax_incl || a.price || 0;
               const pvp = incl * (1 + (markup || 0) / 100);
+              const rooms = a.rooms || [];
+              const nights = nightsBetween(a.date_from, a.date_to);
+              const roomsTotalPax = rooms.reduce((s, r) => s + (r.pax || 0), 0);
+              const usingRooms = rooms.length > 0;
               return (
-                <div key={a.acc_id} className="grid grid-cols-[1fr_120px_120px_90px_90px_90px_28px_28px] gap-2 px-3 py-2 items-center border-t border-clay-300 text-sm">
-                  <HotelAutocomplete
-                    value={a.name}
-                    onTextChange={(v) => updWithSpread(idx, { name: v })}
-                    onPick={(h) => pickHotel(idx, h)}
-                    placeholder="Buscar hotel del catálogo…"
-                  />
-                  <input type="date" className="bg-transparent outline-none tabular" value={a.date_from || ""} onChange={(e) => updWithSpread(idx, { date_from: e.target.value })} />
-                  <input type="date" className="bg-transparent outline-none tabular" value={a.date_to || ""} onChange={(e) => updWithSpread(idx, { date_to: e.target.value })} />
-                  <input type="number" min="0" step="0.01" className="bg-transparent text-right outline-none tabular" value={a.price_tax_excl || 0} onChange={(e) => upd(idx, { price_tax_excl: parseFloat(e.target.value || "0") })} />
-                  <input type="number" min="0" step="0.01" className="bg-transparent text-right outline-none tabular" value={incl} onChange={(e) => upd(idx, { price_tax_incl: parseFloat(e.target.value || "0") })} />
-                  <div className="text-right tabular font-semibold">{fmtEUR(pvp)}</div>
-                  <button
-                    data-testid={`orient-${idx}`}
-                    onClick={() => fetchOrient(idx, a)}
-                    title="Buscar precio orientativo · histórico + Expedia"
-                    className="text-clay-700 hover:text-terracotta hover:bg-clay-100 p-1 border border-clay-300 flex items-center justify-center"
-                  ><Search size={14}/></button>
-                  <button onClick={() => delAndUnspread(idx)} className="text-clay-500 hover:text-destructive p-1"><Trash2 size={14}/></button>
+                <div key={a.acc_id} className="border-t border-clay-300">
+                  <div className="grid grid-cols-[1fr_120px_120px_90px_90px_90px_28px_28px] gap-2 px-3 py-2 items-center text-sm">
+                    <HotelAutocomplete
+                      value={a.name}
+                      onTextChange={(v) => updWithSpread(idx, { name: v })}
+                      onPick={(h) => pickHotel(idx, h)}
+                      placeholder="Buscar hotel del catálogo…"
+                    />
+                    <input type="date" className="bg-transparent outline-none tabular" value={a.date_from || ""} onChange={(e) => updWithSpread(idx, { date_from: e.target.value })} />
+                    <input type="date" className="bg-transparent outline-none tabular" value={a.date_to || ""} onChange={(e) => updWithSpread(idx, { date_to: e.target.value })} />
+                    <input
+                      type="number" min="0" step="0.01"
+                      className={`bg-transparent text-right outline-none tabular ${usingRooms ? "text-clay-500" : ""}`}
+                      value={a.price_tax_excl || 0}
+                      readOnly={usingRooms}
+                      title={usingRooms ? "Calculado a partir de las habitaciones" : "Editable"}
+                      onChange={(e) => upd(idx, { price_tax_excl: parseFloat(e.target.value || "0") })}
+                    />
+                    <input
+                      type="number" min="0" step="0.01"
+                      className={`bg-transparent text-right outline-none tabular ${usingRooms ? "text-clay-500" : ""}`}
+                      value={incl}
+                      readOnly={usingRooms}
+                      title={usingRooms ? "Calculado a partir de las habitaciones" : "Editable"}
+                      onChange={(e) => upd(idx, { price_tax_incl: parseFloat(e.target.value || "0") })}
+                    />
+                    <div className="text-right tabular font-semibold">{fmtEUR(pvp)}</div>
+                    <button
+                      data-testid={`orient-${idx}`}
+                      onClick={() => fetchOrient(idx, a)}
+                      title="Buscar precio orientativo · histórico + Expedia"
+                      className="text-clay-700 hover:text-terracotta hover:bg-clay-100 p-1 border border-clay-300 flex items-center justify-center"
+                    ><Search size={14}/></button>
+                    <button onClick={() => delAndUnspread(idx)} className="text-clay-500 hover:text-destructive p-1"><Trash2 size={14}/></button>
+                  </div>
+                  {/* Rooms sub-row */}
+                  <div className="pl-4 pr-3 pb-3 -mt-1">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-clay-700 mb-1 flex items-center gap-2">
+                      Habitaciones
+                      <span className="font-semibold text-clay-900" data-testid={`rooms-summary-${idx}`}>
+                        {rooms.length} · {roomsTotalPax} pax · {nights || 0} noches
+                      </span>
+                      {itn.num_travelers && roomsTotalPax !== itn.num_travelers && (
+                        <span className="text-amber-700 normal-case tracking-normal text-[11px]">
+                          (viaje de {itn.num_travelers} pax)
+                        </span>
+                      )}
+                    </div>
+                    {rooms.length === 0 ? (
+                      <div className="text-xs text-clay-500 italic mb-1">Sin habitaciones — usando precio plano</div>
+                    ) : (
+                      <div className="space-y-1">
+                        {rooms.map((r) => (
+                          <div key={r.room_id} className="grid grid-cols-[110px_70px_1fr_90px_90px_24px] gap-2 items-center text-xs border-l-2 border-clay-200 pl-2" data-testid={`room-${r.room_id}`}>
+                            <select
+                              className="bg-white border border-clay-200 px-1 py-0.5 text-xs"
+                              value={r.room_type}
+                              onChange={(e) => patchRoom(idx, r.room_id, { room_type: e.target.value })}
+                              data-testid={`room-type-${r.room_id}`}
+                            >
+                              {ROOM_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                            <input
+                              type="number" min="1" max="20"
+                              className="bg-white border border-clay-200 px-1 py-0.5 text-right tabular"
+                              value={r.pax || 1}
+                              onChange={(e) => patchRoom(idx, r.room_id, { pax: parseInt(e.target.value || "1", 10) })}
+                              title="Pax en esta habitación"
+                              data-testid={`room-pax-${r.room_id}`}
+                            />
+                            <div className="text-clay-700">€/noche</div>
+                            <input
+                              type="number" min="0" step="0.01"
+                              className="bg-white border border-clay-200 px-1 py-0.5 text-right tabular"
+                              value={r.price_per_night_excl || 0}
+                              onChange={(e) => patchRoom(idx, r.room_id, { price_per_night_excl: parseFloat(e.target.value || "0") })}
+                              title="Precio por noche sin IVA"
+                              data-testid={`room-excl-${r.room_id}`}
+                            />
+                            <input
+                              type="number" min="0" step="0.01"
+                              className="bg-white border border-clay-200 px-1 py-0.5 text-right tabular"
+                              value={r.price_per_night_incl || 0}
+                              onChange={(e) => patchRoom(idx, r.room_id, { price_per_night_incl: parseFloat(e.target.value || "0") })}
+                              title="Precio por noche con IVA"
+                              data-testid={`room-incl-${r.room_id}`}
+                            />
+                            <button
+                              onClick={() => removeRoom(idx, r.room_id)}
+                              className="text-clay-400 hover:text-destructive"
+                              title="Quitar habitación"
+                              data-testid={`room-del-${r.room_id}`}
+                            ><X size={12}/></button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <button
+                      onClick={() => addRoom(idx)}
+                      className="mt-1 text-[11px] inline-flex items-center gap-1 px-1.5 py-0.5 text-clay-700 hover:text-terracotta hover:bg-clay-100"
+                      data-testid={`add-room-${idx}`}
+                    >
+                      <Plus size={10}/> Añadir habitación
+                    </button>
+                  </div>
                 </div>
               );
             })}
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+function RoomConfigEditor({ config, numTravelers, onChange }) {
+  const list = config || [];
+  const totalPax = list.reduce((s, r) => s + (r.pax || 0) * (r.quantity || 1), 0);
+  const update = (i, patch) => {
+    const next = [...list];
+    next[i] = { ...next[i], ...patch };
+    if ("room_type" in patch && !("pax" in patch)) {
+      next[i].pax = ROOM_PAX_DEFAULT[patch.room_type] || next[i].pax;
+    }
+    onChange(next);
+  };
+  const remove = (i) => onChange(list.filter((_, ii) => ii !== i));
+  const add = () => onChange([...list, { room_type: "doble", pax: 2, quantity: 1 }]);
+  return (
+    <div className="mb-3 border border-clay-300 bg-clay-50 px-3 py-2" data-testid="room-config-editor">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-[10px] uppercase tracking-[0.2em] text-clay-700 font-semibold">Habitaciones por defecto</span>
+        <span className="text-[11px] text-clay-700">Aplicadas al añadir un nuevo alojamiento</span>
+        <span className="ml-auto text-[11px]">
+          Total: <span className="font-semibold tabular">{list.reduce((s, r) => s + (r.quantity || 1), 0)} habs</span>
+          {" · "}<span className={`tabular ${numTravelers && totalPax !== numTravelers ? "text-amber-700 font-semibold" : ""}`}>{totalPax} pax</span>
+          {numTravelers && totalPax !== numTravelers && (
+            <span className="ml-1 text-amber-700">≠ viaje de {numTravelers}</span>
+          )}
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-2 items-center">
+        {list.map((r, i) => (
+          <div key={i} className="inline-flex items-center gap-1 bg-white border border-clay-300 px-2 py-1 text-xs" data-testid={`room-config-${i}`}>
+            <input type="number" min="1" max="20" value={r.quantity || 1} onChange={(e) => update(i, { quantity: parseInt(e.target.value || "1", 10) })} className="w-9 text-center bg-transparent" title="Cantidad"/>
+            <span className="text-clay-500">×</span>
+            <select value={r.room_type} onChange={(e) => update(i, { room_type: e.target.value })} className="bg-transparent">
+              {ROOM_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <span className="text-clay-500">·</span>
+            <input type="number" min="1" max="20" value={r.pax || 1} onChange={(e) => update(i, { pax: parseInt(e.target.value || "1", 10) })} className="w-9 text-center bg-transparent" title="Pax por habitación"/>
+            <span className="text-clay-500">pax</span>
+            <button onClick={() => remove(i)} className="text-clay-400 hover:text-destructive ml-1" title="Quitar"><X size={11}/></button>
+          </div>
+        ))}
+        <button onClick={add} className="text-[11px] inline-flex items-center gap-1 px-2 py-1 border border-dashed border-clay-400 text-clay-700 hover:text-terracotta hover:border-terracotta" data-testid="add-room-config">
+          <Plus size={11}/> Tipo de habitación
+        </button>
       </div>
     </div>
   );

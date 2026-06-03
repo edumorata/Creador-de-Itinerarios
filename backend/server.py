@@ -821,7 +821,10 @@ async def import_catalog_from_trips_csv(
     TRANSFER_KW = ("transfer", "taxi", "limo", "driver", "private car", "private vehicle")
     FLIGHT_KW = ("flight", "vuelo", "airline")
     TRAIN_KW = ("train", "tren", "renfe", "trenitalia", "italo", "ave ", "ave-")
-    RESTAURANT_KW = ("restaur", "lunch", "dinner", "cena", " menu ", "wine pairing")
+    # Entry-tickets-only services (museum tickets, monument entries, skip-the-line).
+    # Guided activities stay as 'actividad' even when they include entry tickets.
+    ENTRADAS_KW = ("entradas", "tickets only", "ticket only", "skip-the-line tickets",
+                   "entry only", "general admission")
 
     def classify(name: str) -> str:
         n = name.lower()
@@ -831,11 +834,12 @@ async def import_catalog_from_trips_csv(
         if any(k in n for k in FLIGHT_KW):
             return "vuelo"
         if any(k in n for k in TRAIN_KW):
-            return "transporte"
-        if any(k in n for k in RESTAURANT_KW):
-            return "restaurante"
+            return "tren"
         if any(k in n for k in HOTEL_KW):
             return "hotel"
+        if any(k in n for k in ENTRADAS_KW) and "tour" not in n and "guided" not in n and "visit" not in n:
+            return "entradas"
+        # Restaurants, food experiences, generic activities all flow into 'actividad'
         return "actividad"
 
     def tier_from_name(name: str) -> str:

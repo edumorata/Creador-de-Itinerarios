@@ -7,13 +7,12 @@ import { useAuth } from "@/lib/auth";
 const TYPE_BADGE = {
   alojamiento: "bg-pine text-white",
   actividad: "bg-terracotta text-white",
-  transporte: "bg-clay-700 text-white",
-  restaurante: "bg-[#8C5A2B] text-white",
+  entradas: "bg-[#8C5A2B] text-white",
   transfer: "bg-clay-500 text-white",
+  tren: "bg-clay-700 text-white",
   vuelo: "bg-[#3C5A78] text-white",
-  otro: "bg-clay-400 text-white",
 };
-const TYPES = ["alojamiento", "actividad", "transporte", "restaurante", "transfer", "vuelo", "otro"];
+const TYPES = ["actividad", "entradas", "transfer", "tren", "vuelo"];
 
 const EMPTY = { title: "", description: "", provider_id: "", country: "", city: "", type: "actividad", price_tax_excl: 0, price_tax_incl: 0, currency: "EUR", pax: 2 };
 
@@ -169,7 +168,7 @@ export default function Experiences() {
               {e.description && <div className="text-[11px] text-clay-700 truncate">{e.description}</div>}
             </div>
             <div className="px-4 py-3 text-clay-700 truncate">{e.provider_name}</div>
-            <div className="px-4 py-3"><span className={`inline-block px-1.5 py-0.5 text-[9px] tracking-widest uppercase ${TYPE_BADGE[e.type] || TYPE_BADGE.otro}`}>{e.type}</span></div>
+            <div className="px-4 py-3"><span className={`inline-block px-1.5 py-0.5 text-[9px] tracking-widest uppercase ${TYPE_BADGE[e.type] || "bg-clay-400 text-white"}`}>{e.type}</span></div>
             <div className="px-4 py-3 text-clay-700">{[e.city, e.country].filter(Boolean).join(" · ") || "—"}</div>
             <div className="px-4 py-3 text-center tabular font-semibold" data-testid={`pax-${e.experience_id}`}>{e.pax || 2}</div>
             <div className="px-4 py-3 text-right tabular text-clay-700">{Number(e.price_tax_excl || 0).toLocaleString("es-ES")}</div>

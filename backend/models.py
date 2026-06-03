@@ -28,8 +28,11 @@ def now_iso() -> str:
 # Type aliases
 # ---------------------------------------------------------------------------
 ServiceType = Literal[
-    "alojamiento", "actividad", "transporte", "restaurante",
-    "transfer", "vuelo", "otro",
+    "alojamiento", "actividad", "entradas", "transfer",
+    "tren", "vuelo", "hotel",
+]
+RoomType = Literal[
+    "single", "doble", "twin", "triple", "cuadruple", "suite", "family", "otro",
 ]
 HotelTier = Literal["luxury", "upscale", "comfort", "standard", "budget"]
 TripOutcome = Literal["sold", "not_sold", "pending"]
@@ -215,6 +218,10 @@ class ItineraryService(BaseModel):
     name: str
     provider_name: Optional[str] = None
     quantity: float = 1
+    # Pax this unit price covers (e.g. tapas tour for 2 → pax=2; museum ticket → pax=1).
+    # Drives the smart quantity calc: qty = ceil(num_travelers / pax). Defaults to 1
+    # which makes the calc behave as pure per-person pricing (safe legacy default).
+    pax: int = 1
     unit_price_tax_excl: float = 0.0
     unit_price_tax_incl: float = 0.0
     unit_price: float = 0.0  # legacy alias = unit_price_tax_incl
@@ -230,15 +237,41 @@ class ItineraryDay(BaseModel):
     services: List[ItineraryService] = Field(default_factory=list)
 
 
+class Room(BaseModel):
+    """One room inside an Accommodation. The full accommodation cost is the
+    sum of (room.price_per_night × nights) across rooms."""
+    room_id: str = Field(default_factory=lambda: new_id("room"))
+    room_type: RoomType = "doble"
+    pax: int = 2
+    price_per_night_excl: float = 0.0
+    price_per_night_incl: float = 0.0
+    currency: str = "EUR"
+    notes: Optional[str] = None
+
+
 class Accommodation(BaseModel):
     acc_id: str = Field(default_factory=lambda: new_id("acc"))
     date_from: Optional[str] = None
     date_to: Optional[str] = None
     name: str
+    # Legacy flat pricing (kept for backwards compatibility with old saved
+    # itineraries). New itineraries should use `rooms[]`; when `rooms` is
+    # non-empty the totals are computed from it and these fields become
+    # the cached aggregate (excl/incl × nights, summed across rooms).
     price_tax_excl: float = 0.0
     price_tax_incl: float = 0.0
     price: float = 0.0
     currency: str = "EUR"
+    rooms: List[Room] = Field(default_factory=list)
+
+
+class RoomConfig(BaseModel):
+    """Default room configuration for the itinerary. Used as a template
+    when adding new accommodations so the agent doesn't have to recreate
+    the room layout for each hotel."""
+    room_type: RoomType = "doble"
+    pax: int = 2
+    quantity: int = 1  # how many rooms of this type
 
 
 class Traveler(BaseModel):
@@ -258,6 +291,9 @@ class Itinerary(BaseModel):
     travelers: List[Traveler] = Field(default_factory=list)
     days: List[ItineraryDay] = Field(default_factory=list)
     accommodations: List[Accommodation] = Field(default_factory=list)
+    # Default room configuration applied when adding new accommodations.
+    # Editable later per-hotel. Empty list means "single room for the whole group".
+    room_config: List[RoomConfig] = Field(default_factory=list)
     # Pricing model:
     #   PVP = subtotal_with_IVA × (1 + markup_pct/100) × (1 + commission_pct/100)
     # Defaults per partner (auto-applied on partner change, editable by agent):
@@ -286,6 +322,7 @@ class ItineraryUpsert(BaseModel):
     travelers: Optional[List[Traveler]] = None
     days: Optional[List[ItineraryDay]] = None
     accommodations: Optional[List[Accommodation]] = None
+    room_config: Optional[List[RoomConfig]] = None
     markup_pct: Optional[float] = None
     commission_pct: Optional[float] = None
     partner: Optional[PartnerKind] = None

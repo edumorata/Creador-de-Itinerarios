@@ -273,7 +273,7 @@ def draft_metrics(draft: dict, num_travelers: int) -> dict:
             stype = (s.get("type") or "").lower()
             qty = float(s.get("quantity") or 1)
             price = float(s.get("unit_price_tax_incl") or 0)
-            if stype in ("transfer", "transporte", "vuelo"):
+            if stype in ("transfer", "tren", "vuelo"):
                 transfers_subtotal_eur += price * qty
             else:
                 activities += 1
