@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Plus, Search, Trash2, Pencil, Upload, X, Server, History, Check } from "lucide-react";
+import { Plus, Search, Trash2, Pencil, Upload, X, Server, History } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -14,7 +14,7 @@ const TYPE_BADGE = {
 };
 const TYPES = ["actividad", "entradas", "transfer", "tren", "vuelo"];
 
-const EMPTY = { title: "", description: "", provider_id: "", country: "", city: "", type: "actividad", price_tax_excl: 0, price_tax_incl: 0, currency: "EUR", pax: 2 };
+const EMPTY = { title: "", description: "", provider_id: "", country: "", city: "", type: "actividad", price_tax_excl: 0, price_tax_incl: 0, currency: "EUR", pax: 1 };
 
 export default function Experiences() {
   const { user } = useAuth();
@@ -32,10 +32,33 @@ export default function Experiences() {
   const [csvUploadOpen, setCsvUploadOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [bulkBusy, setBulkBusy] = useState(false);
-  // Per-row inline edit buffer keyed by experience_id. When non-null the row
-  // renders as inputs; pressing Enter / clicking the check saves; Esc cancels.
-  const [draftRow, setDraftRow] = useState({});
-  const [savingRow, setSavingRow] = useState(null);
+  // Per-row optimistic pending state — keys = experience_id, values = {field: newValue}.
+  // Each cell edits the pending map immediately so the UI feels instant,
+  // then PATCHes on blur (auto-save) and reloads from the server.
+  const [pending, setPending] = useState({});
+
+  const patchField = (id, field, value) =>
+    setPending((p) => ({ ...p, [id]: { ...(p[id] || {}), [field]: value } }));
+
+  const flushRow = async (id) => {
+    const patch = pending[id];
+    if (!patch || Object.keys(patch).length === 0) return;
+    try {
+      await api.patch(`/experiences/${id}`, {
+        ...patch,
+        ...(("price_tax_incl" in patch) ? { price: patch.price_tax_incl } : {}),
+      });
+      setPending((p) => { const n = { ...p }; delete n[id]; return n; });
+      load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Error al guardar");
+    }
+  };
+
+  const val = (item, field) => {
+    const p = pending[item.experience_id];
+    return (p && field in p) ? p[field] : item[field];
+  };
 
   const load = async () => {
     setLoading(true);
@@ -76,30 +99,6 @@ export default function Experiences() {
   const del = async (id) => {
     if (!window.confirm("¿Eliminar esta experiencia?")) return;
     await api.delete(`/experiences/${id}`); load();
-  };
-
-  // Inline-edit helpers — buffer the draft per row, then PATCH on save.
-  const startInline = (e) => setDraftRow({ [e.experience_id]: {
-    title: e.title, type: e.type, city: e.city || "",
-    pax: e.pax || 2, price_tax_excl: e.price_tax_excl || 0,
-    price_tax_incl: e.price_tax_incl || e.price || 0,
-  } });
-  const cancelInline = () => setDraftRow({});
-  const patchInline = (id, patch) => setDraftRow((d) => ({ ...d, [id]: { ...d[id], ...patch } }));
-  const saveInline = async (id) => {
-    const d = draftRow[id]; if (!d) return;
-    setSavingRow(id);
-    try {
-      await api.patch(`/experiences/${id}`, {
-        ...d,
-        price: d.price_tax_incl,  // keep legacy alias in sync
-      });
-      toast.success("Guardado");
-      cancelInline();
-      load();
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "Error al guardar");
-    } finally { setSavingRow(null); }
   };
 
   return (
@@ -191,151 +190,95 @@ export default function Experiences() {
         ) : items.length === 0 ? (
           <div className="p-10 text-center text-sm text-clay-700" data-testid="exp-empty">No hay experiencias. Crea una nueva o importa un Excel de proveedor.</div>
         ) : items.map((e) => {
-          const draft = draftRow[e.experience_id];
-          const editingInline = !!draft;
-          const view = editingInline ? draft : e;
-          const onKey = (ev) => {
-            if (ev.key === "Enter") { ev.preventDefault(); saveInline(e.experience_id); }
-            if (ev.key === "Escape") { ev.preventDefault(); cancelInline(); }
-          };
+          const isDirty = !!pending[e.experience_id];
           return (
           <div key={e.experience_id}
-               className={`grid grid-cols-[1.5fr_1fr_0.7fr_1fr_0.5fr_0.6fr_0.6fr_auto] border-t border-clay-300 text-sm transition-colors ${editingInline ? "bg-terracotta/5" : "hover:bg-clay-50"}`}
+               className={`grid grid-cols-[1.5fr_1fr_0.7fr_1fr_0.5fr_0.6fr_0.6fr_auto] border-t border-clay-300 text-sm transition-colors ${isDirty ? "bg-amber-50" : "hover:bg-clay-50"}`}
                data-testid={`exp-row-${e.experience_id}`}>
             {/* Title */}
-            <div className="px-4 py-3">
-              {editingInline ? (
-                <input
-                  data-testid={`inline-title-${e.experience_id}`}
-                  className="w-full bg-white border border-clay-300 px-2 py-1 text-sm outline-none focus:border-terracotta"
-                  value={view.title || ""}
-                  onChange={(ev) => patchInline(e.experience_id, { title: ev.target.value })}
-                  onKeyDown={onKey} autoFocus
-                />
-              ) : (
-                <>
-                  <div className="font-semibold truncate" title={e.title}>{e.title}</div>
-                  {e.description && <div className="text-[11px] text-clay-700 truncate">{e.description}</div>}
-                </>
-              )}
+            <div className="px-2 py-2">
+              <input
+                data-testid={`title-${e.experience_id}`}
+                className="w-full bg-transparent px-2 py-1 text-sm outline-none border border-transparent hover:border-clay-300 focus:border-terracotta focus:bg-white font-semibold"
+                value={val(e, "title") || ""}
+                onChange={(ev) => patchField(e.experience_id, "title", ev.target.value)}
+                onBlur={() => flushRow(e.experience_id)}
+                title={val(e, "title")}
+              />
+              {e.description && <div className="text-[11px] text-clay-700 truncate px-2">{e.description}</div>}
             </div>
-            {/* Provider — read-only inline (full edit via modal) */}
+            {/* Provider (read-only, edit via modal if needed) */}
             <div className="px-4 py-3 text-clay-700 truncate" title={e.provider_name}>{e.provider_name}</div>
             {/* Type */}
-            <div className="px-4 py-3">
-              {editingInline ? (
-                <select
-                  data-testid={`inline-type-${e.experience_id}`}
-                  className={`text-[10px] tracking-widest uppercase px-1.5 py-1 ${TYPE_BADGE[view.type] || "bg-clay-400 text-white"} border-none outline-none`}
-                  value={view.type}
-                  onChange={(ev) => patchInline(e.experience_id, { type: ev.target.value })}
-                  onKeyDown={onKey}
-                >
-                  {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                </select>
-              ) : (
-                <span className={`inline-block px-1.5 py-0.5 text-[9px] tracking-widest uppercase ${TYPE_BADGE[e.type] || "bg-clay-400 text-white"}`}>{e.type}</span>
-              )}
+            <div className="px-2 py-2">
+              <select
+                data-testid={`type-${e.experience_id}`}
+                className={`text-[10px] tracking-widest uppercase px-1.5 py-1 ${TYPE_BADGE[val(e, "type")] || "bg-clay-400 text-white"} border-none outline-none`}
+                value={val(e, "type")}
+                onChange={(ev) => { patchField(e.experience_id, "type", ev.target.value); flushRow(e.experience_id); }}
+              >
+                {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
             </div>
-            {/* City / country */}
-            <div className="px-4 py-3 text-clay-700">
-              {editingInline ? (
-                <input
-                  data-testid={`inline-city-${e.experience_id}`}
-                  className="w-full bg-white border border-clay-300 px-2 py-1 text-sm outline-none focus:border-terracotta"
-                  value={view.city || ""}
-                  onChange={(ev) => patchInline(e.experience_id, { city: ev.target.value })}
-                  onKeyDown={onKey}
-                  placeholder="Ciudad"
-                />
-              ) : ([e.city, e.country].filter(Boolean).join(" · ") || "—")}
+            {/* City */}
+            <div className="px-2 py-2 text-clay-700">
+              <input
+                data-testid={`city-${e.experience_id}`}
+                className="w-full bg-transparent px-2 py-1 text-sm outline-none border border-transparent hover:border-clay-300 focus:border-terracotta focus:bg-white"
+                value={val(e, "city") || ""}
+                onChange={(ev) => patchField(e.experience_id, "city", ev.target.value)}
+                onBlur={() => flushRow(e.experience_id)}
+                placeholder={e.country || "—"}
+              />
             </div>
             {/* Pax */}
-            <div className="px-4 py-3 text-center" data-testid={`pax-${e.experience_id}`}>
-              {editingInline ? (
-                <input
-                  data-testid={`inline-pax-${e.experience_id}`}
-                  type="number" min={1} max={50}
-                  className="w-14 bg-white border border-clay-300 px-1 py-1 text-sm tabular text-center outline-none focus:border-terracotta"
-                  value={view.pax || 2}
-                  onChange={(ev) => patchInline(e.experience_id, { pax: Math.max(1, parseInt(ev.target.value || "1", 10)) })}
-                  onKeyDown={onKey}
-                />
-              ) : (
-                <span className="tabular font-semibold">{e.pax || 2}</span>
-              )}
+            <div className="px-2 py-2 text-center" data-testid={`pax-${e.experience_id}`}>
+              <input
+                data-testid={`pax-input-${e.experience_id}`}
+                type="number" min={1} max={50}
+                className="w-14 bg-transparent px-1 py-1 text-sm tabular text-center outline-none border border-transparent hover:border-clay-300 focus:border-terracotta focus:bg-white font-semibold"
+                value={val(e, "pax") ?? 1}
+                onChange={(ev) => patchField(e.experience_id, "pax", Math.max(1, parseInt(ev.target.value || "1", 10)))}
+                onBlur={() => flushRow(e.experience_id)}
+              />
             </div>
             {/* Sin IVA */}
-            <div className="px-4 py-3 text-right">
-              {editingInline ? (
-                <input
-                  data-testid={`inline-excl-${e.experience_id}`}
-                  type="number" min={0} step={0.01}
-                  className="w-24 bg-white border border-clay-300 px-1 py-1 text-sm tabular text-right outline-none focus:border-terracotta"
-                  value={view.price_tax_excl || 0}
-                  onChange={(ev) => patchInline(e.experience_id, { price_tax_excl: parseFloat(ev.target.value || "0") })}
-                  onKeyDown={onKey}
-                />
-              ) : (
-                <span className="tabular text-clay-700">{Number(e.price_tax_excl || 0).toLocaleString("es-ES")}</span>
-              )}
+            <div className="px-2 py-2 text-right">
+              <input
+                data-testid={`excl-${e.experience_id}`}
+                type="number" min={0} step={0.01}
+                className="w-24 bg-transparent px-1 py-1 text-sm tabular text-right outline-none border border-transparent hover:border-clay-300 focus:border-terracotta focus:bg-white"
+                value={val(e, "price_tax_excl") ?? 0}
+                onChange={(ev) => patchField(e.experience_id, "price_tax_excl", parseFloat(ev.target.value || "0"))}
+                onBlur={() => flushRow(e.experience_id)}
+              />
             </div>
             {/* Con IVA */}
-            <div className="px-4 py-3 text-right">
-              {editingInline ? (
-                <input
-                  data-testid={`inline-incl-${e.experience_id}`}
-                  type="number" min={0} step={0.01}
-                  className="w-24 bg-white border border-clay-300 px-1 py-1 text-sm tabular text-right outline-none focus:border-terracotta"
-                  value={view.price_tax_incl || 0}
-                  onChange={(ev) => patchInline(e.experience_id, { price_tax_incl: parseFloat(ev.target.value || "0") })}
-                  onKeyDown={onKey}
-                />
-              ) : (
-                <span className="tabular font-semibold">{Number(e.price_tax_incl || e.price || 0).toLocaleString("es-ES")}</span>
-              )}
+            <div className="px-2 py-2 text-right">
+              <input
+                data-testid={`incl-${e.experience_id}`}
+                type="number" min={0} step={0.01}
+                className="w-24 bg-transparent px-1 py-1 text-sm tabular text-right outline-none border border-transparent hover:border-clay-300 focus:border-terracotta focus:bg-white font-semibold"
+                value={val(e, "price_tax_incl") ?? val(e, "price") ?? 0}
+                onChange={(ev) => patchField(e.experience_id, "price_tax_incl", parseFloat(ev.target.value || "0"))}
+                onBlur={() => flushRow(e.experience_id)}
+              />
             </div>
             {/* Actions */}
             <div className="px-4 py-3 flex items-center justify-end gap-1">
-              {editingInline ? (
-                <>
-                  <button
-                    data-testid={`inline-save-${e.experience_id}`}
-                    onClick={() => saveInline(e.experience_id)}
-                    disabled={savingRow === e.experience_id}
-                    className="p-1.5 hover:bg-pine/10 text-pine disabled:opacity-50"
-                    title="Guardar (Enter)"
-                  ><Check size={14}/></button>
-                  <button
-                    data-testid={`inline-cancel-${e.experience_id}`}
-                    onClick={cancelInline}
-                    className="p-1.5 hover:bg-clay-200"
-                    title="Cancelar (Esc)"
-                  ><X size={14}/></button>
-                </>
-              ) : (
-                <>
-                  <button
-                    data-testid={`inline-start-${e.experience_id}`}
-                    onClick={() => startInline(e)}
-                    className="p-1.5 hover:bg-clay-200"
-                    title="Editar en línea"
-                  ><Pencil size={14}/></button>
-                  <button
-                    data-testid={`history-${e.experience_id}`}
-                    onClick={() => setHistoryOf(e)}
-                    className="p-1.5 hover:bg-clay-200"
-                    title="Historial de cambios"
-                  ><History size={14}/></button>
-                  <button
-                    onClick={() => setEditing({ ...e })}
-                    className="p-1.5 hover:bg-clay-200"
-                    data-testid={`edit-${e.experience_id}`}
-                    title="Editar todo (modal)"
-                  ><Server size={14}/></button>
-                  <button onClick={() => del(e.experience_id)} className="p-1.5 hover:bg-clay-200 text-destructive" title="Eliminar"><Trash2 size={14}/></button>
-                </>
-              )}
+              <button
+                data-testid={`history-${e.experience_id}`}
+                onClick={() => setHistoryOf(e)}
+                className="p-1.5 hover:bg-clay-200"
+                title="Historial de cambios"
+              ><History size={14}/></button>
+              <button
+                onClick={() => setEditing({ ...e })}
+                className="p-1.5 hover:bg-clay-200"
+                data-testid={`edit-${e.experience_id}`}
+                title="Editar todo (modal: descripción, proveedor, país, etc.)"
+              ><Pencil size={14}/></button>
+              <button onClick={() => del(e.experience_id)} className="p-1.5 hover:bg-clay-200 text-destructive" title="Eliminar"><Trash2 size={14}/></button>
             </div>
           </div>
         );})}
@@ -355,7 +298,7 @@ export default function Experiences() {
             <Input label="Moneda" value={editing.currency} onChange={(v) => setEditing({ ...editing, currency: v })} />
             <NumberInput label="Precio sin IVA" value={editing.price_tax_excl} onChange={(v) => setEditing({ ...editing, price_tax_excl: v })} tid="exp-price-excl" />
             <NumberInput label="Precio con IVA" value={editing.price_tax_incl} onChange={(v) => setEditing({ ...editing, price_tax_incl: v, price: v })} tid="exp-price-incl" />
-            <NumberInput label="Pax (nº de personas para este precio) *" value={editing.pax || 2} onChange={(v) => setEditing({ ...editing, pax: Math.max(1, Math.round(v)) })} tid="exp-pax" />
+            <NumberInput label="Pax (nº de personas para este precio) *" value={editing.pax || 1} onChange={(v) => setEditing({ ...editing, pax: Math.max(1, Math.round(v)) })} tid="exp-pax" />
             <Input label="País" value={editing.country || ""} onChange={(v) => setEditing({ ...editing, country: v })} />
             <Input label="Ciudad" value={editing.city || ""} onChange={(v) => setEditing({ ...editing, city: v })} />
             <div className="col-span-2">

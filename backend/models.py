@@ -115,8 +115,9 @@ class Experience(BaseModel):
     currency: str = "EUR"
     # Number of pax (adults + children) the price is quoted for. Critical for
     # interpreting per-group services where price scales with group size.
-    # Default 2 to match the most common booking pattern.
-    pax: int = 2
+    # Default 1 (per-person pricing). Edit to 2/4/etc. when the service is
+    # quoted for a group (private tours, transfers).
+    pax: int = 1
     notes: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
 
@@ -132,7 +133,7 @@ class ExperienceCreate(BaseModel):
     price_tax_incl: float = 0.0
     price: Optional[float] = None
     currency: str = "EUR"
-    pax: int = 2
+    pax: int = 1
     notes: Optional[str] = None
 
 

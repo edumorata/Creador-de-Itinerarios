@@ -886,11 +886,20 @@ function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, accommoda
             {service.provider_name && <span className="truncate">{service.provider_name}</span>}
             {!isLodging && (
               <span
-                className="text-[10px] px-1 py-0.5 rounded bg-clay-100 text-clay-700"
-                title={`Precio del catálogo era para ${service.pax || 1} pax. Aquí se guarda como €/pax × num viajeros.`}
+                className="text-[10px] px-1 py-0.5 rounded bg-clay-100 text-clay-700 inline-flex items-center gap-1"
+                title="Para cuántos pax cuenta el precio unitario. Por defecto 1 (precio por persona). Edítalo si el proveedor cotiza por grupo."
                 data-testid={`svc-pax-${service.service_id}`}
               >
-                €/pax (cat. {service.pax || 1} pax)
+                precio para
+                <input
+                  type="number" min={1} max={50}
+                  className="w-9 bg-white border border-clay-300 px-1 text-[10px] tabular text-center outline-none focus:border-terracotta"
+                  value={service.pax || 1}
+                  onChange={(ev) => onChange({ pax: Math.max(1, parseInt(ev.target.value || "1", 10)) })}
+                  onClick={(ev) => ev.stopPropagation()}
+                  data-testid={`svc-pax-input-${service.service_id}`}
+                />
+                pax
               </span>
             )}
             {isLodging && linkedAcc && (linkedAcc.rooms || []).length > 0 && (
