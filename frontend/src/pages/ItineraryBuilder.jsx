@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Plus, Search, Trash2, GripVertical, FileDown, Bed, MapPin, Calendar, ExternalLink, AlertTriangle, X } from "lucide-react";
+import { ArrowLeft, Plus, Search, Trash2, GripVertical, FileDown, Bed, MapPin, Calendar, ExternalLink, AlertTriangle, X, Save } from "lucide-react";
 import { toast } from "sonner";
 import api, { API_BASE } from "@/lib/api";
 
@@ -244,26 +244,34 @@ export default function ItineraryBuilder() {
   };
 
   const addServiceToDay = (dayId, partial = {}) => {
-    // Smart default quantity: when adding a catalog experience, pick qty so
-    // the price covers exactly num_travelers (rounded up). For tickets/per-pax
-    // experiences (pax=1) this matches num_travelers; for a "for 2" private
-    // tour with a 2-pax trip qty becomes 1; for a "for 3" transfer with a
-    // 4-pax trip qty becomes 2; etc. Non-pax-scalable types default to 1.
+    // Always store the SERVICE price as price-per-pax × num_travelers.
+    // The catalog stores `price_for_pax` (total for `experience.pax` people),
+    // so €/pax = price_for_pax / experience.pax. Then qty = num_travelers and
+    // unit_price = €/pax, so qty × unit = total cost for the whole group.
+    // Group-priced services (transfer for 3, tour for 4, etc.) still scale
+    // linearly because the user can override qty manually if needed (or we
+    // could later round up by capacity — but the user explicitly asked for
+    // "always price per pax × travelers", so that's what we do).
     const trav = itn.num_travelers || 1;
     const expPax = Math.max(1, parseInt(partial.pax || 1, 10));
     const type = partial.type || "actividad";
-    const autoQty = SCALES_WITH_PAX.has(type) ? Math.max(1, Math.ceil(trav / expPax)) : 1;
+    const isLodging = type === "alojamiento";
+    // For experiences: convert catalog total → per-pax.
+    const incl = partial.unit_price_tax_incl ?? 0;
+    const excl = partial.unit_price_tax_excl ?? incl;
+    const perPaxIncl = isLodging ? incl : (incl / expPax);
+    const perPaxExcl = isLodging ? excl : (excl / expPax);
     const svc = {
       service_id: uid("svc"),
       experience_id: partial.experience_id || null,
       type,
       name: partial.name || "",
       provider_name: partial.provider_name || "",
-      quantity: partial.quantity ?? autoQty,
-      pax: expPax,
-      unit_price_tax_excl: partial.unit_price_tax_excl ?? 0,
-      unit_price_tax_incl: partial.unit_price_tax_incl ?? 0,
-      unit_price: partial.unit_price_tax_incl ?? 0,
+      quantity: partial.quantity ?? (isLodging ? 1 : trav),
+      pax: expPax,  // pax the catalog price was originally quoted for (informative)
+      unit_price_tax_excl: Math.round(perPaxExcl * 100) / 100,
+      unit_price_tax_incl: Math.round(perPaxIncl * 100) / 100,
+      unit_price: Math.round(perPaxIncl * 100) / 100,
       currency: partial.currency || "EUR",
     };
     const next = { ...itn, days: itn.days.map((d) => d.day_id === dayId ? { ...d, services: [...(d.services || []), svc] } : d) };
@@ -281,15 +289,12 @@ export default function ItineraryBuilder() {
   // -------------------------------------------------------------------------
   // Accommodation from an in-day service. Triggered when the user sets
   // check-in + check-out dates on an "alojamiento" service row.
-  //  - First call (no acc_id) → CREATE a new accommodation in the summary AND
-  //    auto-spread to every covered day (check-in / mid / check-out).
-  //  - Subsequent calls (acc_id linked) → UPDATE the parent accommodation and
-  //    re-spread idempotently.
   //
-  // CRITICAL: the matrix row (the user-edited service) is mutated IN PLACE
-  // — we do NOT add a new service to its day, we just promote the existing
-  // service to the "Check-in" carrier by prefixing the name and tagging it
-  // with the acc_id. Otherwise the day would carry two hotel rows.
+  // MODEL (simple & consistent with experiences):
+  //   qty        = nights × num_rooms
+  //   unit_price = €/room/night (= the median per-room price)
+  // So qty × unit = total cost. If the user has 2 rooms × 2 nights at
+  // €303/room/night → qty=4, unit=€303, total=€1.212.
   // -------------------------------------------------------------------------
   const upsertAccommodationFromService = (dayId, service, dateFrom, dateTo) => {
     if (!service.name || !dateFrom || !dateTo) return;
@@ -298,13 +303,12 @@ export default function ItineraryBuilder() {
     if (isNaN(dFrom) || isNaN(dTo) || dTo < dFrom) return;
     const accId = service.acc_id || uid("acc");
     const nights = Math.max(1, Math.round((dTo - dFrom) / 86400000));
-    // Single-room unit prices typed by the user on the matrix row.
-    const oneRoomNightlyIncl = service.unit_price_tax_incl || service.unit_price || 0;
-    const oneRoomNightlyExcl = service.unit_price_tax_excl || oneRoomNightlyIncl;
+    // The matrix row's unit price reflects ONE room per night (user-typed).
+    const typedNightlyIncl = service.unit_price_tax_incl || service.unit_price || 0;
+    const typedNightlyExcl = service.unit_price_tax_excl || typedNightlyIncl;
 
-    // Look up the parent accommodation if it already exists — its rooms list
-    // is the source of truth. Otherwise build it from `room_config` (default
-    // layout for the trip). If `room_config` is empty fall back to "1 doble".
+    // Source of truth for room layout: existing accommodation.rooms (if any)
+    // else the itinerary default config, else "1 doble".
     const accsBefore = itn.accommodations || [];
     const existingAcc = accsBefore.find((a) => a.acc_id === accId);
     const cfg = itn.room_config || [];
@@ -316,37 +320,36 @@ export default function ItineraryBuilder() {
             room_type: rc.room_type, pax: rc.pax,
             price_per_night_excl: 0, price_per_night_incl: 0, currency: "EUR",
           })));
-    // If we're creating from scratch, propagate the user's per-night price to
-    // every room. If rooms already had prices, keep them (user-edited values).
+    // If rooms had no prices, propagate the user-typed unit_price. If they did,
+    // keep user-edited per-room values.
     const roomsHaveAnyPrice = seedRooms.some((r) => (r.price_per_night_incl || 0) > 0 || (r.price_per_night_excl || 0) > 0);
     const rooms = seedRooms.map((r) => ({
       ...r,
-      price_per_night_excl: roomsHaveAnyPrice ? r.price_per_night_excl : oneRoomNightlyExcl,
-      price_per_night_incl: roomsHaveAnyPrice ? r.price_per_night_incl : oneRoomNightlyIncl,
+      price_per_night_excl: roomsHaveAnyPrice ? r.price_per_night_excl : typedNightlyExcl,
+      price_per_night_incl: roomsHaveAnyPrice ? r.price_per_night_incl : typedNightlyIncl,
     }));
-
-    // Multi-room totals: sum per-room nightly prices, multiplied by nights.
-    const sumNightlyExcl = rooms.reduce((s, r) => s + (r.price_per_night_excl || 0), 0);
-    const sumNightlyIncl = rooms.reduce((s, r) => s + (r.price_per_night_incl || r.price_per_night_excl || 0), 0);
-    const totalExcl = Math.round(sumNightlyExcl * nights * 100) / 100;
-    const totalIncl = Math.round(sumNightlyIncl * nights * 100) / 100;
+    const numRooms = Math.max(1, rooms.length);
+    // Average €/room/night (so multi-room hotels with different room prices
+    // still satisfy qty × unit = total).
+    const sumIncl = rooms.reduce((s, r) => s + (r.price_per_night_incl || r.price_per_night_excl || 0), 0);
+    const sumExcl = rooms.reduce((s, r) => s + (r.price_per_night_excl || r.price_per_night_incl || 0), 0);
+    const avgIncl = Math.round((sumIncl / numRooms) * 100) / 100;
+    const avgExcl = Math.round((sumExcl / numRooms) * 100) / 100;
+    const totalQty = nights * numRooms;
+    const totalIncl = Math.round(avgIncl * totalQty * 100) / 100;
+    const totalExcl = Math.round(avgExcl * totalQty * 100) / 100;
     const baseName = (service.name || "").replace(/^Check-in · |^Check-out · |^Alojamiento · /, "");
-    const numRooms = rooms.length;
-    const noteSummary = sumNightlyIncl
-      ? `${nights} noches × ${numRooms} hab${numRooms === 1 ? "" : "s"} × €${(sumNightlyIncl / Math.max(1, numRooms)).toFixed(2)}/hab/noche`
+    const noteSummary = sumIncl
+      ? `${nights} noches × ${numRooms} hab${numRooms === 1 ? "" : "s"} × €${avgIncl.toFixed(2)}/hab/noche`
       : "";
 
     const newDays = (itn.days || []).map((d) => {
-      // Strip any previous spread for THIS acc_id (idempotent re-runs),
-      // but preserve the matrix row by its service_id — we mutate it in place.
       const filtered = (d.services || []).filter((s) =>
         s.acc_id !== accId || s.service_id === service.service_id
       );
       if (!d.date) return { ...d, services: filtered };
       const dd = new Date(d.date);
       if (isNaN(dd) || dd < dFrom || dd > dTo) {
-        // Day is outside the stay: drop any orphan row that may have been
-        // created previously for this acc_id (don't keep the matrix here).
         return { ...d, services: filtered.filter((s) => s.acc_id !== accId) };
       }
       const isCheckIn = dd.getTime() === dFrom.getTime();
@@ -354,61 +357,41 @@ export default function ItineraryBuilder() {
       const label = isCheckIn ? `Check-in · ${baseName}`
                   : isCheckOut ? `Check-out · ${baseName}`
                   : `Alojamiento · ${baseName}`;
-
       const matrixIdx = filtered.findIndex((s) => s.service_id === service.service_id);
-      // Per-night carrier price uses the room-sum (NOT the one-room price), so
-      // qty * unit_price = nights * Σ(rooms) — the user reported bug.
+      const carrier = {
+        acc_id: accId,
+        type: "alojamiento",
+        name: label,
+        quantity: isCheckIn ? totalQty : 0,
+        unit_price_tax_excl: isCheckIn ? avgExcl : 0,
+        unit_price_tax_incl: isCheckIn ? avgIncl : 0,
+        unit_price: isCheckIn ? avgIncl : 0,
+        currency: "EUR",
+        notes: isCheckIn ? noteSummary : "",
+      };
       if (matrixIdx !== -1) {
-        const updated = {
-          ...filtered[matrixIdx],
-          acc_id: accId,
-          type: "alojamiento",
-          name: label,
-          quantity: isCheckIn ? nights : 0,
-          unit_price_tax_excl: isCheckIn ? sumNightlyExcl : 0,
-          unit_price_tax_incl: isCheckIn ? sumNightlyIncl : 0,
-          unit_price: isCheckIn ? sumNightlyIncl : 0,
-          currency: "EUR",
-          notes: isCheckIn ? noteSummary : "",
-        };
         const services = [...filtered];
-        services[matrixIdx] = updated;
+        services[matrixIdx] = { ...filtered[matrixIdx], ...carrier };
         return { ...d, services };
       }
       return {
         ...d,
         services: [
           ...filtered,
-          {
-            service_id: uid("svc"),
-            acc_id: accId,
+          { ...carrier, service_id: uid("svc"),
             experience_id: service.experience_id || null,
-            type: "alojamiento",
-            name: label,
-            provider_name: service.provider_name || null,
-            quantity: isCheckIn ? nights : 0,
-            unit_price_tax_excl: isCheckIn ? sumNightlyExcl : 0,
-            unit_price_tax_incl: isCheckIn ? sumNightlyIncl : 0,
-            unit_price: isCheckIn ? sumNightlyIncl : 0,
-            currency: "EUR",
-            notes: isCheckIn ? noteSummary : "",
-          },
+            provider_name: service.provider_name || null },
         ],
       };
     });
 
-    // Upsert the parent accommodation in the summary list (now with rooms).
     const accs = [...accsBefore];
     const existingIdx = accs.findIndex((a) => a.acc_id === accId);
     const accRow = {
-      acc_id: accId,
-      name: baseName,
-      date_from: dateFrom,
-      date_to: dateTo,
+      acc_id: accId, name: baseName,
+      date_from: dateFrom, date_to: dateTo,
       rooms,
-      price_tax_excl: totalExcl,
-      price_tax_incl: totalIncl,
-      price: totalIncl,
+      price_tax_excl: totalExcl, price_tax_incl: totalIncl, price: totalIncl,
       currency: "EUR",
     };
     if (existingIdx === -1) accs.push(accRow);
@@ -546,6 +529,7 @@ export default function ItineraryBuilder() {
               idx={idx}
               active={activeDayId === day.day_id}
               numTravelers={itn.num_travelers}
+              accommodations={itn.accommodations || []}
               cityFacets={facets.cities}
               markup={itn.markup_pct || 0}
               onActivate={() => setActiveDayId(day.day_id)}
@@ -554,6 +538,7 @@ export default function ItineraryBuilder() {
               onAddExperience={(exp) => addServiceToDay(day.day_id, {
                 experience_id: exp.experience_id, type: exp.type, name: exp.title,
                 provider_name: exp.provider_name,
+                pax: exp.pax || 1,
                 unit_price_tax_excl: exp.price_tax_excl ?? 0,
                 unit_price_tax_incl: exp.price_tax_incl ?? exp.price ?? 0,
                 currency: exp.currency,
@@ -684,7 +669,7 @@ export default function ItineraryBuilder() {
   );
 }
 
-function DayBlock({ day, idx, active, numTravelers, cityFacets, markup, onActivate, onUpdateDay, onAddBlank, onAddExperience, onRemoveDay, onUpdateService, onRemoveService, onDragStart, onDropService, onOrient, onAccommodate }) {
+function DayBlock({ day, idx, active, numTravelers, accommodations, cityFacets, markup, onActivate, onUpdateDay, onAddBlank, onAddExperience, onRemoveDay, onUpdateService, onRemoveService, onDragStart, onDropService, onOrient, onAccommodate }) {
   const [dragOverIdx, setDragOverIdx] = useState(null);
   return (
     <div className={`border ${active ? "border-terracotta" : "border-clay-300"} bg-white transition-colors`} data-testid={`day-${idx}`} onClick={onActivate}>
@@ -768,21 +753,25 @@ function DayBlock({ day, idx, active, numTravelers, cityFacets, markup, onActiva
               className={dragOverIdx === sIdx ? "border-t-2 border-terracotta -mt-px" : ""}
             >
               <ServiceRow service={s} markup={markup} dayCity={day.city} numTravelers={numTravelers}
+                accommodations={accommodations}
                 onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", s.service_id); onDragStart(day.day_id, s.service_id); }}
                 onChange={(patch) => onUpdateService(s.service_id, patch)}
                 onRemove={() => onRemoveService(s.service_id)}
                 onPickExperience={(exp) => {
-                  // Recompute auto qty when an existing service is replaced
-                  // via the autocomplete so the quantity reflects the NEW pax.
+                  // Convert catalog total → per-pax and assign qty = num_travelers.
                   const expPax = Math.max(1, parseInt(exp.pax || 1, 10));
-                  const scales = SCALES_WITH_PAX.has(exp.type);
-                  const autoQty = scales ? Math.max(1, Math.ceil((numTravelers || 1) / expPax)) : 1;
+                  const totalIncl = exp.price_tax_incl ?? exp.price ?? 0;
+                  const totalExcl = exp.price_tax_excl ?? totalIncl;
+                  const perPaxIncl = totalIncl / expPax;
+                  const perPaxExcl = totalExcl / expPax;
                   onUpdateService(s.service_id, {
                     experience_id: exp.experience_id, name: exp.title, type: exp.type,
-                    provider_name: exp.provider_name, pax: expPax, quantity: autoQty,
-                    unit_price_tax_excl: exp.price_tax_excl ?? 0,
-                    unit_price_tax_incl: exp.price_tax_incl ?? exp.price ?? 0,
-                    unit_price: exp.price_tax_incl ?? exp.price ?? 0, currency: exp.currency || "EUR",
+                    provider_name: exp.provider_name, pax: expPax,
+                    quantity: numTravelers || 1,
+                    unit_price_tax_excl: Math.round(perPaxExcl * 100) / 100,
+                    unit_price_tax_incl: Math.round(perPaxIncl * 100) / 100,
+                    unit_price: Math.round(perPaxIncl * 100) / 100,
+                    currency: exp.currency || "EUR",
                   });
                 }}
                 onOrient={onOrient}
@@ -803,33 +792,32 @@ function DayBlock({ day, idx, active, numTravelers, cityFacets, markup, onActiva
   );
 }
 
-function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, onChange, onRemove, onPickExperience, onDragStart, onOrient, onAccommodate }) {
+function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, accommodations, onChange, onRemove, onPickExperience, onDragStart, onOrient, onAccommodate, onSaveToCatalog }) {
   const totalExcl = (service.unit_price_tax_excl || 0) * (service.quantity || 0);
   const totalIncl = (service.unit_price_tax_incl || service.unit_price || 0) * (service.quantity || 0);
   const totalPVP = totalIncl * (1 + (markup || 0) / 100);
   const isLodging = service.type === "alojamiento";
+  const linkedAcc = service.acc_id ? (accommodations || []).find((a) => a.acc_id === service.acc_id) : null;
+  // Editable flag — only services backed by an experience_id can be persisted back to the catalog.
+  const canSaveCatalog = !!service.experience_id && !isLodging;
+  const [savingCatalog, setSavingCatalog] = useState(false);
 
   // Local state for the in-line check-in/out date inputs (only used for lodging).
-  // Pre-fill with the day's date so the user only needs to set the check-out.
   const [stayFrom, setStayFrom] = useState(dayDate || "");
   const [stayTo, setStayTo] = useState("");
-  // Keep state in sync with the persisted accommodation:
-  //  - For a fresh lodging service (no acc_id yet): stayFrom defaults to dayDate.
-  //  - For a "Check-in" carrier (already linked): show the real range so the
-  //    user can edit it and re-apply.
+  // Pre-fill from the linked accommodation when there is one (Check-in carrier),
+  // otherwise fall back to dayDate. The previous logic derived check-out from
+  // `service.quantity`, which broke when quantity = nights × rooms (new model).
   useEffect(() => {
     if (!isLodging) return;
-    if (service.acc_id && /^Check-in/.test(service.name || "") && dayDate && (service.quantity || 0) > 0) {
-      const dFrom = new Date(dayDate);
-      const nights = service.quantity || 0;
-      const dTo = new Date(dFrom.getTime() + nights * 86400000);
-      setStayFrom(dayDate);
-      setStayTo(dTo.toISOString().slice(0, 10));
+    if (linkedAcc && linkedAcc.date_from && linkedAcc.date_to) {
+      setStayFrom(linkedAcc.date_from);
+      setStayTo(linkedAcc.date_to);
     } else if (!service.acc_id && dayDate && !stayFrom) {
       setStayFrom(dayDate);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dayDate, service.acc_id, service.quantity, service.name, isLodging]);
+  }, [dayDate, linkedAcc?.date_from, linkedAcc?.date_to, isLodging]);
 
   const applyDates = () => {
     const dFrom = stayFrom || dayDate;
@@ -838,9 +826,34 @@ function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, onChange,
     if (!service.name?.trim()) { toast.error("Pon primero el nombre del hotel"); return; }
     onAccommodate?.(dFrom, dTo);
     toast.success("Alojamiento aplicado a todos los días");
-    // Don't reset the inputs — keep them populated so the user can see the
-    // dates they just applied (and edit them later if they want to extend
-    // / shorten the stay).
+  };
+
+  const saveToCatalog = async () => {
+    if (!service.experience_id) { toast.error("Sin experience_id, no se puede guardar"); return; }
+    setSavingCatalog(true);
+    try {
+      // The service stores price PER PAX. Catalog stores the TOTAL for `pax`
+      // people, so multiply back. The user may have edited unit_price (which
+      // is /pax) or pax itself; the catalog should reflect the new totals.
+      const pax = Math.max(1, parseInt(service.pax || 1, 10));
+      const perPaxIncl = service.unit_price_tax_incl || service.unit_price || 0;
+      const perPaxExcl = service.unit_price_tax_excl || perPaxIncl;
+      await api.patch(`/experiences/${service.experience_id}`, {
+        title: service.name,
+        type: service.type,
+        pax,
+        price_tax_excl: Math.round(perPaxExcl * pax * 100) / 100,
+        price_tax_incl: Math.round(perPaxIncl * pax * 100) / 100,
+        price: Math.round(perPaxIncl * pax * 100) / 100,
+        currency: service.currency || "EUR",
+      });
+      toast.success("Guardado en el catálogo");
+      onSaveToCatalog?.(service);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Error al guardar en catálogo");
+    } finally {
+      setSavingCatalog(false);
+    }
   };
 
   return (
@@ -868,20 +881,26 @@ function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, onChange,
           onTextChange={(v) => onChange({ name: v })}
           onPick={onPickExperience}
         />
-        {(service.provider_name || (service.pax && service.pax > 0)) && (
+        {(service.provider_name || isLodging || (service.experience_id || service.pax)) && (
           <div className="text-[11px] text-clay-700 truncate flex items-center gap-2">
             {service.provider_name && <span className="truncate">{service.provider_name}</span>}
-            {!isLodging && service.pax > 0 && SCALES_WITH_PAX.has(service.type) && (
+            {!isLodging && (
               <span
-                className={`text-[10px] px-1 py-0.5 rounded ${
-                  numTravelers && (numTravelers % service.pax) !== 0
-                    ? "bg-amber-100 text-amber-800"
-                    : "bg-clay-100 text-clay-700"
-                }`}
-                title={`Precio para ${service.pax} pax · ${numTravelers ? `Viaje ${numTravelers} pax → necesitas ${Math.ceil((numTravelers||1)/service.pax)} unidades` : ""}`}
+                className="text-[10px] px-1 py-0.5 rounded bg-clay-100 text-clay-700"
+                title={`Precio del catálogo era para ${service.pax || 1} pax. Aquí se guarda como €/pax × num viajeros.`}
                 data-testid={`svc-pax-${service.service_id}`}
               >
-                precio para {service.pax} pax
+                €/pax (cat. {service.pax || 1} pax)
+              </span>
+            )}
+            {isLodging && linkedAcc && (linkedAcc.rooms || []).length > 0 && (
+              <span className="text-[10px] px-1 py-0.5 rounded bg-clay-100 text-clay-700">
+                {(linkedAcc.rooms || []).length} hab{(linkedAcc.rooms || []).length === 1 ? "" : "s"} × {(() => {
+                  const dF = new Date(linkedAcc.date_from);
+                  const dT = new Date(linkedAcc.date_to);
+                  if (isNaN(dF) || isNaN(dT)) return "?";
+                  return Math.max(1, Math.round((dT - dF) / 86400000));
+                })()} noches
               </span>
             )}
           </div>
@@ -924,6 +943,15 @@ function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, onChange,
           className="text-clay-700 hover:text-terracotta hover:bg-clay-100 p-1 border border-clay-300 flex items-center justify-center"
           title="Buscar precio orientativo · histórico + Expedia"
         ><Search size={13}/></button>
+      )}
+      {canSaveCatalog && (
+        <button
+          data-testid={`svc-save-catalog-${service.service_id}`}
+          onClick={saveToCatalog}
+          disabled={savingCatalog}
+          title="Guardar precio actualizado en el catálogo de experiencias"
+          className="text-clay-700 hover:text-pine hover:bg-pine/10 p-1 border border-clay-300 flex items-center justify-center disabled:opacity-40"
+        ><Save size={13}/></button>
       )}
       <button onClick={onRemove} className="text-clay-500 hover:text-destructive p-1" title="Quitar"><Trash2 size={14}/></button>
     </div>
@@ -1150,29 +1178,27 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
     schedSave({ ...itn, accommodations: next });
   };
 
-  // Room CRUD on an accommodation. After any change we re-derive the
-  // accommodation aggregate totals so the cost summary and PVP stay consistent,
-  // AND we re-propagate the new per-night sum to the Check-in service in the
-  // days (so the day matrix and the sumario always agree).
+  // Room CRUD on an accommodation. After any change re-derive:
+  //  - accommodation aggregate: price = avg(rooms) × nights × num_rooms = Σ(rooms) × nights
+  //  - day matrix carrier:       qty = nights × num_rooms, unit = avg(rooms)
+  // so qty × unit always equals the total. Changing ANY parameter recomputes.
   const updateRooms = (idx, newRooms) => {
     const accs = [...(itn.accommodations || [])];
     const acc = { ...accs[idx], rooms: newRooms };
-    const totals = totalsFromRooms(acc);
-    if (totals) {
-      acc.price_tax_excl = Math.round(totals.excl * 100) / 100;
-      acc.price_tax_incl = Math.round(totals.incl * 100) / 100;
-      acc.price = acc.price_tax_incl;
-    }
-    accs[idx] = acc;
-    // Sync the corresponding Check-in service row, if any. The Check-in row
-    // (acc_id matches, qty > 0) carries the price for the whole stay: qty=nights,
-    // unit_price=Σ(rooms per night). Other days (qty=0) just show the label.
+    const nights = nightsBetween(acc.date_from, acc.date_to) || 1;
+    const numRooms = Math.max(1, (newRooms || []).length);
     const sumIncl = (newRooms || []).reduce((s, r) => s + (r.price_per_night_incl || r.price_per_night_excl || 0), 0);
     const sumExcl = (newRooms || []).reduce((s, r) => s + (r.price_per_night_excl || r.price_per_night_incl || 0), 0);
-    const nights = totals?.nights || nightsBetween(acc.date_from, acc.date_to) || 1;
-    const numRooms = (newRooms || []).length;
+    const avgIncl = Math.round((sumIncl / numRooms) * 100) / 100;
+    const avgExcl = Math.round((sumExcl / numRooms) * 100) / 100;
+    const totalQty = nights * numRooms;
+    acc.price_tax_excl = Math.round(avgExcl * totalQty * 100) / 100;
+    acc.price_tax_incl = Math.round(avgIncl * totalQty * 100) / 100;
+    acc.price = acc.price_tax_incl;
+    accs[idx] = acc;
+
     const noteSummary = sumIncl
-      ? `${nights} noches × ${numRooms} hab${numRooms === 1 ? "" : "s"} × €${(sumIncl / Math.max(1, numRooms)).toFixed(2)}/hab/noche`
+      ? `${nights} noches × ${numRooms} hab${numRooms === 1 ? "" : "s"} × €${avgIncl.toFixed(2)}/hab/noche`
       : "";
     const newDays = (itn.days || []).map((d) => ({
       ...d,
@@ -1182,10 +1208,10 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
         if (isCarrier) {
           return {
             ...s,
-            quantity: nights,
-            unit_price_tax_excl: sumExcl,
-            unit_price_tax_incl: sumIncl,
-            unit_price: sumIncl,
+            quantity: totalQty,
+            unit_price_tax_excl: avgExcl,
+            unit_price_tax_incl: avgIncl,
+            unit_price: avgIncl,
             notes: noteSummary,
           };
         }
@@ -1258,32 +1284,38 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
     const dFrom = new Date(acc.date_from);
     const dTo = new Date(acc.date_to);
     if (isNaN(dFrom) || isNaN(dTo) || dTo < dFrom) return;
-    // Aggregate per-night price across rooms when present; otherwise fall back
-    // to the catalog hotel price; otherwise derive from the existing total.
+    const nights = Math.max(1, Math.round((dTo - dFrom) / 86400000));
+    // Per-room nightly price: rooms list wins; else catalog; else derive from total.
     const rooms = acc.rooms || [];
-    const roomsSumIncl = rooms.reduce((s, r) => s + (r.price_per_night_incl || r.price_per_night_excl || 0), 0);
-    const roomsSumExcl = rooms.reduce((s, r) => s + (r.price_per_night_excl || r.price_per_night_incl || 0), 0);
-    const dailyPrice = (rooms.length > 0 && roomsSumIncl > 0)
-      ? roomsSumIncl
-      : (hotelRecord?.price_per_night_incl
-        || (acc.price_tax_incl && Math.round(acc.price_tax_incl / Math.max(1, Math.round((dTo - dFrom) / 86400000)) * 100) / 100)
-        || 0);
-    const dailyExcl = (rooms.length > 0 && roomsSumExcl > 0)
-      ? roomsSumExcl
-      : (hotelRecord?.price_per_night_excl || dailyPrice);
-    // Build a fresh days array, dropping any previous spread for THIS acc_id.
+    const numRooms = Math.max(1, rooms.length || 1);
+    const sumIncl = rooms.reduce((s, r) => s + (r.price_per_night_incl || r.price_per_night_excl || 0), 0);
+    const sumExcl = rooms.reduce((s, r) => s + (r.price_per_night_excl || r.price_per_night_incl || 0), 0);
+    let avgIncl, avgExcl;
+    if (rooms.length > 0 && sumIncl > 0) {
+      avgIncl = sumIncl / numRooms;
+      avgExcl = sumExcl / numRooms;
+    } else if (hotelRecord?.price_per_night_incl) {
+      avgIncl = hotelRecord.price_per_night_incl;
+      avgExcl = hotelRecord.price_per_night_excl || hotelRecord.price_per_night_incl;
+    } else if (acc.price_tax_incl) {
+      // Reverse-engineer per-room/night from the saved total.
+      avgIncl = acc.price_tax_incl / (nights * numRooms);
+      avgExcl = (acc.price_tax_excl || acc.price_tax_incl) / (nights * numRooms);
+    } else {
+      avgIncl = 0; avgExcl = 0;
+    }
+    avgIncl = Math.round(avgIncl * 100) / 100;
+    avgExcl = Math.round(avgExcl * 100) / 100;
+    const totalQty = nights * numRooms;
     const newDays = (itn.days || []).map((d) => {
       const filtered = (d.services || []).filter((s) => s.acc_id !== acc.acc_id);
       if (!d.date) return { ...d, services: filtered };
       const dd = new Date(d.date);
       if (isNaN(dd) || dd < dFrom || dd > dTo) return { ...d, services: filtered };
-      // Decide tag
       let label;
       if (dd.getTime() === dFrom.getTime()) label = `Check-in · ${acc.name}`;
       else if (dd.getTime() === dTo.getTime()) label = `Check-out · ${acc.name}`;
       else label = `Alojamiento · ${acc.name}`;
-      // Only the check-in day carries the nightly price (so we don't multi-count).
-      // Mid + check-out rows carry price 0 (just a marker).
       const isPriceCarrier = dd.getTime() === dFrom.getTime();
       const service = {
         service_id: uid("svc"),
@@ -1292,32 +1324,27 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
         type: "alojamiento",
         name: label,
         provider_name: hotelRecord ? "Hotel · catálogo" : null,
-        quantity: isPriceCarrier ? Math.max(1, Math.round((dTo - dFrom) / 86400000)) : 0,
-        unit_price_tax_excl: isPriceCarrier ? dailyExcl : 0,
-        unit_price_tax_incl: isPriceCarrier ? dailyPrice : 0,
-        unit_price: isPriceCarrier ? dailyPrice : 0,
+        quantity: isPriceCarrier ? totalQty : 0,
+        unit_price_tax_excl: isPriceCarrier ? avgExcl : 0,
+        unit_price_tax_incl: isPriceCarrier ? avgIncl : 0,
+        unit_price: isPriceCarrier ? avgIncl : 0,
         currency: "EUR",
-        notes: isPriceCarrier ? `${Math.max(1, Math.round((dTo - dFrom) / 86400000))} noches × ${dailyPrice}€` : "",
+        notes: isPriceCarrier ? `${nights} noches × ${numRooms} hab × €${avgIncl}/hab/noche` : "",
       };
       return { ...d, services: [...filtered, service] };
     });
-    // Total in the accommodation row reflects the spread when we have a catalog price,
-    // unless the accommodation has multi-room pricing (rooms are the source of truth).
-    const hasRooms = (acc.rooms || []).length > 0;
-    if (hotelRecord?.price_per_night_incl && !hasRooms) {
-      const nights = Math.max(1, Math.round((dTo - dFrom) / 86400000));
-      const total = nights * hotelRecord.price_per_night_incl;
-      const totalExcl = nights * (hotelRecord.price_per_night_excl || hotelRecord.price_per_night_incl);
-      schedSave({
-        ...itn,
-        days: newDays,
-        accommodations: (itn.accommodations || []).map((x) =>
-          x.acc_id === acc.acc_id ? { ...x, name: acc.name, price_tax_incl: total, price_tax_excl: totalExcl, price: total } : x
-        ),
-      });
-    } else {
-      schedSave({ ...itn, days: newDays });
-    }
+    // Update the accommodation summary totals to match qty × unit.
+    const totalIncl = Math.round(avgIncl * totalQty * 100) / 100;
+    const totalExcl = Math.round(avgExcl * totalQty * 100) / 100;
+    schedSave({
+      ...itn,
+      days: newDays,
+      accommodations: (itn.accommodations || []).map((x) =>
+        x.acc_id === acc.acc_id
+          ? { ...x, name: acc.name, price_tax_incl: totalIncl, price_tax_excl: totalExcl, price: totalIncl }
+          : x
+      ),
+    });
   };
 
   // Drop any spread for this acc_id from all day services (used on delete or
@@ -1336,17 +1363,38 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
     const list = [...(itn.accommodations || [])];
     const newAcc = { ...list[idx], ...synced };
     list[idx] = newAcc;
-    // Aggregate per-night room price (if rooms exist) — wins over the catalog price.
-    const accRooms = newAcc.rooms || [];
-    const roomsSumIncl = accRooms.reduce((s, r) => s + (r.price_per_night_incl || r.price_per_night_excl || 0), 0);
-    const roomsSumExcl = accRooms.reduce((s, r) => s + (r.price_per_night_excl || r.price_per_night_incl || 0), 0);
-    // If name+dates are all set, spread; else just save
     if (newAcc.name && newAcc.date_from && newAcc.date_to) {
-      // schedSave will be called inside spreadAccommodation
-      const tmpItn = { ...itn, accommodations: list };
+      // Persist the list change FIRST, then run spread (which reads the latest itn).
+      // To avoid stale `itn` reads we delegate to a synchronous helper that
+      // takes the next accs array as argument.
+      const nights = Math.max(1, Math.round((new Date(newAcc.date_to) - new Date(newAcc.date_from)) / 86400000));
+      const rooms = newAcc.rooms || [];
+      const numRooms = Math.max(1, rooms.length || 1);
+      const sumIncl = rooms.reduce((s, r) => s + (r.price_per_night_incl || r.price_per_night_excl || 0), 0);
+      const sumExcl = rooms.reduce((s, r) => s + (r.price_per_night_excl || r.price_per_night_incl || 0), 0);
+      let avgIncl, avgExcl;
+      if (rooms.length > 0 && sumIncl > 0) {
+        avgIncl = sumIncl / numRooms;
+        avgExcl = sumExcl / numRooms;
+      } else if (hotelRecord?.price_per_night_incl) {
+        avgIncl = hotelRecord.price_per_night_incl;
+        avgExcl = hotelRecord.price_per_night_excl || hotelRecord.price_per_night_incl;
+      } else {
+        avgIncl = (newAcc.price_tax_incl || 0) / Math.max(1, nights * numRooms);
+        avgExcl = (newAcc.price_tax_excl || newAcc.price_tax_incl || 0) / Math.max(1, nights * numRooms);
+      }
+      avgIncl = Math.round(avgIncl * 100) / 100;
+      avgExcl = Math.round(avgExcl * 100) / 100;
+      const totalQty = nights * numRooms;
+      list[idx] = {
+        ...newAcc,
+        price_tax_incl: Math.round(avgIncl * totalQty * 100) / 100,
+        price_tax_excl: Math.round(avgExcl * totalQty * 100) / 100,
+        price: Math.round(avgIncl * totalQty * 100) / 100,
+      };
       const dFrom = new Date(newAcc.date_from);
       const dTo = new Date(newAcc.date_to);
-      const newDays = (tmpItn.days || []).map((d) => {
+      const newDays = (itn.days || []).map((d) => {
         const filtered = (d.services || []).filter((s) => s.acc_id !== newAcc.acc_id);
         if (!d.date) return { ...d, services: filtered };
         const dd = new Date(d.date);
@@ -1356,9 +1404,6 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
         else if (dd.getTime() === dTo.getTime()) label = `Check-out · ${newAcc.name}`;
         else label = `Alojamiento · ${newAcc.name}`;
         const isPriceCarrier = dd.getTime() === dFrom.getTime();
-        const nightly = (accRooms.length > 0 && roomsSumIncl > 0) ? roomsSumIncl : (hotelRecord?.price_per_night_incl || 0);
-        const nightlyExcl = (accRooms.length > 0 && roomsSumExcl > 0) ? roomsSumExcl : (hotelRecord?.price_per_night_excl || nightly);
-        const nights = Math.max(1, Math.round((dTo - dFrom) / 86400000));
         return {
           ...d,
           services: [
@@ -1370,27 +1415,17 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
               type: "alojamiento",
               name: label,
               provider_name: hotelRecord ? "Hotel · catálogo" : null,
-              quantity: isPriceCarrier ? nights : 0,
-              unit_price_tax_excl: isPriceCarrier ? nightlyExcl : 0,
-              unit_price_tax_incl: isPriceCarrier ? nightly : 0,
-              unit_price: isPriceCarrier ? nightly : 0,
+              quantity: isPriceCarrier ? totalQty : 0,
+              unit_price_tax_excl: isPriceCarrier ? avgExcl : 0,
+              unit_price_tax_incl: isPriceCarrier ? avgIncl : 0,
+              unit_price: isPriceCarrier ? avgIncl : 0,
               currency: "EUR",
-              notes: isPriceCarrier && nightly ? `${nights} noches × ${nightly}€` : "",
+              notes: isPriceCarrier ? `${nights} noches × ${numRooms} hab × €${avgIncl}/hab/noche` : "",
             },
           ],
         };
       });
-      // If we have catalog pricing, also override the row total — UNLESS the
-      // accommodation has multiple rooms, in which case the rooms are the
-      // source of truth (already aggregated by updateRooms()).
-      const hasRooms = (list[idx].rooms || []).length > 0;
-      if (hotelRecord?.price_per_night_incl && !hasRooms) {
-        const nights = Math.max(1, Math.round((dTo - dFrom) / 86400000));
-        const total = nights * hotelRecord.price_per_night_incl;
-        const totalExcl = nights * (hotelRecord.price_per_night_excl || hotelRecord.price_per_night_incl);
-        list[idx] = { ...list[idx], price_tax_incl: total, price_tax_excl: totalExcl, price: total };
-      }
-      schedSave({ ...tmpItn, accommodations: list, days: newDays });
+      schedSave({ ...itn, accommodations: list, days: newDays });
     } else {
       schedSave({ ...itn, accommodations: list });
     }
@@ -1399,12 +1434,7 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
   // Pick a hotel from the catalogue → fills name, populates rooms with the
   // catalog nightly price, and triggers spread.
   const pickHotel = (idx, hotel) => {
-    // Single atomic save: build the next accommodation with rooms FILLED IN
-    // from the catalog price, recompute totals from `Σ(rooms × nights)`, then
-    // also spread Check-in/mid/Check-out service rows across the days. Doing
-    // both updates in two separate schedSave() calls causes the second one
-    // to read a stale `itn` and overwrite the rooms changes (this was the
-    // multi-room "no se multiplica por habitaciones" bug).
+    // Apply catalog price to each room, then delegate spread+totals to updWithSpread.
     const accs = [...(itn.accommodations || [])];
     const current = accs[idx] || {};
     const existing = (current.rooms && current.rooms.length > 0) ? current.rooms : buildDefaultRooms();
@@ -1413,26 +1443,28 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
       price_per_night_excl: hotel.price_per_night_excl || hotel.price_per_night_incl || 0,
       price_per_night_incl: hotel.price_per_night_incl || hotel.price_per_night_excl || 0,
     }));
-    // Aggregate per-night across rooms (this is where rooms × catalog price gets multiplied).
+    accs[idx] = { ...current, name: hotel.name, rooms };
+    // updWithSpread will read accs from itn — but we mutated `accs` locally.
+    // To keep things atomic, build the next itn snapshot directly.
     const nights = nightsBetween(current.date_from, current.date_to) || 1;
-    const sumExcl = rooms.reduce((s, r) => s + (r.price_per_night_excl || 0), 0);
+    const numRooms = Math.max(1, rooms.length);
     const sumIncl = rooms.reduce((s, r) => s + (r.price_per_night_incl || r.price_per_night_excl || 0), 0);
-    const totalExcl = Math.round(sumExcl * nights * 100) / 100;
-    const totalIncl = Math.round(sumIncl * nights * 100) / 100;
-    const newAcc = {
-      ...current,
-      name: hotel.name,
-      rooms,
-      price_tax_excl: totalExcl,
-      price_tax_incl: totalIncl,
-      price: totalIncl,
+    const sumExcl = rooms.reduce((s, r) => s + (r.price_per_night_excl || r.price_per_night_incl || 0), 0);
+    const avgIncl = Math.round((sumIncl / numRooms) * 100) / 100;
+    const avgExcl = Math.round((sumExcl / numRooms) * 100) / 100;
+    const totalQty = nights * numRooms;
+    accs[idx] = {
+      ...accs[idx],
+      price_tax_excl: Math.round(avgExcl * totalQty * 100) / 100,
+      price_tax_incl: Math.round(avgIncl * totalQty * 100) / 100,
+      price: Math.round(avgIncl * totalQty * 100) / 100,
     };
-    accs[idx] = newAcc;
-    // Build the per-day spread using the room sum as the per-night carrier price.
+    // Spread to the days.
+    const newAcc = accs[idx];
     const dFrom = new Date(newAcc.date_from);
     const dTo = new Date(newAcc.date_to);
     let newDays = itn.days || [];
-    if (newAcc.name && !isNaN(dFrom) && !isNaN(dTo) && dTo >= dFrom) {
+    if (newAcc.date_from && newAcc.date_to && !isNaN(dFrom) && !isNaN(dTo) && dTo >= dFrom) {
       newDays = (itn.days || []).map((d) => {
         const filtered = (d.services || []).filter((s) => s.acc_id !== newAcc.acc_id);
         if (!d.date) return { ...d, services: filtered };
@@ -1452,12 +1484,13 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
               acc_id: newAcc.acc_id,
               type: "alojamiento",
               name: label,
-              provider_name: "",
-              quantity: isPriceCarrier ? nights : 0,
-              unit_price_tax_excl: isPriceCarrier ? sumExcl : 0,
-              unit_price_tax_incl: isPriceCarrier ? sumIncl : 0,
-              unit_price: isPriceCarrier ? sumIncl : 0,
+              provider_name: "Hotel · catálogo",
+              quantity: isPriceCarrier ? totalQty : 0,
+              unit_price_tax_excl: isPriceCarrier ? avgExcl : 0,
+              unit_price_tax_incl: isPriceCarrier ? avgIncl : 0,
+              unit_price: isPriceCarrier ? avgIncl : 0,
               currency: hotel.currency || "EUR",
+              notes: isPriceCarrier ? `${nights} noches × ${numRooms} hab × €${avgIncl}/hab/noche` : "",
             },
           ],
         };
