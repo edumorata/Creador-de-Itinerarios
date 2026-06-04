@@ -18,8 +18,8 @@ const SCALES_WITH_PAX = new Set(["actividad", "entradas", "transfer", "tren", "v
 // Visual fallback for any unexpected legacy type strings
 const BADGE_FALLBACK = "bg-clay-400 text-white";
 
-const fmtEUR = (n) => `€ ${Number(n || 0).toLocaleString("es-ES", { maximumFractionDigits: 2, minimumFractionDigits: 2 })}`;
-const fmtUSD = (n) => `$ ${Number(n || 0).toLocaleString("en-US", { maximumFractionDigits: 0, minimumFractionDigits: 0 })}`;
+const fmtEUR = (n) => `€${Number(n || 0).toLocaleString("es-ES", { maximumFractionDigits: 2, minimumFractionDigits: 2 })}`;
+const fmtUSD = (n) => `$${Number(n || 0).toLocaleString("en-US", { maximumFractionDigits: 0, minimumFractionDigits: 0 })}`;
 const uid = (p) => `${p}_${Math.random().toString(36).slice(2, 12)}`;
 
 // Partner labels used by the cost summary + selector.
@@ -1600,22 +1600,28 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
                     />
                     <input type="date" className="bg-transparent outline-none tabular" value={a.date_from || ""} onChange={(e) => updWithSpread(idx, { date_from: e.target.value })} />
                     <input type="date" className="bg-transparent outline-none tabular" value={a.date_to || ""} onChange={(e) => updWithSpread(idx, { date_to: e.target.value })} />
-                    <input
-                      type="number" min="0" step="0.01"
-                      className={`bg-transparent text-right outline-none tabular ${usingRooms ? "text-clay-500" : ""}`}
-                      value={a.price_tax_excl || 0}
-                      readOnly={usingRooms}
-                      title={usingRooms ? "Calculado a partir de las habitaciones" : "Editable"}
-                      onChange={(e) => upd(idx, { price_tax_excl: parseFloat(e.target.value || "0") })}
-                    />
-                    <input
-                      type="number" min="0" step="0.01"
-                      className={`bg-transparent text-right outline-none tabular ${usingRooms ? "text-clay-500" : ""}`}
-                      value={incl}
-                      readOnly={usingRooms}
-                      title={usingRooms ? "Calculado a partir de las habitaciones" : "Editable"}
-                      onChange={(e) => upd(idx, { price_tax_incl: parseFloat(e.target.value || "0") })}
-                    />
+                    <div className="flex items-center gap-1 justify-end">
+                      <span className="text-clay-500 text-[10px]">€</span>
+                      <input
+                        type="number" min="0" step="0.01"
+                        className={`bg-transparent text-right outline-none tabular w-full ${usingRooms ? "text-clay-500" : ""}`}
+                        value={a.price_tax_excl || 0}
+                        readOnly={usingRooms}
+                        title={usingRooms ? "Calculado a partir de las habitaciones" : "Editable"}
+                        onChange={(e) => upd(idx, { price_tax_excl: parseFloat(e.target.value || "0") })}
+                      />
+                    </div>
+                    <div className="flex items-center gap-1 justify-end">
+                      <span className="text-clay-500 text-[10px]">€</span>
+                      <input
+                        type="number" min="0" step="0.01"
+                        className={`bg-transparent text-right outline-none tabular w-full ${usingRooms ? "text-clay-500" : ""}`}
+                        value={incl}
+                        readOnly={usingRooms}
+                        title={usingRooms ? "Calculado a partir de las habitaciones" : "Editable"}
+                        onChange={(e) => upd(idx, { price_tax_incl: parseFloat(e.target.value || "0") })}
+                      />
+                    </div>
                     <div className="text-right tabular font-semibold">{fmtEUR(pvp)}</div>
                     <button
                       data-testid={`orient-${idx}`}
@@ -1643,43 +1649,67 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
                     ) : (
                       <div className="space-y-1">
                         {rooms.map((r) => (
-                          <div key={r.room_id} className="grid grid-cols-[110px_70px_1fr_90px_90px_24px] gap-2 items-center text-xs border-l-2 border-clay-200 pl-2" data-testid={`room-${r.room_id}`}>
-                            <select
-                              className="bg-white border border-clay-200 px-1 py-0.5 text-xs"
-                              value={r.room_type}
-                              onChange={(e) => patchRoom(idx, r.room_id, { room_type: e.target.value })}
-                              data-testid={`room-type-${r.room_id}`}
-                            >
-                              {ROOM_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                            </select>
-                            <input
-                              type="number" min="1" max="20"
-                              className="bg-white border border-clay-200 px-1 py-0.5 text-right tabular"
-                              value={r.pax || 1}
-                              onChange={(e) => patchRoom(idx, r.room_id, { pax: parseInt(e.target.value || "1", 10) })}
-                              title="Pax en esta habitación"
-                              data-testid={`room-pax-${r.room_id}`}
-                            />
-                            <div className="text-clay-700">€/noche</div>
-                            <input
-                              type="number" min="0" step="0.01"
-                              className="bg-white border border-clay-200 px-1 py-0.5 text-right tabular"
-                              value={r.price_per_night_excl || 0}
-                              onChange={(e) => patchRoom(idx, r.room_id, { price_per_night_excl: parseFloat(e.target.value || "0") })}
-                              title="Precio por noche sin IVA"
-                              data-testid={`room-excl-${r.room_id}`}
-                            />
-                            <input
-                              type="number" min="0" step="0.01"
-                              className="bg-white border border-clay-200 px-1 py-0.5 text-right tabular"
-                              value={r.price_per_night_incl || 0}
-                              onChange={(e) => patchRoom(idx, r.room_id, { price_per_night_incl: parseFloat(e.target.value || "0") })}
-                              title="Precio por noche con IVA"
-                              data-testid={`room-incl-${r.room_id}`}
-                            />
+                          <div
+                            key={r.room_id}
+                            className="grid grid-cols-[1fr_120px_120px_90px_90px_90px_28px_28px] gap-2 items-center text-xs border-l-2 border-clay-200 pl-2"
+                            data-testid={`room-${r.room_id}`}
+                          >
+                            {/* Col 1: type + pax + €/noche label — fills the "Hotel" column */}
+                            <div className="flex items-center gap-2 text-[11px]">
+                              <select
+                                className="bg-white border border-clay-200 px-1 py-0.5 text-xs w-24"
+                                value={r.room_type}
+                                onChange={(e) => patchRoom(idx, r.room_id, { room_type: e.target.value })}
+                                data-testid={`room-type-${r.room_id}`}
+                              >
+                                {ROOM_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                              </select>
+                              <span className="text-clay-500">·</span>
+                              <input
+                                type="number" min="1" max="20"
+                                className="bg-white border border-clay-200 px-1 py-0.5 text-right tabular w-12"
+                                value={r.pax || 1}
+                                onChange={(e) => patchRoom(idx, r.room_id, { pax: parseInt(e.target.value || "1", 10) })}
+                                title="Pax en esta habitación"
+                                data-testid={`room-pax-${r.room_id}`}
+                              />
+                              <span className="text-clay-500 text-[11px]">pax · €/noche</span>
+                            </div>
+                            {/* Col 2 + 3: empty (Desde / Hasta columns of parent) */}
+                            <div />
+                            <div />
+                            {/* Col 4: sin IVA */}
+                            <div className="flex items-center gap-1 justify-end">
+                              <span className="text-clay-500 text-[10px]">€</span>
+                              <input
+                                type="number" min="0" step="0.01"
+                                className="bg-white border border-clay-200 px-1 py-0.5 text-right tabular w-full"
+                                value={r.price_per_night_excl || 0}
+                                onChange={(e) => patchRoom(idx, r.room_id, { price_per_night_excl: parseFloat(e.target.value || "0") })}
+                                title="Precio por noche sin IVA"
+                                data-testid={`room-excl-${r.room_id}`}
+                              />
+                            </div>
+                            {/* Col 5: con IVA */}
+                            <div className="flex items-center gap-1 justify-end">
+                              <span className="text-clay-500 text-[10px]">€</span>
+                              <input
+                                type="number" min="0" step="0.01"
+                                className="bg-white border border-clay-200 px-1 py-0.5 text-right tabular w-full font-semibold"
+                                value={r.price_per_night_incl || 0}
+                                onChange={(e) => patchRoom(idx, r.room_id, { price_per_night_incl: parseFloat(e.target.value || "0") })}
+                                title="Precio por noche con IVA"
+                                data-testid={`room-incl-${r.room_id}`}
+                              />
+                            </div>
+                            {/* Col 6: PVP placeholder (computed at the parent level) */}
+                            <div />
+                            {/* Col 7: empty (orient button col of parent) */}
+                            <div />
+                            {/* Col 8: remove room */}
                             <button
                               onClick={() => removeRoom(idx, r.room_id)}
-                              className="text-clay-400 hover:text-destructive"
+                              className="text-clay-400 hover:text-destructive p-1 flex items-center justify-center"
                               title="Quitar habitación"
                               data-testid={`room-del-${r.room_id}`}
                             ><X size={12}/></button>
