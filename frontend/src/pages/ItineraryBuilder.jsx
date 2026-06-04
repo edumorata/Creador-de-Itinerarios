@@ -298,11 +298,43 @@ export default function ItineraryBuilder() {
     if (isNaN(dFrom) || isNaN(dTo) || dTo < dFrom) return;
     const accId = service.acc_id || uid("acc");
     const nights = Math.max(1, Math.round((dTo - dFrom) / 86400000));
-    const nightlyIncl = service.unit_price_tax_incl || service.unit_price || 0;
-    const nightlyExcl = service.unit_price_tax_excl || nightlyIncl;
-    const totalIncl = nightlyIncl * nights;
-    const totalExcl = nightlyExcl * nights;
+    // Single-room unit prices typed by the user on the matrix row.
+    const oneRoomNightlyIncl = service.unit_price_tax_incl || service.unit_price || 0;
+    const oneRoomNightlyExcl = service.unit_price_tax_excl || oneRoomNightlyIncl;
+
+    // Look up the parent accommodation if it already exists — its rooms list
+    // is the source of truth. Otherwise build it from `room_config` (default
+    // layout for the trip). If `room_config` is empty fall back to "1 doble".
+    const accsBefore = itn.accommodations || [];
+    const existingAcc = accsBefore.find((a) => a.acc_id === accId);
+    const cfg = itn.room_config || [];
+    const seedRooms = (existingAcc && existingAcc.rooms && existingAcc.rooms.length > 0)
+      ? existingAcc.rooms
+      : (cfg.length > 0 ? cfg : [{ room_type: "doble", pax: 2, quantity: 1 }])
+          .flatMap((rc) => Array.from({ length: rc.quantity || 1 }, () => ({
+            room_id: uid("room"),
+            room_type: rc.room_type, pax: rc.pax,
+            price_per_night_excl: 0, price_per_night_incl: 0, currency: "EUR",
+          })));
+    // If we're creating from scratch, propagate the user's per-night price to
+    // every room. If rooms already had prices, keep them (user-edited values).
+    const roomsHaveAnyPrice = seedRooms.some((r) => (r.price_per_night_incl || 0) > 0 || (r.price_per_night_excl || 0) > 0);
+    const rooms = seedRooms.map((r) => ({
+      ...r,
+      price_per_night_excl: roomsHaveAnyPrice ? r.price_per_night_excl : oneRoomNightlyExcl,
+      price_per_night_incl: roomsHaveAnyPrice ? r.price_per_night_incl : oneRoomNightlyIncl,
+    }));
+
+    // Multi-room totals: sum per-room nightly prices, multiplied by nights.
+    const sumNightlyExcl = rooms.reduce((s, r) => s + (r.price_per_night_excl || 0), 0);
+    const sumNightlyIncl = rooms.reduce((s, r) => s + (r.price_per_night_incl || r.price_per_night_excl || 0), 0);
+    const totalExcl = Math.round(sumNightlyExcl * nights * 100) / 100;
+    const totalIncl = Math.round(sumNightlyIncl * nights * 100) / 100;
     const baseName = (service.name || "").replace(/^Check-in · |^Check-out · |^Alojamiento · /, "");
+    const numRooms = rooms.length;
+    const noteSummary = sumNightlyIncl
+      ? `${nights} noches × ${numRooms} hab${numRooms === 1 ? "" : "s"} × €${(sumNightlyIncl / Math.max(1, numRooms)).toFixed(2)}/hab/noche`
+      : "";
 
     const newDays = (itn.days || []).map((d) => {
       // Strip any previous spread for THIS acc_id (idempotent re-runs),
@@ -324,25 +356,25 @@ export default function ItineraryBuilder() {
                   : `Alojamiento · ${baseName}`;
 
       const matrixIdx = filtered.findIndex((s) => s.service_id === service.service_id);
+      // Per-night carrier price uses the room-sum (NOT the one-room price), so
+      // qty * unit_price = nights * Σ(rooms) — the user reported bug.
       if (matrixIdx !== -1) {
-        // Mutate the user's original service row IN PLACE.
         const updated = {
           ...filtered[matrixIdx],
           acc_id: accId,
           type: "alojamiento",
           name: label,
           quantity: isCheckIn ? nights : 0,
-          unit_price_tax_excl: isCheckIn ? nightlyExcl : 0,
-          unit_price_tax_incl: isCheckIn ? nightlyIncl : 0,
-          unit_price: isCheckIn ? nightlyIncl : 0,
+          unit_price_tax_excl: isCheckIn ? sumNightlyExcl : 0,
+          unit_price_tax_incl: isCheckIn ? sumNightlyIncl : 0,
+          unit_price: isCheckIn ? sumNightlyIncl : 0,
           currency: "EUR",
-          notes: isCheckIn && nightlyIncl ? `${nights} noches × ${nightlyIncl}€` : "",
+          notes: isCheckIn ? noteSummary : "",
         };
         const services = [...filtered];
         services[matrixIdx] = updated;
         return { ...d, services };
       }
-      // Other days: append a fresh service tagged with the acc_id.
       return {
         ...d,
         services: [
@@ -355,24 +387,25 @@ export default function ItineraryBuilder() {
             name: label,
             provider_name: service.provider_name || null,
             quantity: isCheckIn ? nights : 0,
-            unit_price_tax_excl: isCheckIn ? nightlyExcl : 0,
-            unit_price_tax_incl: isCheckIn ? nightlyIncl : 0,
-            unit_price: isCheckIn ? nightlyIncl : 0,
+            unit_price_tax_excl: isCheckIn ? sumNightlyExcl : 0,
+            unit_price_tax_incl: isCheckIn ? sumNightlyIncl : 0,
+            unit_price: isCheckIn ? sumNightlyIncl : 0,
             currency: "EUR",
-            notes: isCheckIn && nightlyIncl ? `${nights} noches × ${nightlyIncl}€` : "",
+            notes: isCheckIn ? noteSummary : "",
           },
         ],
       };
     });
 
-    // Upsert the parent accommodation in the summary list.
-    const accs = [...(itn.accommodations || [])];
+    // Upsert the parent accommodation in the summary list (now with rooms).
+    const accs = [...accsBefore];
     const existingIdx = accs.findIndex((a) => a.acc_id === accId);
     const accRow = {
       acc_id: accId,
       name: baseName,
       date_from: dateFrom,
       date_to: dateTo,
+      rooms,
       price_tax_excl: totalExcl,
       price_tax_incl: totalIncl,
       price: totalIncl,
@@ -1118,7 +1151,9 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
   };
 
   // Room CRUD on an accommodation. After any change we re-derive the
-  // accommodation aggregate totals so the cost summary and PVP stay consistent.
+  // accommodation aggregate totals so the cost summary and PVP stay consistent,
+  // AND we re-propagate the new per-night sum to the Check-in service in the
+  // days (so the day matrix and the sumario always agree).
   const updateRooms = (idx, newRooms) => {
     const accs = [...(itn.accommodations || [])];
     const acc = { ...accs[idx], rooms: newRooms };
@@ -1129,7 +1164,35 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
       acc.price = acc.price_tax_incl;
     }
     accs[idx] = acc;
-    schedSave({ ...itn, accommodations: accs });
+    // Sync the corresponding Check-in service row, if any. The Check-in row
+    // (acc_id matches, qty > 0) carries the price for the whole stay: qty=nights,
+    // unit_price=Σ(rooms per night). Other days (qty=0) just show the label.
+    const sumIncl = (newRooms || []).reduce((s, r) => s + (r.price_per_night_incl || r.price_per_night_excl || 0), 0);
+    const sumExcl = (newRooms || []).reduce((s, r) => s + (r.price_per_night_excl || r.price_per_night_incl || 0), 0);
+    const nights = totals?.nights || nightsBetween(acc.date_from, acc.date_to) || 1;
+    const numRooms = (newRooms || []).length;
+    const noteSummary = sumIncl
+      ? `${nights} noches × ${numRooms} hab${numRooms === 1 ? "" : "s"} × €${(sumIncl / Math.max(1, numRooms)).toFixed(2)}/hab/noche`
+      : "";
+    const newDays = (itn.days || []).map((d) => ({
+      ...d,
+      services: (d.services || []).map((s) => {
+        if (s.acc_id !== acc.acc_id) return s;
+        const isCarrier = (s.name || "").startsWith("Check-in") || (s.quantity || 0) > 0;
+        if (isCarrier) {
+          return {
+            ...s,
+            quantity: nights,
+            unit_price_tax_excl: sumExcl,
+            unit_price_tax_incl: sumIncl,
+            unit_price: sumIncl,
+            notes: noteSummary,
+          };
+        }
+        return s;
+      }),
+    }));
+    schedSave({ ...itn, accommodations: accs, days: newDays });
   };
 
   const addRoom = (idx) => {
