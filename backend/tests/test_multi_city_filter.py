@@ -10,12 +10,17 @@ Run:  cd /app && python -m backend.tests.test_multi_city_filter
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
+from pathlib import Path
 
 import httpx
+from dotenv import dotenv_values
 
+# Load TEST_ADMIN_TOKEN from backend/.env so tests don't depend on shell env.
+_env = dotenv_values(Path(__file__).resolve().parent.parent / ".env")
 BACKEND_URL = "http://127.0.0.1:8001"
-ADMIN_TOKEN = "3rrWWDXfC1ze9MEHqZzbC0eQK3nq29wClvsJPIMsQhc"
+ADMIN_TOKEN = os.environ.get("TEST_ADMIN_TOKEN") or _env.get("TEST_ADMIN_TOKEN", "")
 HEADERS = {"Cookie": f"session_token={ADMIN_TOKEN}"}
 
 

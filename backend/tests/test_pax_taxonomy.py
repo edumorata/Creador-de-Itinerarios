@@ -45,9 +45,10 @@ def test_taxonomy_strict():
 
 
 def test_experience_pax_default():
-    """Experience.pax defaults to 2 (most common booking pattern)."""
+    """Experience.pax defaults to 1 (per-person pricing — the most common case).
+    Group-priced services like private tours/transfers explicitly set pax > 1."""
     e = Experience(title="Tapas tour", provider_id="prov_xxx")
-    assert e.pax == 2, f"expected default pax=2, got {e.pax}"
+    assert e.pax == 1, f"expected default pax=1, got {e.pax}"
     print(f"  · ✅ Experience default pax = {e.pax}")
 
 

@@ -132,10 +132,9 @@ export default function ItineraryBuilder() {
         const hit = (data || []).find((h) => (h.name || "").toLowerCase() === hotelName.toLowerCase())
                  || (data || [])[0];
         if (hit && hit.city) city = hit.city;
-      } catch (e) {
+      } catch (_e) {
         // Hotel-name lookup is best-effort — falls through to the day-plan
         // city detection if /api/hotels fails (offline, rate-limited, etc.).
-        console.debug("hotel city lookup failed (using fallback)", e?.message);
       }
     }
     if (!city) {
@@ -1562,8 +1561,8 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
             {overlaps.length === 1 ? "Solapamiento detectado en alojamientos" : `${overlaps.length} solapamientos detectados en alojamientos`}
           </div>
           <ul className="list-disc pl-5 space-y-0.5 text-[12px]">
-            {overlaps.map((o, i) => (
-              <li key={i}>
+            {overlaps.map((o) => (
+              <li key={`${o.a.acc_id}-${o.b.acc_id}`}>
                 <span className="font-semibold">{o.a.name}</span> ({o.a.date_from} → {o.a.date_to})
                 {" "}solapa con{" "}
                 <span className="font-semibold">{o.b.name}</span> ({o.b.date_from} → {o.b.date_to})
@@ -1747,7 +1746,7 @@ function RoomConfigEditor({ config, numTravelers, onChange }) {
     onChange(next);
   };
   const remove = (i) => onChange(list.filter((_, ii) => ii !== i));
-  const add = () => onChange([...list, { room_type: "doble", pax: 2, quantity: 1 }]);
+  const add = () => onChange([...list, { cfg_id: uid("cfg"), room_type: "doble", pax: 2, quantity: 1 }]);
   return (
     <div className="mb-3 border border-clay-300 bg-clay-50 px-3 py-2" data-testid="room-config-editor">
       <div className="flex items-center gap-2 mb-2">
@@ -1762,8 +1761,13 @@ function RoomConfigEditor({ config, numTravelers, onChange }) {
         </span>
       </div>
       <div className="flex flex-wrap gap-2 items-center">
-        {list.map((r, i) => (
-          <div key={i} className="inline-flex items-center gap-1 bg-white border border-clay-300 px-2 py-1 text-xs" data-testid={`room-config-${i}`}>
+        {list.map((r, i) => {
+          // Use a stable per-item id if present, else compose from content+index.
+          // The composed key is good enough because reorders aren't supported here
+          // (items are only appended or removed) — but a generated id is preferable.
+          const k = r.cfg_id || `cfg-${i}-${r.room_type}-${r.pax}`;
+          return (
+          <div key={k} className="inline-flex items-center gap-1 bg-white border border-clay-300 px-2 py-1 text-xs" data-testid={`room-config-${i}`}>
             <input type="number" min="1" max="20" value={r.quantity || 1} onChange={(e) => update(i, { quantity: parseInt(e.target.value || "1", 10) })} className="w-9 text-center bg-transparent" title="Cantidad"/>
             <span className="text-clay-500">×</span>
             <select value={r.room_type} onChange={(e) => update(i, { room_type: e.target.value })} className="bg-transparent">
@@ -1774,7 +1778,7 @@ function RoomConfigEditor({ config, numTravelers, onChange }) {
             <span className="text-clay-500">pax</span>
             <button onClick={() => remove(i)} className="text-clay-400 hover:text-destructive ml-1" title="Quitar"><X size={11}/></button>
           </div>
-        ))}
+        );})}
         <button onClick={add} className="text-[11px] inline-flex items-center gap-1 px-2 py-1 border border-dashed border-clay-400 text-clay-700 hover:text-terracotta hover:border-terracotta" data-testid="add-room-config">
           <Plus size={11}/> Tipo de habitación
         </button>
@@ -1847,7 +1851,7 @@ function OrientationModal({ city, hotelName, checkin, checkout, adults, busy, da
               <div className="mt-3 text-xs text-clay-700">
                 <div className="smallcaps mb-1">Hoteles vistos en histórico</div>
                 <div className="flex flex-wrap gap-1">
-                  {td.sample_hotels.slice(0,8).map((h,i) => (<span key={i} className="px-2 py-0.5 bg-clay-100 border border-clay-300">{h.name}</span>))}
+                  {td.sample_hotels.slice(0,8).map((h) => (<span key={h.name} className="px-2 py-0.5 bg-clay-100 border border-clay-300">{h.name}</span>))}
                 </div>
               </div>
             )}
@@ -1856,8 +1860,8 @@ function OrientationModal({ city, hotelName, checkin, checkout, adults, busy, da
         {!busy && ex && (
           <div className="border border-clay-300 p-3 text-xs">
             <div className="smallcaps mb-1">Expedia.es {ex.blocked ? "(bloqueado por anti-bot)" : (ex.ok ? "" : "(sin resultados)")}</div>
-            {ex.ok && (ex.results || []).slice(0,4).map((h, i) => (
-              <div key={i} className="flex items-center justify-between py-1 border-t border-clay-200">
+            {ex.ok && (ex.results || []).slice(0,4).map((h) => (
+              <div key={h.name} className="flex items-center justify-between py-1 border-t border-clay-200">
                 <div className="truncate">{h.name}</div>
                 <div className="tabular font-semibold ml-3">€ {Math.round(h.price_per_night_eur)}/n</div>
               </div>
@@ -1903,9 +1907,8 @@ function FxConverter({ fx, setFx, totals }) {
     try {
       const { data } = await api.get("/fx/rate", { params: { refresh: true } });
       if (data?.rate) setFx({ rate: Number(data.rate), source: data.source, date: data.date });
-    } catch (e) {
+    } catch (_e) {
       // FX refresh is best-effort; we keep showing the previously cached rate.
-      console.debug("FX refresh failed", e?.message);
     } finally {
       setBusy(false);
     }

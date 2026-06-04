@@ -22,7 +22,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 ENV = dotenv_values(Path(__file__).resolve().parent.parent / ".env")
 BACKEND_URL = "http://127.0.0.1:8001"
-ADMIN_TOKEN = "3rrWWDXfC1ze9MEHqZzbC0eQK3nq29wClvsJPIMsQhc"
+ADMIN_TOKEN = os.environ.get("TEST_ADMIN_TOKEN") or ENV.get("TEST_ADMIN_TOKEN", "")
 HEADERS = {"Cookie": f"session_token={ADMIN_TOKEN}"}
 
 
