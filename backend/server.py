@@ -48,7 +48,7 @@ from prompts import SYSTEM_PROMPT_GENERATE
 from models import (
     User, AllowedEmail, AllowedEmailCreate,
     Provider, ProviderCreate, ProviderUpdate,
-    Experience, ExperienceCreate, ExperienceUpdate,
+    Experience, ExperienceCreate, ExperienceUpdate, ExperienceChange,
     Hotel, HotelCreate, HotelUpdate,
     ItineraryService, ItineraryDay, Accommodation, Traveler,
     Itinerary, ItineraryUpsert,
@@ -545,9 +545,14 @@ async def create_experience(payload: ExperienceCreate, _: Annotated[User, Depend
 async def update_experience(
     experience_id: str,
     payload: ExperienceUpdate,
-    _: Annotated[User, Depends(current_user)],
+    user: Annotated[User, Depends(current_user)],
+    source: str = Query("manual", description="Where the edit came from: manual|itinerary|csv_import"),
 ):
     patch = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    # Load the BEFORE snapshot so we can compute a diff for the audit log.
+    before = await db.experiences.find_one({"experience_id": experience_id}, {"_id": 0})
+    if not before:
+        raise HTTPException(status_code=404, detail="Not found")
     if "provider_id" in patch:
         prov = await db.providers.find_one({"provider_id": patch["provider_id"]}, {"_id": 0})
         if not prov:
@@ -560,19 +565,46 @@ async def update_experience(
         patch["price_tax_incl"] = patch["price"]
     # Resolve current country if not in patch (to know whether IVA applies)
     if any(k in patch for k in ("price_tax_excl", "price_tax_incl", "price", "country")):
-        current = await db.experiences.find_one({"experience_id": experience_id}, {"_id": 0, "country": 1, "price_tax_excl": 1, "price_tax_incl": 1})
-        if current:
-            merged = {**current, **patch}
-            _force_no_vat_outside_spain(merged)
-            patch["price_tax_incl"] = merged["price_tax_incl"]
-            patch["price_tax_excl"] = merged["price_tax_excl"]
-            patch["price"] = merged["price_tax_incl"]
+        merged = {**before, **patch}
+        _force_no_vat_outside_spain(merged)
+        patch["price_tax_incl"] = merged["price_tax_incl"]
+        patch["price_tax_excl"] = merged["price_tax_excl"]
+        patch["price"] = merged["price_tax_incl"]
+    # Build diff of fields that actually changed (skip `price` alias to avoid noise).
+    tracked = ("title", "description", "type", "country", "city", "provider_id", "provider_name",
+               "price_tax_excl", "price_tax_incl", "pax", "currency", "notes")
+    diff = {}
+    for k in tracked:
+        if k in patch and before.get(k) != patch.get(k):
+            diff[k] = {"from": before.get(k), "to": patch.get(k)}
     if patch:
         await db.experiences.update_one({"experience_id": experience_id}, {"$set": patch})
+    # Persist audit-log entry only when something materially changed.
+    if diff:
+        await db.experience_changes.insert_one(ExperienceChange(
+            experience_id=experience_id,
+            user_email=getattr(user, "email", None),
+            user_name=getattr(user, "name", None) or getattr(user, "email", None),
+            source=source,
+            diff=diff,
+        ).model_dump())
     doc = await db.experiences.find_one({"experience_id": experience_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
     return doc
+
+
+@api.get("/experiences/{experience_id}/history")
+async def experience_history(
+    experience_id: str,
+    _: Annotated[User, Depends(current_user)],
+    limit: int = Query(50, le=200),
+):
+    """Return the change history for an experience (most recent first)."""
+    rows = await db.experience_changes.find(
+        {"experience_id": experience_id}, {"_id": 0}
+    ).sort("created_at", -1).limit(limit).to_list(limit)
+    return rows
 
 
 @api.delete("/experiences/{experience_id}")

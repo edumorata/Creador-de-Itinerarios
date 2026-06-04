@@ -151,6 +151,20 @@ class ExperienceUpdate(BaseModel):
     notes: Optional[str] = None
 
 
+class ExperienceChange(BaseModel):
+    """One audit-log entry tracking a change to an experience's price/pax/etc.
+    Stored in the `experience_changes` collection, queryable by experience_id.
+    Only fields that actually changed are recorded in `diff`."""
+    model_config = ConfigDict(extra="ignore")
+    change_id: str = Field(default_factory=lambda: new_id("chg"))
+    experience_id: str
+    user_email: Optional[str] = None  # who made the change
+    user_name: Optional[str] = None
+    source: str = "manual"  # "manual" | "itinerary" | "csv_import"
+    diff: dict = Field(default_factory=dict)  # {field: {"from": v_old, "to": v_new}}
+    created_at: str = Field(default_factory=now_iso)
+
+
 # ---------------------------------------------------------------------------
 # Hotels
 # ---------------------------------------------------------------------------

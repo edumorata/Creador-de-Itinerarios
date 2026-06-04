@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Plus, Search, Trash2, Pencil, Upload, X, Server } from "lucide-react";
+import { Plus, Search, Trash2, Pencil, Upload, X, Server, History, Check } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -27,10 +27,15 @@ export default function Experiences() {
   const [filterType, setFilterType] = useState("");
   const [filterPax, setFilterPax] = useState("");
   const [editing, setEditing] = useState(null);
+  const [historyOf, setHistoryOf] = useState(null);
   const [importOpen, setImportOpen] = useState(false);
   const [csvUploadOpen, setCsvUploadOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [bulkBusy, setBulkBusy] = useState(false);
+  // Per-row inline edit buffer keyed by experience_id. When non-null the row
+  // renders as inputs; pressing Enter / clicking the check saves; Esc cancels.
+  const [draftRow, setDraftRow] = useState({});
+  const [savingRow, setSavingRow] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -71,6 +76,30 @@ export default function Experiences() {
   const del = async (id) => {
     if (!window.confirm("¿Eliminar esta experiencia?")) return;
     await api.delete(`/experiences/${id}`); load();
+  };
+
+  // Inline-edit helpers — buffer the draft per row, then PATCH on save.
+  const startInline = (e) => setDraftRow({ [e.experience_id]: {
+    title: e.title, type: e.type, city: e.city || "",
+    pax: e.pax || 2, price_tax_excl: e.price_tax_excl || 0,
+    price_tax_incl: e.price_tax_incl || e.price || 0,
+  } });
+  const cancelInline = () => setDraftRow({});
+  const patchInline = (id, patch) => setDraftRow((d) => ({ ...d, [id]: { ...d[id], ...patch } }));
+  const saveInline = async (id) => {
+    const d = draftRow[id]; if (!d) return;
+    setSavingRow(id);
+    try {
+      await api.patch(`/experiences/${id}`, {
+        ...d,
+        price: d.price_tax_incl,  // keep legacy alias in sync
+      });
+      toast.success("Guardado");
+      cancelInline();
+      load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Error al guardar");
+    } finally { setSavingRow(null); }
   };
 
   return (
@@ -161,24 +190,155 @@ export default function Experiences() {
           <div className="p-6 text-sm text-clay-700">Cargando…</div>
         ) : items.length === 0 ? (
           <div className="p-10 text-center text-sm text-clay-700" data-testid="exp-empty">No hay experiencias. Crea una nueva o importa un Excel de proveedor.</div>
-        ) : items.map((e) => (
-          <div key={e.experience_id} className="grid grid-cols-[1.5fr_1fr_0.7fr_1fr_0.5fr_0.6fr_0.6fr_auto] border-t border-clay-300 text-sm hover:bg-clay-50 transition-colors" data-testid={`exp-row-${e.experience_id}`}>
+        ) : items.map((e) => {
+          const draft = draftRow[e.experience_id];
+          const editingInline = !!draft;
+          const view = editingInline ? draft : e;
+          const onKey = (ev) => {
+            if (ev.key === "Enter") { ev.preventDefault(); saveInline(e.experience_id); }
+            if (ev.key === "Escape") { ev.preventDefault(); cancelInline(); }
+          };
+          return (
+          <div key={e.experience_id}
+               className={`grid grid-cols-[1.5fr_1fr_0.7fr_1fr_0.5fr_0.6fr_0.6fr_auto] border-t border-clay-300 text-sm transition-colors ${editingInline ? "bg-terracotta/5" : "hover:bg-clay-50"}`}
+               data-testid={`exp-row-${e.experience_id}`}>
+            {/* Title */}
             <div className="px-4 py-3">
-              <div className="font-semibold truncate">{e.title}</div>
-              {e.description && <div className="text-[11px] text-clay-700 truncate">{e.description}</div>}
+              {editingInline ? (
+                <input
+                  data-testid={`inline-title-${e.experience_id}`}
+                  className="w-full bg-white border border-clay-300 px-2 py-1 text-sm outline-none focus:border-terracotta"
+                  value={view.title || ""}
+                  onChange={(ev) => patchInline(e.experience_id, { title: ev.target.value })}
+                  onKeyDown={onKey} autoFocus
+                />
+              ) : (
+                <>
+                  <div className="font-semibold truncate" title={e.title}>{e.title}</div>
+                  {e.description && <div className="text-[11px] text-clay-700 truncate">{e.description}</div>}
+                </>
+              )}
             </div>
-            <div className="px-4 py-3 text-clay-700 truncate">{e.provider_name}</div>
-            <div className="px-4 py-3"><span className={`inline-block px-1.5 py-0.5 text-[9px] tracking-widest uppercase ${TYPE_BADGE[e.type] || "bg-clay-400 text-white"}`}>{e.type}</span></div>
-            <div className="px-4 py-3 text-clay-700">{[e.city, e.country].filter(Boolean).join(" · ") || "—"}</div>
-            <div className="px-4 py-3 text-center tabular font-semibold" data-testid={`pax-${e.experience_id}`}>{e.pax || 2}</div>
-            <div className="px-4 py-3 text-right tabular text-clay-700">{Number(e.price_tax_excl || 0).toLocaleString("es-ES")}</div>
-            <div className="px-4 py-3 text-right tabular font-semibold">{Number(e.price_tax_incl || e.price || 0).toLocaleString("es-ES")}</div>
+            {/* Provider — read-only inline (full edit via modal) */}
+            <div className="px-4 py-3 text-clay-700 truncate" title={e.provider_name}>{e.provider_name}</div>
+            {/* Type */}
+            <div className="px-4 py-3">
+              {editingInline ? (
+                <select
+                  data-testid={`inline-type-${e.experience_id}`}
+                  className={`text-[10px] tracking-widest uppercase px-1.5 py-1 ${TYPE_BADGE[view.type] || "bg-clay-400 text-white"} border-none outline-none`}
+                  value={view.type}
+                  onChange={(ev) => patchInline(e.experience_id, { type: ev.target.value })}
+                  onKeyDown={onKey}
+                >
+                  {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              ) : (
+                <span className={`inline-block px-1.5 py-0.5 text-[9px] tracking-widest uppercase ${TYPE_BADGE[e.type] || "bg-clay-400 text-white"}`}>{e.type}</span>
+              )}
+            </div>
+            {/* City / country */}
+            <div className="px-4 py-3 text-clay-700">
+              {editingInline ? (
+                <input
+                  data-testid={`inline-city-${e.experience_id}`}
+                  className="w-full bg-white border border-clay-300 px-2 py-1 text-sm outline-none focus:border-terracotta"
+                  value={view.city || ""}
+                  onChange={(ev) => patchInline(e.experience_id, { city: ev.target.value })}
+                  onKeyDown={onKey}
+                  placeholder="Ciudad"
+                />
+              ) : ([e.city, e.country].filter(Boolean).join(" · ") || "—")}
+            </div>
+            {/* Pax */}
+            <div className="px-4 py-3 text-center" data-testid={`pax-${e.experience_id}`}>
+              {editingInline ? (
+                <input
+                  data-testid={`inline-pax-${e.experience_id}`}
+                  type="number" min={1} max={50}
+                  className="w-14 bg-white border border-clay-300 px-1 py-1 text-sm tabular text-center outline-none focus:border-terracotta"
+                  value={view.pax || 2}
+                  onChange={(ev) => patchInline(e.experience_id, { pax: Math.max(1, parseInt(ev.target.value || "1", 10)) })}
+                  onKeyDown={onKey}
+                />
+              ) : (
+                <span className="tabular font-semibold">{e.pax || 2}</span>
+              )}
+            </div>
+            {/* Sin IVA */}
+            <div className="px-4 py-3 text-right">
+              {editingInline ? (
+                <input
+                  data-testid={`inline-excl-${e.experience_id}`}
+                  type="number" min={0} step={0.01}
+                  className="w-24 bg-white border border-clay-300 px-1 py-1 text-sm tabular text-right outline-none focus:border-terracotta"
+                  value={view.price_tax_excl || 0}
+                  onChange={(ev) => patchInline(e.experience_id, { price_tax_excl: parseFloat(ev.target.value || "0") })}
+                  onKeyDown={onKey}
+                />
+              ) : (
+                <span className="tabular text-clay-700">{Number(e.price_tax_excl || 0).toLocaleString("es-ES")}</span>
+              )}
+            </div>
+            {/* Con IVA */}
+            <div className="px-4 py-3 text-right">
+              {editingInline ? (
+                <input
+                  data-testid={`inline-incl-${e.experience_id}`}
+                  type="number" min={0} step={0.01}
+                  className="w-24 bg-white border border-clay-300 px-1 py-1 text-sm tabular text-right outline-none focus:border-terracotta"
+                  value={view.price_tax_incl || 0}
+                  onChange={(ev) => patchInline(e.experience_id, { price_tax_incl: parseFloat(ev.target.value || "0") })}
+                  onKeyDown={onKey}
+                />
+              ) : (
+                <span className="tabular font-semibold">{Number(e.price_tax_incl || e.price || 0).toLocaleString("es-ES")}</span>
+              )}
+            </div>
+            {/* Actions */}
             <div className="px-4 py-3 flex items-center justify-end gap-1">
-              <button onClick={() => setEditing({ ...e })} className="p-1.5 hover:bg-clay-200" data-testid={`edit-${e.experience_id}`}><Pencil size={14}/></button>
-              <button onClick={() => del(e.experience_id)} className="p-1.5 hover:bg-clay-200 text-destructive"><Trash2 size={14}/></button>
+              {editingInline ? (
+                <>
+                  <button
+                    data-testid={`inline-save-${e.experience_id}`}
+                    onClick={() => saveInline(e.experience_id)}
+                    disabled={savingRow === e.experience_id}
+                    className="p-1.5 hover:bg-pine/10 text-pine disabled:opacity-50"
+                    title="Guardar (Enter)"
+                  ><Check size={14}/></button>
+                  <button
+                    data-testid={`inline-cancel-${e.experience_id}`}
+                    onClick={cancelInline}
+                    className="p-1.5 hover:bg-clay-200"
+                    title="Cancelar (Esc)"
+                  ><X size={14}/></button>
+                </>
+              ) : (
+                <>
+                  <button
+                    data-testid={`inline-start-${e.experience_id}`}
+                    onClick={() => startInline(e)}
+                    className="p-1.5 hover:bg-clay-200"
+                    title="Editar en línea"
+                  ><Pencil size={14}/></button>
+                  <button
+                    data-testid={`history-${e.experience_id}`}
+                    onClick={() => setHistoryOf(e)}
+                    className="p-1.5 hover:bg-clay-200"
+                    title="Historial de cambios"
+                  ><History size={14}/></button>
+                  <button
+                    onClick={() => setEditing({ ...e })}
+                    className="p-1.5 hover:bg-clay-200"
+                    data-testid={`edit-${e.experience_id}`}
+                    title="Editar todo (modal)"
+                  ><Server size={14}/></button>
+                  <button onClick={() => del(e.experience_id)} className="p-1.5 hover:bg-clay-200 text-destructive" title="Eliminar"><Trash2 size={14}/></button>
+                </>
+              )}
             </div>
           </div>
-        ))}
+        );})}
       </div>
 
       {editing && (
@@ -212,6 +372,7 @@ export default function Experiences() {
 
       {importOpen && <ImportModal providers={providers} onClose={() => setImportOpen(false)} onDone={() => { setImportOpen(false); load(); }} />}
       {csvUploadOpen && <CsvUploadModal onClose={() => setCsvUploadOpen(false)} onDone={() => { setCsvUploadOpen(false); load(); }} />}
+      {historyOf && <HistoryModal exp={historyOf} onClose={() => setHistoryOf(null)} />}
     </div>
   );
 }
@@ -351,6 +512,90 @@ function CsvUploadModal({ onClose, onDone }) {
       <div className="flex justify-end gap-2 mt-6">
         <button onClick={onClose} className="px-4 py-2 border border-clay-300 text-sm hover:bg-clay-100">Cerrar</button>
         <button data-testid="csv-upload-submit" onClick={submit} disabled={busy || !file} className="px-4 py-2 bg-terracotta text-white text-sm tracking-wider uppercase hover:bg-terracotta-hover disabled:opacity-50">{busy ? "Importando…" : "Importar"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+
+const FIELD_LABEL = {
+  title: "Título", description: "Descripción", type: "Tipo",
+  country: "País", city: "Ciudad",
+  provider_id: "Proveedor (id)", provider_name: "Proveedor",
+  price_tax_excl: "Precio sin IVA", price_tax_incl: "Precio con IVA",
+  pax: "Pax", currency: "Moneda", notes: "Notas",
+};
+const SOURCE_LABEL = {
+  manual: "Manual (catálogo)",
+  itinerary: "Desde itinerario",
+  csv_import: "Import CSV",
+};
+
+function fmtVal(field, v) {
+  if (v === null || v === undefined || v === "") return "—";
+  if (["price_tax_excl", "price_tax_incl", "price"].includes(field)) {
+    return `€${Number(v).toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+  return String(v);
+}
+
+function fmtDate(iso) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString("es-ES", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  } catch { return iso; }
+}
+
+function HistoryModal({ exp, onClose }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await api.get(`/experiences/${exp.experience_id}/history`);
+        setRows(data);
+      } finally { setLoading(false); }
+    })();
+  }, [exp.experience_id]);
+  return (
+    <Modal title={`Historial · ${exp.title}`} onClose={onClose}>
+      <div className="text-[11px] text-clay-700 mb-3 truncate">
+        <code className="bg-clay-100 px-1">{exp.experience_id}</code> · {exp.provider_name} · {[exp.city, exp.country].filter(Boolean).join(" · ")}
+      </div>
+      {loading ? (
+        <div className="text-sm text-clay-700 py-6">Cargando historial…</div>
+      ) : rows.length === 0 ? (
+        <div data-testid="history-empty" className="py-8 text-center text-sm text-clay-700">
+          Sin cambios registrados todavía. El historial empezará a guardarse desde la próxima edición.
+        </div>
+      ) : (
+        <div className="border border-clay-300 max-h-[60vh] overflow-auto" data-testid="history-list">
+          {rows.map((r, i) => (
+            <div key={r.change_id || i} className="border-b border-clay-200 last:border-0 px-3 py-3 text-sm" data-testid={`history-row-${i}`}>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold">{r.user_name || r.user_email || "—"}</span>
+                  <span className="text-[10px] uppercase tracking-widest px-1.5 py-0.5 bg-clay-100 text-clay-700">{SOURCE_LABEL[r.source] || r.source}</span>
+                </div>
+                <span className="text-[11px] text-clay-700 tabular">{fmtDate(r.created_at)}</span>
+              </div>
+              <div className="space-y-1">
+                {Object.entries(r.diff || {}).map(([field, { from, to }]) => (
+                  <div key={field} className="grid grid-cols-[140px_1fr_24px_1fr] gap-2 items-center text-[12px]">
+                    <span className="text-clay-700 uppercase tracking-widest text-[10px]">{FIELD_LABEL[field] || field}</span>
+                    <span className="text-clay-500 line-through tabular truncate" title={String(from ?? "")}>{fmtVal(field, from)}</span>
+                    <span className="text-clay-400 text-center">→</span>
+                    <span className="font-semibold tabular truncate" title={String(to ?? "")}>{fmtVal(field, to)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex justify-end mt-4">
+        <button onClick={onClose} className="px-4 py-2 border border-clay-300 text-sm hover:bg-clay-100">Cerrar</button>
       </div>
     </Modal>
   );

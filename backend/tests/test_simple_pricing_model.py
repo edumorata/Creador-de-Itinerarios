@@ -63,14 +63,14 @@ def test_transfer_for_three_with_four():
     s = add_experience_to_day(catalog_total_incl=180, catalog_pax=3, num_travelers=4)
     assert s["unit_price_tax_incl"] == 60 and s["quantity"] == 4
     assert s["quantity"] * s["unit_price_tax_incl"] == 240
-    print(f"  · ✅ transfer 3pax × €180 + 4 viajeros → €60 × 4 = €240")
+    print("  · ✅ transfer 3pax × €180 + 4 viajeros → €60 × 4 = €240")
 
 
 def test_single_pax_ticket():
     """Per-person ticket (catalog pax=1) at €25 → €/pax = €25. Trip for 4 → €100."""
     s = add_experience_to_day(catalog_total_incl=25, catalog_pax=1, num_travelers=4)
     assert s["unit_price_tax_incl"] == 25 and s["quantity"] == 4
-    print(f"  · ✅ ticket pax=1 × €25 + 4 → €100")
+    print("  · ✅ ticket pax=1 × €25 + 4 → €100")
 
 
 # --- lodging ------------------------------------------------------------------

@@ -838,7 +838,7 @@ function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, accommoda
       const pax = Math.max(1, parseInt(service.pax || 1, 10));
       const perPaxIncl = service.unit_price_tax_incl || service.unit_price || 0;
       const perPaxExcl = service.unit_price_tax_excl || perPaxIncl;
-      await api.patch(`/experiences/${service.experience_id}`, {
+      await api.patch(`/experiences/${service.experience_id}?source=itinerary`, {
         title: service.name,
         type: service.type,
         pax,
