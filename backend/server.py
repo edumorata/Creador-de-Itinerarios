@@ -486,7 +486,13 @@ async def list_experiences(
     if country:
         flt["country"] = country
     if city:
-        flt["city"] = {"$regex": f"^{city}$", "$options": "i"}
+        # Support comma-separated multi-city filters and silently drop legacy
+        # dash-joined values (e.g. "Madrid-Barcelona") that have no matches.
+        cities = [c.strip() for c in city.split(",") if c.strip() and "-" not in c.strip()]
+        if len(cities) == 1:
+            flt["city"] = {"$regex": f"^{_re.escape(cities[0])}$", "$options": "i"}
+        elif len(cities) > 1:
+            flt["city"] = {"$in": [_re.compile(f"^{_re.escape(c)}$", _re.IGNORECASE) for c in cities]}
     if type:
         flt["type"] = type
     if provider_id:
@@ -1109,24 +1115,29 @@ async def experience_autocomplete(
 
     if type == "alojamiento":
         # Search hotels
-        flt: dict = {}
+        flt_h: dict = {}
         if tokens:
-            flt["$and"] = []
+            flt_h["$and"] = []
             for tok in tokens:
                 safe = _re.escape(tok)
-                flt["$and"].append({
+                flt_h["$and"].append({
                     "$or": [
                         {"name": {"$regex": safe, "$options": "i"}},
                         {"city": {"$regex": safe, "$options": "i"}},
                     ]
                 })
         if city:
-            flt["city"] = {"$regex": f"^{city}$", "$options": "i"}
+            # multi-city support via comma; ignore dash-joined legacy values
+            parts = [p.strip() for p in city.split(",") if p.strip() and "-" not in p.strip()]
+            if len(parts) == 1:
+                flt_h["city"] = {"$regex": f"^{_re.escape(parts[0])}$", "$options": "i"}
+            elif len(parts) > 1:
+                flt_h["city"] = {"$in": [_re.compile(f"^{_re.escape(p)}$", _re.IGNORECASE) for p in parts]}
         if country:
-            flt["country"] = country
+            flt_h["country"] = country
         proj = {"_id": 0, "hotel_id": 1, "name": 1, "city": 1, "country": 1, "tier": 1,
                 "price_per_night_excl": 1, "price_per_night_incl": 1, "currency": 1}
-        items = await db.hotels.find(flt, proj).sort("name", 1).limit(limit).to_list(limit)
+        items = await db.hotels.find(flt_h, proj).sort("name", 1).limit(limit).to_list(limit)
         # Adapt to a service-compatible shape so the frontend can map it uniformly
         return [
             {
@@ -1146,6 +1157,18 @@ async def experience_autocomplete(
         ]
 
     # Default: search experiences
+    # Helper: parse multi-city ("Madrid, Barcelona") and silently drop legacy
+    # dash-joined values that historically never matched anything.
+    def _city_filter(c: Optional[str]) -> Optional[dict]:
+        if not c:
+            return None
+        parts = [p.strip() for p in c.split(",") if p.strip() and "-" not in p.strip()]
+        if not parts:
+            return None
+        if len(parts) == 1:
+            return {"$regex": f"^{_re.escape(parts[0])}$", "$options": "i"}
+        return {"$in": [_re.compile(f"^{_re.escape(p)}$", _re.IGNORECASE) for p in parts]}
+
     flt: dict = {}
     if tokens:
         flt["$and"] = []
@@ -1157,8 +1180,9 @@ async def experience_autocomplete(
                     {"provider_name": {"$regex": safe, "$options": "i"}},
                 ]
             })
-    if city:
-        flt["city"] = {"$regex": f"^{city}$", "$options": "i"}
+    f = _city_filter(city)
+    if f:
+        flt["city"] = f
     if country:
         flt["country"] = country
     if type:

@@ -87,6 +87,16 @@ export default function ItineraryBuilder() {
           services: [],
         }));
       }
+      // Auto-clean legacy city values like "Madrid-Barcelona" or any city
+      // containing a dash — those were dead filters that returned 0 results.
+      // Multi-city is now expressed with commas ("Madrid, Barcelona").
+      let cleaned = false;
+      (data.days || []).forEach((d) => {
+        if (typeof d.city === "string" && d.city.includes("-")) {
+          d.city = ""; cleaned = true;
+        }
+      });
+      if (cleaned) toast.message("Limpieza automática de filtros antiguos de ciudad (formato con guión).");
       setItn(data);
       setActiveDayId(data.days?.[0]?.day_id || null);
     })();
@@ -613,9 +623,9 @@ export default function ItineraryBuilder() {
                       </div>
                     </div>
                     <div className="text-right shrink-0">
-                      <div className="font-semibold tabular text-sm">{fmtEUR(e.price_tax_incl ?? e.price)}</div>
+                      <div className="font-semibold tabular text-sm">{fmtEUR(((e.price_tax_incl ?? e.price ?? 0) / Math.max(1, e.pax || 1)))} <span className="text-[9px] font-normal text-clay-700">/pax</span></div>
                       <div className="text-[10px] text-clay-700 tabular">
-                        sin IVA {fmtEUR(e.price_tax_excl)} · <b>{e.pax || 2} pax</b>
+                        total {fmtEUR(e.price_tax_incl ?? e.price)} · <b>{e.pax || 2} pax</b>
                       </div>
                       <span className={`inline-block mt-1 px-1.5 py-0.5 text-[9px] tracking-widest uppercase ${TYPE_BADGE[e.type] || BADGE_FALLBACK}`}>{e.type}</span>
                     </div>
@@ -659,13 +669,32 @@ function DayBlock({ day, idx, active, numTravelers, cityFacets, markup, onActiva
               list={`day-cities-${idx}`}
               value={day.city || ""}
               onChange={(e) => onUpdateDay({ city: e.target.value })}
-              placeholder="Ciudad (prefiltro)"
+              placeholder="Ciudad o ciudades, separadas por coma"
               onClick={(e) => e.stopPropagation()}
-              className="bg-transparent outline-none border-b border-transparent focus:border-terracotta text-sm w-40"
+              title="Una o más ciudades separadas por coma. El buscador combina los resultados de todas."
+              className="bg-transparent outline-none border-b border-transparent focus:border-terracotta text-sm w-56"
             />
             <datalist id={`day-cities-${idx}`}>
               {(cityFacets || []).map((c) => <option key={c} value={c} />)}
             </datalist>
+            {day.city ? (
+              <button
+                type="button"
+                data-testid={`day-city-clear-${idx}`}
+                onClick={(e) => { e.stopPropagation(); onUpdateDay({ city: "" }); }}
+                className="ml-1 px-1.5 py-0.5 text-[9px] uppercase tracking-wider bg-clay-100 hover:bg-terracotta hover:text-white"
+                title="Quitar filtro de ciudad — buscar por todo el país"
+              >
+                Todo el país
+              </button>
+            ) : (
+              <span
+                className="ml-1 px-1.5 py-0.5 text-[9px] uppercase tracking-wider bg-pine/20 text-pine"
+                title="Sin filtro de ciudad — el buscador muestra resultados de cualquier ciudad"
+              >
+                Sin filtro
+              </span>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -916,15 +945,33 @@ function AutocompleteInput({ value, dayCity, serviceType, pax, onTextChange, onP
 
   const search = useCallback(async (text) => {
     const t = (text || "").trim();
-    // Smart search: trigger at 3+ chars OR when there is a day city or a service type pre-filter
-    if (t.length < 3 && !dayCity && !serviceType) { setResults([]); return; }
-    const params = {};
-    if (t) params.q = t;
-    if (dayCity) params.city = dayCity;
-    if (serviceType) params.type = serviceType;
-    if (pax) params.pax = pax;
+    // Multiple cities supported via comma: "Sorrento, Positano" → two parallel
+    // queries merged and de-duplicated. An empty `dayCity` means "no filter".
+    const cities = (dayCity || "")
+      .split(",").map((c) => c.trim()).filter(Boolean);
+    if (t.length < 3 && cities.length === 0 && !serviceType) { setResults([]); return; }
+    const baseParams = {};
+    if (t) baseParams.q = t;
+    if (serviceType) baseParams.type = serviceType;
+    if (pax) baseParams.pax = pax;
     try {
-      const { data } = await api.get("/experiences/autocomplete", { params });
+      let data = [];
+      if (cities.length === 0) {
+        const r = await api.get("/experiences/autocomplete", { params: baseParams });
+        data = r.data;
+      } else {
+        const responses = await Promise.all(
+          cities.map((c) => api.get("/experiences/autocomplete", { params: { ...baseParams, city: c } }))
+        );
+        const seen = new Set();
+        for (const r of responses) {
+          for (const it of r.data) {
+            if (!seen.has(it.experience_id)) {
+              seen.add(it.experience_id); data.push(it);
+            }
+          }
+        }
+      }
       setResults(data); setHighlight(0);
     } catch (e) { setResults([]); }
   }, [dayCity, serviceType, pax]);
@@ -963,8 +1010,11 @@ function AutocompleteInput({ value, dayCity, serviceType, pax, onTextChange, onP
         placeholder={dayCity ? `Buscar en ${dayCity}…` : "3+ letras para sugerencias…"}
       />
       {open && results.length > 0 && (
-        <div className="absolute left-0 right-0 top-full mt-1 z-40 bg-white border border-clay-300 shadow-lg max-h-72 overflow-auto" data-testid="svc-autocomplete">
-          {results.map((r, i) => (
+        <div className="absolute left-0 top-full mt-1 z-40 bg-white border border-clay-300 shadow-lg max-h-80 overflow-auto w-[560px] max-w-[90vw]" data-testid="svc-autocomplete">
+          {results.map((r, i) => {
+            const total = r.price_tax_incl ?? r.price ?? 0;
+            const perPax = (r.pax || 1) > 0 ? total / r.pax : total;
+            return (
             <button
               key={r.experience_id}
               data-testid={`ac-${r.experience_id}`}
@@ -972,23 +1022,21 @@ function AutocompleteInput({ value, dayCity, serviceType, pax, onTextChange, onP
               onMouseEnter={() => setHighlight(i)}
               className={`w-full text-left px-3 py-2 text-sm border-b border-clay-200 last:border-0 ${i === highlight ? "bg-terracotta/10" : "hover:bg-clay-50"}`}
             >
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="font-semibold truncate">{r.title}</div>
-                  <div className="text-[11px] text-clay-700 truncate">{r.provider_name} · {[r.city, r.country].filter(Boolean).join(" · ")}</div>
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold">{r.title}</div>
+                  <div className="text-[11px] text-clay-700">{r.provider_name} · {[r.city, r.country].filter(Boolean).join(" · ")}</div>
                 </div>
                 <div className="text-right shrink-0 text-xs">
-                  <div className="tabular font-semibold">{fmtEUR(r.price_tax_incl ?? r.price)}</div>
-                  <div className="text-[9px] text-clay-700 tabular">
-                    <span className={pax && (r.pax || 2) !== pax ? "text-amber-700 font-semibold" : ""}>
-                      {r.pax || 2} pax
-                    </span>
+                  <div className="tabular font-semibold">{fmtEUR(perPax)} <span className="text-[10px] font-normal text-clay-700">/pax</span></div>
+                  <div className="text-[10px] text-clay-700 tabular">
+                    total {fmtEUR(total)} · <span className={pax && (r.pax || 2) !== pax ? "text-amber-700 font-semibold" : ""}>{r.pax || 2} pax</span>
                   </div>
                   <span className={`inline-block mt-0.5 px-1 py-0.5 text-[8px] tracking-widest uppercase ${TYPE_BADGE[r.type] || BADGE_FALLBACK}`}>{r.type}</span>
                 </div>
               </div>
             </button>
-          ))}
+          );})}
         </div>
       )}
     </div>
@@ -1288,20 +1336,71 @@ function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
   // Pick a hotel from the catalogue → fills name, populates rooms with the
   // catalog nightly price, and triggers spread.
   const pickHotel = (idx, hotel) => {
-    const acc = (itn.accommodations || [])[idx];
-    // Apply the catalog nightly price to every existing room. If the
-    // accommodation still has zero rooms (legacy), seed them from the default
-    // config so the user sees a meaningful breakdown.
-    const existing = acc.rooms && acc.rooms.length > 0 ? acc.rooms : buildDefaultRooms();
+    // Single atomic save: build the next accommodation with rooms FILLED IN
+    // from the catalog price, recompute totals from `Σ(rooms × nights)`, then
+    // also spread Check-in/mid/Check-out service rows across the days. Doing
+    // both updates in two separate schedSave() calls causes the second one
+    // to read a stale `itn` and overwrite the rooms changes (this was the
+    // multi-room "no se multiplica por habitaciones" bug).
+    const accs = [...(itn.accommodations || [])];
+    const current = accs[idx] || {};
+    const existing = (current.rooms && current.rooms.length > 0) ? current.rooms : buildDefaultRooms();
     const rooms = existing.map((r) => ({
       ...r,
       price_per_night_excl: hotel.price_per_night_excl || hotel.price_per_night_incl || 0,
       price_per_night_incl: hotel.price_per_night_incl || hotel.price_per_night_excl || 0,
     }));
-    // Update the accommodation row first so updWithSpread sees rooms+totals
-    updateRooms(idx, rooms);
-    // Then trigger the spread with the catalog hotel as the price carrier.
-    updWithSpread(idx, { name: hotel.name }, hotel);
+    // Aggregate per-night across rooms (this is where rooms × catalog price gets multiplied).
+    const nights = nightsBetween(current.date_from, current.date_to) || 1;
+    const sumExcl = rooms.reduce((s, r) => s + (r.price_per_night_excl || 0), 0);
+    const sumIncl = rooms.reduce((s, r) => s + (r.price_per_night_incl || r.price_per_night_excl || 0), 0);
+    const totalExcl = Math.round(sumExcl * nights * 100) / 100;
+    const totalIncl = Math.round(sumIncl * nights * 100) / 100;
+    const newAcc = {
+      ...current,
+      name: hotel.name,
+      rooms,
+      price_tax_excl: totalExcl,
+      price_tax_incl: totalIncl,
+      price: totalIncl,
+    };
+    accs[idx] = newAcc;
+    // Build the per-day spread using the room sum as the per-night carrier price.
+    const dFrom = new Date(newAcc.date_from);
+    const dTo = new Date(newAcc.date_to);
+    let newDays = itn.days || [];
+    if (newAcc.name && !isNaN(dFrom) && !isNaN(dTo) && dTo >= dFrom) {
+      newDays = (itn.days || []).map((d) => {
+        const filtered = (d.services || []).filter((s) => s.acc_id !== newAcc.acc_id);
+        if (!d.date) return { ...d, services: filtered };
+        const dd = new Date(d.date);
+        if (isNaN(dd) || dd < dFrom || dd > dTo) return { ...d, services: filtered };
+        let label;
+        if (dd.getTime() === dFrom.getTime()) label = `Check-in · ${newAcc.name}`;
+        else if (dd.getTime() === dTo.getTime()) label = `Check-out · ${newAcc.name}`;
+        else label = `Alojamiento · ${newAcc.name}`;
+        const isPriceCarrier = dd.getTime() === dFrom.getTime();
+        return {
+          ...d,
+          services: [
+            ...filtered,
+            {
+              service_id: uid("svc"),
+              acc_id: newAcc.acc_id,
+              type: "alojamiento",
+              name: label,
+              provider_name: "",
+              quantity: isPriceCarrier ? nights : 0,
+              unit_price_tax_excl: isPriceCarrier ? sumExcl : 0,
+              unit_price_tax_incl: isPriceCarrier ? sumIncl : 0,
+              unit_price: isPriceCarrier ? sumIncl : 0,
+              currency: hotel.currency || "EUR",
+            },
+          ],
+        };
+      });
+    }
+    schedSave({ ...itn, accommodations: accs, days: newDays });
   };
 
   // Wrap delete to also remove related day services.
