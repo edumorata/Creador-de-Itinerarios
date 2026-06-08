@@ -50,10 +50,10 @@ from models import (
     Provider, ProviderCreate, ProviderUpdate,
     Experience, ExperienceCreate, ExperienceUpdate, ExperienceChange,
     Hotel, HotelCreate, HotelUpdate,
-    ItineraryService, ItineraryDay, Accommodation, Traveler,
+    ItineraryService, ItineraryDay, Accommodation, Room, Traveler,
     Itinerary, ItineraryUpsert,
     TrainingExample, TrainingExampleUpsert, BulkImportJob,
-    ServiceType, HotelTier, TripOutcome, BulkJobStatus,
+    ServiceType, HotelTier, RoomType, TripOutcome, BulkJobStatus,
 )
 
 # ---------------------------------------------------------------------------
@@ -1689,6 +1689,31 @@ def _is_free_day_marker(name: str) -> bool:
     return bool(_FREE_DAY_PATTERN.search(name))
 
 
+# Map the free-form room description Travefy returns ("Classic Roma", "Deluxe
+# River-View Twin", "Superior Room", "Double Executive"…) into the closed
+# enum our DB uses. Order matters — check the more specific keywords first so
+# "Family Suite" lands on "family" instead of "suite".
+def _classify_room_type(raw: Optional[str]) -> RoomType:
+    n = (raw or "").lower()
+    if not n:
+        return "doble"
+    if "family" in n or "familiar" in n:
+        return "family"
+    if "suite" in n:
+        return "suite"
+    if "quad" in n or "cuadruple" in n or "cuádruple" in n:
+        return "cuadruple"
+    if "triple" in n:
+        return "triple"
+    if "twin" in n or "two beds" in n or "two bed" in n or "dos camas" in n:
+        return "twin"
+    if "single" in n or "individual" in n or "solo use" in n or "uso individual" in n:
+        return "single"
+    # Everything else ("Classic Room", "Superior Room", "Deluxe Room",
+    # "Executive Room", "Double", "Junior Deluxe"…) is treated as a double.
+    return "doble"
+
+
 async def _match_experience(name: str, city: Optional[str], num_travelers: int) -> Optional[dict]:
     """Find best matching experience in DB for the given Travefy item name."""
     city = _norm_city(city)
@@ -1871,8 +1896,13 @@ async def _run_travefy_preview_job(job_id: str, url: str):
                     "check_in": h.get("check_in") or d.get("date"),
                     "check_out": h.get("check_out"),
                     "first_day": d.get("day"),
+                    "room_type_raw": h.get("room_type"),
                 })
                 block["check_out"] = h.get("check_out") or d.get("date") or block.get("check_out")
+                # Keep the first non-empty room_type_raw we see (Travefy
+                # repeats the same block across days of the same stay).
+                if not block.get("room_type_raw") and h.get("room_type"):
+                    block["room_type_raw"] = h.get("room_type")
             out_days.append({
                 "day": d.get("day"),
                 "date": d.get("date"),
@@ -1901,6 +1931,8 @@ async def _run_travefy_preview_job(job_id: str, url: str):
                 "check_in": block.get("check_in"),
                 "check_out": block.get("check_out"),
                 "match": match,
+                "room_type_raw": block.get("room_type_raw"),
+                "room_type": _classify_room_type(block.get("room_type_raw")),
             })
 
         trip_name = structured.get("trip_name") or "Itinerario importado"
@@ -2003,6 +2035,20 @@ async def import_travefy_confirm(
             nights = 1
         per_night_excl = float(m.get("price_per_night_excl") or 0)
         per_night_incl = float(m.get("price_per_night_incl") or 0) or per_night_excl
+        # Build one Room with the type Travefy described (or "doble" by default).
+        # Pax-per-room defaults to num_travelers so the smart quantity math
+        # ("nights × rooms") stays correct out of the box. Agent can split
+        # the room layout later in the builder if there are multiple rooms.
+        rtype_raw = (h.get("room_type_raw") or "").strip() or None
+        rtype = h.get("room_type") or _classify_room_type(rtype_raw)
+        room = Room(
+            room_type=rtype,
+            pax=num_travelers,
+            price_per_night_excl=per_night_excl,
+            price_per_night_incl=per_night_incl,
+            currency=m.get("currency") or "EUR",
+            notes=f"Travefy: {rtype_raw}" if rtype_raw else None,
+        )
         acc_out.append(Accommodation(
             date_from=date_from,
             date_to=date_to,
@@ -2011,6 +2057,7 @@ async def import_travefy_confirm(
             price_tax_incl=per_night_incl * nights,
             price=per_night_incl * nights,
             currency=m.get("currency") or "EUR",
+            rooms=[room],
         ))
 
     # Main traveler heuristic

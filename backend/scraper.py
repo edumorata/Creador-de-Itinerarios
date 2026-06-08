@@ -114,7 +114,7 @@ Output ONLY a single JSON object, no markdown, no commentary. Schema:
         {"name": "Wine tasting at Sandeman", "provider": null, "time": null}
       ],
       "hotels": [
-        {"name": "The Yeatman", "nights": 2, "check_in": "YYYY-MM-DD", "check_out": "YYYY-MM-DD"}
+        {"name": "The Yeatman", "nights": 2, "check_in": "YYYY-MM-DD", "check_out": "YYYY-MM-DD", "room_type": "Deluxe River-View Twin"}
       ],
       "transfers": [
         {"description": "Flight IB 3094 MAD → OPO", "from": "Madrid", "to": "Porto"}
@@ -128,6 +128,7 @@ Rules:
 - Skip Travefy boilerplate ("Add this itinerary", "Itinerary Chat", agent contact info).
 - Parse dates intelligently. If the page only shows a month + day, infer year from any nearby year reference or leave null.
 - Hotels usually appear once per stay-block; figure out check-in / check-out from the surrounding days.
+- For each hotel, extract `room_type` VERBATIM from the page (e.g. "Classic Roma", "Comfort Room", "Superior Room", "Double Executive", "Twin Room"). Look for labels like "Room / Bed Type", "Tipo de habitación", "Habitación", or any sentence describing the room. Set null when no room description is present.
 - Activities are anything that's NOT a hotel or a flight transfer.
 - If you find no structured info, return {"days": [], "notes": "could not parse"}.
 """

@@ -510,6 +510,15 @@ export function TravefyImportModal({ onClose }) {
                                   <span>Sin match · Vincúlalo manualmente o créalo en el builder</span>
                                 </div>
                               )}
+                              {(h.room_type || h.room_type_raw) && (
+                                <div className="text-[10px] text-clay-700 mt-0.5 flex items-center gap-1.5 truncate">
+                                  <Bed size={10} className="shrink-0 text-clay-500"/>
+                                  <span className="uppercase tracking-wider font-semibold text-pine">{h.room_type}</span>
+                                  {h.room_type_raw && h.room_type_raw.toLowerCase() !== h.room_type && (
+                                    <span className="text-clay-500 italic truncate">· &ldquo;{h.room_type_raw}&rdquo;</span>
+                                  )}
+                                </div>
+                              )}
                             </div>
                             <div className="text-xs text-clay-700 tabular whitespace-nowrap">{h.check_in} → {h.check_out}</div>
                             <div className="text-right tabular text-sm font-semibold whitespace-nowrap">
