@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, Calendar, Users as UsersIcon, FileDown, Trash2, Pencil, Search, X } from "lucide-react";
+import { Plus, Calendar, Users as UsersIcon, FileDown, Trash2, Pencil, Search, X, Wand2 } from "lucide-react";
 import api, { API_BASE } from "@/lib/api";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
+import { TravefyImportModal } from "./TravefyImportModal";
 
 const STATUS_LABEL = {
   draft: { text: "Borrador", color: "bg-clay-200 text-clay-900" },
@@ -48,6 +49,7 @@ export default function Dashboard() {
   const [filterAgent, setFilterAgent] = useState("");
   const [filterTraveler, setFilterTraveler] = useState("");
   const [loading, setLoading] = useState(true);
+  const [showTravefy, setShowTravefy] = useState(false);
   const navigate = useNavigate();
 
   const load = async () => {
@@ -125,10 +127,21 @@ export default function Dashboard() {
               : "Diseña, calcula y exporta tus propios viajes. Combina experiencias de la librería en días y márgenes en segundos."}
           </p>
         </div>
-        <button data-testid="new-itinerary-btn" onClick={create} className="inline-flex items-center gap-2 px-5 py-3 bg-clay-900 text-white text-sm tracking-wider uppercase hover:bg-terracotta transition-colors">
-          <Plus size={16} /> Nuevo itinerario
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            data-testid="new-from-travefy-btn"
+            onClick={() => setShowTravefy(true)}
+            className="inline-flex items-center gap-2 px-5 py-3 border border-clay-900 text-clay-900 text-sm tracking-wider uppercase hover:bg-clay-100 transition-colors"
+            title="Importa un itinerario publicado de Travefy"
+          >
+            <Wand2 size={16} /> Nuevo desde Travefy
+          </button>
+          <button data-testid="new-itinerary-btn" onClick={create} className="inline-flex items-center gap-2 px-5 py-3 bg-clay-900 text-white text-sm tracking-wider uppercase hover:bg-terracotta transition-colors">
+            <Plus size={16} /> Nuevo itinerario
+          </button>
+        </div>
       </div>
+      {showTravefy && <TravefyImportModal onClose={() => { setShowTravefy(false); load(); }} />}
 
       <div className="grid grid-cols-3 gap-0 mb-8 border border-clay-300">
         {[

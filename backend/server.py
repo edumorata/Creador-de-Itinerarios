@@ -1523,6 +1523,431 @@ async def export_itinerary(itinerary_id: str, user: Annotated[User, Depends(curr
 
 
 # ---------------------------------------------------------------------------
+# Travefy import — agents paste a Travefy URL and we:
+#   1) Scrape + LLM-parse it (reuses scraper.py)
+#   2) Match each activity/hotel against our catalog (token overlap + city)
+#   3) Return a "preview" the agent can review/edit
+#   4) Confirm → create a real Itinerary with prices from our BBDD
+# ---------------------------------------------------------------------------
+_CITY_ALIAS = {
+    # Travefy often uses English names — normalize to the spelling in our DB.
+    "roma": "Rome", "rome": "Rome", "florencia": "Florence", "firenze": "Florence",
+    "florence": "Florence", "venezia": "Venice", "venecia": "Venice", "venice": "Venice",
+    "napoli": "Naples", "naples": "Naples", "milano": "Milan", "milan": "Milan",
+    "lisbon": "Lisbon", "lisboa": "Lisbon", "porto": "Porto", "oporto": "Porto",
+    "sevilla": "Seville", "seville": "Seville", "cordoba": "Córdoba", "córdoba": "Córdoba",
+    "marrakesh": "Marrakech", "marrakech": "Marrakech",
+    "san sebastian": "San Sebastián", "san sebastián": "San Sebastián",
+}
+
+# Words that don't help discriminate one experience from another — strip them
+# from the token-overlap matcher so "Vatican & Sistine Chapel Tour (small group)"
+# still matches "Vatican Museums Small Group Tour".
+_MATCH_NOISE = {
+    "the", "and", "with", "small", "group", "private", "tour", "experience",
+    "tickets", "ticket", "skip", "line", "visit", "guided", "walking", "free",
+    "from", "into", "your", "you", "our", "for", "this", "that", "del", "de",
+    "la", "el", "los", "las", "una", "uno", "una", "por", "con", "sin",
+    "tasting", "tasting", "transfer", "departure",
+}
+
+
+def _norm_city(s: Optional[str]) -> Optional[str]:
+    if not s:
+        return None
+    return _CITY_ALIAS.get(s.strip().lower(), s.strip())
+
+
+def _norm_text(s: Optional[str]) -> str:
+    if not s:
+        return ""
+    s = re.sub(r"[^\w\s]", " ", s.lower())
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _tokens_for_match(s: Optional[str]) -> set[str]:
+    return {t for t in _norm_text(s).split() if len(t) >= 3 and t not in _MATCH_NOISE}
+
+
+def _match_score(a: str, b: str) -> float:
+    """Symmetric Jaccard-like score over noise-filtered tokens. 0..1."""
+    ta, tb = _tokens_for_match(a), _tokens_for_match(b)
+    if not ta or not tb:
+        return 0.0
+    overlap = len(ta & tb)
+    return overlap / min(len(ta), len(tb))
+
+
+def _classify_travefy(name: str) -> ServiceType:
+    n = (name or "").lower()
+    if any(k in n for k in ("transfer", "taxi", "private driver", "shuttle")):
+        return "transfer"
+    if any(k in n for k in ("flight", "vuelo", "airline")):
+        return "vuelo"
+    if any(k in n for k in ("train", "tren", "renfe", "trenitalia", "italo", "ave ")):
+        return "tren"
+    if any(k in n for k in ("ticket", "entrada", "admission")) and "tour" not in n:
+        return "entradas"
+    return "actividad"
+
+
+async def _match_experience(name: str, city: Optional[str], num_travelers: int) -> Optional[dict]:
+    """Find best matching experience in DB for the given Travefy item name."""
+    city = _norm_city(city)
+    flt: dict = {}
+    if city:
+        # Word-boundary substring so "Rome" matches "Rome" and "Rome - Florence"
+        flt["city"] = {"$regex": f"(?<![A-Za-z]){re.escape(city)}(?![A-Za-z])", "$options": "i"}
+    candidates = await db.experiences.find(flt, {"_id": 0}).limit(400).to_list(400)
+    best, best_score, best_overlap = None, 0.0, 0
+    name_tokens = _tokens_for_match(name)
+    for c in candidates:
+        c_tokens = _tokens_for_match(c.get("title") or "")
+        if not c_tokens or not name_tokens:
+            continue
+        overlap = len(name_tokens & c_tokens)
+        if overlap == 0:
+            continue
+        s = overlap / min(len(name_tokens), len(c_tokens))
+        if s > best_score:
+            best, best_score, best_overlap = c, s, overlap
+    # Require either a strong ratio OR multiple discriminating tokens overlapping
+    if best_score < 0.5 or best_overlap < 2:
+        return None
+    # Prefer the exact-pax variant when several share the same title
+    if num_travelers and best:
+        siblings = [c for c in candidates if c.get("title") == best.get("title")]
+        if len(siblings) > 1:
+            siblings.sort(key=lambda c: (
+                0 if (c.get("pax") or 2) == num_travelers else 1,
+                abs((c.get("pax") or 2) - num_travelers),
+            ))
+            best = siblings[0]
+    return {**best, "_match_score": round(best_score, 2)}
+
+
+def _strip_hotel_noise(s: str) -> str:
+    """Travefy frequently appends 'or similar' / 'or higher' to hotel names —
+    drop it before matching against our hotel DB."""
+    return re.sub(r"\s+or\s+(similar|higher)\s*$", "", (s or "").strip(), flags=re.IGNORECASE)
+
+
+async def _match_hotel(name: str, city: Optional[str]) -> Optional[dict]:
+    name = _strip_hotel_noise(name)
+    city = _norm_city(city)
+    flt: dict = {"source": "library"}  # never match auto-imported ghost hotels
+    if city:
+        flt["city"] = {"$regex": f"(?<![A-Za-z]){re.escape(city)}(?![A-Za-z])", "$options": "i"}
+    candidates = await db.hotels.find(flt, {"_id": 0}).limit(200).to_list(200)
+    if not candidates and city:  # widen if nothing in this city
+        candidates = await db.hotels.find({"source": "library"}, {"_id": 0}).limit(400).to_list(400)
+    best, best_score = None, 0.0
+    for c in candidates:
+        s = _match_score(name, c.get("name") or "")
+        if s > best_score:
+            best, best_score = c, s
+    # Hotel names are short and distinctive — require a high overlap to call it a match.
+    if best_score < 0.7:
+        return None
+    return {**best, "_match_score": round(best_score, 2)}
+
+
+def _confidence_label(score: float) -> str:
+    if score >= 0.8:
+        return "high"
+    if score >= 0.55:
+        return "medium"
+    return "low"
+
+
+@api.post("/itineraries/import-travefy/preview")
+async def import_travefy_preview(
+    payload: dict = Body(...),
+    user: User = Depends(current_user),
+):
+    """Start a background scrape+match job for a Travefy URL.
+
+    The scrape itself runs Playwright + Claude which routinely takes 30-60s —
+    well beyond Cloudflare's request timeout. We therefore kick off the work
+    asynchronously and return a job_id the client polls every 2s.
+    """
+    url = (payload.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL es obligatoria")
+    if "travefy.com" not in url:
+        raise HTTPException(status_code=400, detail="La URL debe ser de travefy.com")
+
+    job_id = f"tvj_{uuid.uuid4().hex[:12]}"
+    await db.travefy_import_jobs.insert_one({
+        "job_id": job_id,
+        "url": url,
+        "status": "running",
+        "created_by": user.email,
+        "created_at": now_iso(),
+        "preview": None,
+        "error": None,
+    })
+    asyncio.create_task(_run_travefy_preview_job(job_id, url))
+    return {"job_id": job_id, "status": "running"}
+
+
+@api.get("/itineraries/import-travefy/preview/{job_id}")
+async def import_travefy_preview_status(
+    job_id: str,
+    user: Annotated[User, Depends(current_user)],
+):
+    """Poll endpoint. Returns {status, preview?, error?}."""
+    job = await db.travefy_import_jobs.find_one(
+        {"job_id": job_id}, {"_id": 0}
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.get("created_by") and job["created_by"] != user.email and user.role != "admin":
+        raise HTTPException(status_code=403, detail="No tienes acceso a este job")
+    return {
+        "job_id": job_id,
+        "status": job.get("status"),
+        "preview": job.get("preview"),
+        "error": job.get("error"),
+    }
+
+
+async def _run_travefy_preview_job(job_id: str, url: str):
+    """Background worker: scrape URL, run LLM, match against DB, save preview."""
+    from scraper import scrape_and_parse
+    try:
+        scraped = await scrape_and_parse(url)
+        if not scraped.get("ok"):
+            await db.travefy_import_jobs.update_one(
+                {"job_id": job_id},
+                {"$set": {
+                    "status": "error",
+                    "error": f"Travefy bloqueó la lectura: {scraped.get('error') or 'unknown'}",
+                    "finished_at": now_iso(),
+                }},
+            )
+            return
+
+        structured = scraped.get("structured") or {}
+        num_travelers = int(structured.get("num_travelers") or 2) or 2
+
+        out_days = []
+        hotel_blocks: dict = {}
+        for d in structured.get("days") or []:
+            city = _norm_city(d.get("city"))
+            items_out = []
+            for a in d.get("activities") or []:
+                name = (a.get("name") or "").strip()
+                if not name:
+                    continue
+                kind = _classify_travefy(name)
+                match = None
+                if kind in ("actividad", "transfer", "tren", "vuelo", "entradas"):
+                    m = await _match_experience(name, city, num_travelers)
+                    if m:
+                        match = {
+                            "experience_id": m.get("experience_id"),
+                            "title": m.get("title"),
+                            "type": m.get("type"),
+                            "pax": m.get("pax"),
+                            "city": m.get("city"),
+                            "provider_name": m.get("provider_name"),
+                            "price_tax_excl": m.get("price_tax_excl") or 0,
+                            "price_tax_incl": m.get("price_tax_incl") or m.get("price") or 0,
+                            "currency": m.get("currency") or "EUR",
+                            "confidence": _confidence_label(m.get("_match_score", 0)),
+                        }
+                items_out.append({
+                    "travefy_name": name,
+                    "type": match["type"] if match else kind,
+                    "match": match,
+                })
+            for h in d.get("hotels") or []:
+                hname = (h.get("name") or "").strip()
+                if not hname:
+                    continue
+                block = hotel_blocks.setdefault(hname, {
+                    "name": hname,
+                    "city": city,
+                    "check_in": h.get("check_in") or d.get("date"),
+                    "check_out": h.get("check_out"),
+                    "first_day": d.get("day"),
+                })
+                block["check_out"] = h.get("check_out") or d.get("date") or block.get("check_out")
+            out_days.append({
+                "day": d.get("day"),
+                "date": d.get("date"),
+                "city": city,
+                "items": items_out,
+            })
+
+        hotels_out = []
+        for hname, block in hotel_blocks.items():
+            m = await _match_hotel(hname, block.get("city"))
+            match = None
+            if m:
+                match = {
+                    "hotel_id": m.get("hotel_id"),
+                    "name": m.get("name"),
+                    "city": m.get("city"),
+                    "tier": m.get("tier"),
+                    "price_per_night_excl": m.get("price_per_night_excl") or 0,
+                    "price_per_night_incl": m.get("price_per_night_incl") or 0,
+                    "currency": m.get("currency") or "EUR",
+                    "confidence": _confidence_label(m.get("_match_score", 0)),
+                }
+            hotels_out.append({
+                "travefy_name": hname,
+                "city": block.get("city"),
+                "check_in": block.get("check_in"),
+                "check_out": block.get("check_out"),
+                "match": match,
+            })
+
+        trip_name = structured.get("trip_name") or "Itinerario importado"
+        main_traveler = ""
+        if " - " in trip_name:
+            tail = trip_name.rsplit(" - ", 1)[-1]
+            # Heuristic: the name is short (≤4 words)
+            if len(tail.split()) <= 4:
+                main_traveler = tail.strip()
+
+        preview = {
+            "trip_name": trip_name,
+            "main_traveler": main_traveler,
+            "start_date": structured.get("start_date"),
+            "end_date": structured.get("end_date"),
+            "num_travelers": num_travelers,
+            "days": out_days,
+            "hotels": hotels_out,
+            "source_url": url,
+        }
+
+        await db.travefy_import_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {
+                "status": "done",
+                "preview": preview,
+                "finished_at": now_iso(),
+            }},
+        )
+    except Exception as e:
+        logger.exception("travefy preview job %s failed", job_id)
+        await db.travefy_import_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {
+                "status": "error",
+                "error": f"Error procesando Travefy: {e}",
+                "finished_at": now_iso(),
+            }},
+        )
+
+
+@api.post("/itineraries/import-travefy/confirm", response_model=Itinerary)
+async def import_travefy_confirm(
+    user: Annotated[User, Depends(current_user)],
+    payload: dict = Body(...),
+):
+    """Create a real Itinerary from a (possibly edited) preview payload."""
+    days_in = payload.get("days") or []
+    hotels_in = payload.get("hotels") or []
+    num_travelers = int(payload.get("num_travelers") or 2) or 2
+
+    # Build days[] with services
+    days_out: list[ItineraryDay] = []
+    for d in days_in:
+        services: list[ItineraryService] = []
+        for item in d.get("items") or []:
+            if item.get("excluded"):
+                continue
+            m = item.get("match") or {}
+            kind = item.get("type") or "actividad"
+            name = m.get("title") or item.get("travefy_name") or "Sin título"
+            unit_excl = float(m.get("price_tax_excl") or 0)
+            unit_incl = float(m.get("price_tax_incl") or 0) or unit_excl
+            pax_unit = int(m.get("pax") or 1) or 1
+            # Smart quantity: ceil(num_travelers / pax_unit)
+            qty = max(1, (num_travelers + pax_unit - 1) // pax_unit)
+            services.append(ItineraryService(
+                experience_id=m.get("experience_id"),
+                type=kind,
+                name=name,
+                provider_name=m.get("provider_name"),
+                quantity=qty,
+                pax=pax_unit,
+                unit_price_tax_excl=unit_excl,
+                unit_price_tax_incl=unit_incl,
+                unit_price=unit_incl,
+                currency=m.get("currency") or "EUR",
+                notes=None if m.get("experience_id") else "⚠ Sin match · Revisar precio",
+            ))
+        days_out.append(ItineraryDay(
+            date=d.get("date"),
+            city=d.get("city"),
+            services=services,
+        ))
+
+    # Build accommodations[]
+    acc_out: list[Accommodation] = []
+    for h in hotels_in:
+        if h.get("excluded"):
+            continue
+        m = h.get("match") or {}
+        date_from = h.get("check_in")
+        date_to = h.get("check_out")
+        # nights = max(1, date_to - date_from)
+        try:
+            df = datetime.fromisoformat(date_from)
+            dt = datetime.fromisoformat(date_to)
+            nights = max(1, (dt - df).days)
+        except (TypeError, ValueError):
+            nights = 1
+        per_night_excl = float(m.get("price_per_night_excl") or 0)
+        per_night_incl = float(m.get("price_per_night_incl") or 0) or per_night_excl
+        acc_out.append(Accommodation(
+            date_from=date_from,
+            date_to=date_to,
+            name=m.get("name") or h.get("travefy_name") or "Sin nombre",
+            price_tax_excl=per_night_excl * nights,
+            price_tax_incl=per_night_incl * nights,
+            price=per_night_incl * nights,
+            currency=m.get("currency") or "EUR",
+        ))
+
+    # Main traveler heuristic
+    main = (payload.get("main_traveler") or "").strip()
+    if not main and payload.get("trip_name"):
+        # Travefy titles look like "Trip Title - First Last"
+        parts = (payload["trip_name"] or "").rsplit(" - ", 1)
+        if len(parts) == 2 and len(parts[1].split()) <= 4:
+            main = parts[1].strip()
+
+    # Duration: prefer the days list count; fall back to date diff
+    duration = len(days_out)
+    if not duration and payload.get("start_date") and payload.get("end_date"):
+        try:
+            duration = (datetime.fromisoformat(payload["end_date"]) -
+                        datetime.fromisoformat(payload["start_date"])).days + 1
+        except (TypeError, ValueError):
+            duration = 0
+
+    itn = Itinerary(
+        name=payload.get("trip_name") or "Itinerario importado de Travefy",
+        main_traveler=main,
+        start_date=payload.get("start_date"),
+        end_date=payload.get("end_date"),
+        duration_days=duration,
+        num_travelers=num_travelers,
+        days=days_out,
+        accommodations=acc_out,
+        created_by=user.email,
+    )
+    itn.updated_at = now_iso()
+    await db.itineraries.insert_one(itn.model_dump())
+    return itn
+
+
+# ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
 @api.get("/")
