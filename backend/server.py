@@ -1367,6 +1367,26 @@ async def delete_itinerary(itinerary_id: str, user: Annotated[User, Depends(curr
 # ---------------------------------------------------------------------------
 # Excel export (Sofi format)
 # ---------------------------------------------------------------------------
+# The exported workbook MUST follow the Sofi "plantillasoficotizaciones" template
+# verbatim so the file can be re-imported into Sofi without manual editing:
+#   - Single sheet named "Trip Prices"
+#   - 7 columns total (A..G)
+#   - Sections in this exact order: trip summary, Traveler Details,
+#     Activities and transportation (NO accommodation lines here),
+#     Accommodations (every hotel with entry/exit date range)
+#   - No subtotals / no PVP / no City / no "sin IVA / con IVA" columns
+#     (those live in the app dashboard, not in the Sofi import sheet).
+def _to_date(s: Optional[str]):
+    """Return a datetime.date for ISO 'YYYY-MM-DD' strings so Excel formats it
+    natively. Falls back to the raw string when parsing fails."""
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s).date()
+    except (TypeError, ValueError):
+        return s
+
+
 def _fmt_date(s: Optional[str]) -> str:
     if not s:
         return ""
@@ -1390,123 +1410,103 @@ async def export_itinerary(itinerary_id: str, user: Annotated[User, Depends(curr
     ws.title = "Trip Prices"
 
     bold = Font(bold=True)
-    header_fill = PatternFill(start_color="F5F2EB", end_color="F5F2EB", fill_type="solid")
-    section_fill = PatternFill(start_color="E07A5F", end_color="E07A5F", fill_type="solid")
-    section_font = Font(bold=True, color="FFFFFF")
-    thin = Side(border_style="thin", color="E8E3D9")
-    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+    section_font = Font(bold=True)
+    date_fmt = "DD/MM/YYYY"
+    money_fmt = "#,##0.00"
 
-    def label(row, value):
-        ws.cell(row, 1, "Main traveler name" if row == 1 else value)
-
+    # --- Trip summary (rows 1-5) -------------------------------------------
     ws.cell(1, 1, "Main traveler name").font = bold
-    ws.cell(1, 2, itn.main_traveler)
+    ws.cell(1, 2, itn.main_traveler or "")
     ws.cell(2, 1, "Trip start date").font = bold
-    ws.cell(2, 2, _fmt_date(itn.start_date))
+    start = _to_date(itn.start_date)
+    c = ws.cell(2, 2, start)
+    if hasattr(start, "year"):
+        c.number_format = date_fmt
     ws.cell(3, 1, "Trip end date").font = bold
-    ws.cell(3, 2, _fmt_date(itn.end_date))
+    end = _to_date(itn.end_date)
+    c = ws.cell(3, 2, end)
+    if hasattr(end, "year"):
+        c.number_format = date_fmt
     ws.cell(4, 1, "Duration (days)").font = bold
     ws.cell(4, 2, itn.duration_days)
     ws.cell(5, 1, "Number of travelers").font = bold
     ws.cell(5, 2, itn.num_travelers)
 
-    # Traveler details
+    # --- Traveler details (rows 9-...) -------------------------------------
     ws.cell(9, 1, "Traveler Details").font = section_font
-    ws.cell(9, 1).fill = section_fill
     ws.cell(10, 1, "First name").font = bold
     ws.cell(10, 2, "Last name").font = bold
-    ws.cell(10, 1).fill = header_fill
-    ws.cell(10, 2).fill = header_fill
     row = 11
     for t in itn.travelers or []:
-        ws.cell(row, 1, t.first_name)
-        ws.cell(row, 2, t.last_name)
+        ws.cell(row, 1, t.first_name or "")
+        ws.cell(row, 2, t.last_name or "")
         row += 1
-    if not itn.travelers:
-        row = 12  # leave space
 
-    # Activities & transportation
+    # --- Activities and transportation (starts at row 14) ------------------
     ws.cell(14, 1, "Activities and transportation").font = section_font
-    ws.cell(14, 1).fill = section_fill
-    head_row = 15
-    headers = ["Day", "Date", "City", "Type", "Name", "Quantity", "Precio sin IVA", "Precio con IVA", "PVP"]
-    for i, h in enumerate(headers, start=1):
-        c = ws.cell(head_row, i, h)
-        c.font = bold
-        c.fill = header_fill
-        c.border = box
+    ws.cell(15, 1, "Day").font = bold
+    ws.cell(15, 2, "Date").font = bold
+    ws.cell(15, 4, "Type").font = bold
+    ws.cell(15, 5, "Name").font = bold
+    ws.cell(15, 6, "Quantity").font = bold
+    ws.cell(15, 7, "Price").font = bold
 
-    mk = (itn.markup_pct or 0) / 100.0
-    r = head_row + 1
-    activities_excl = 0.0
-    activities_incl = 0.0
+    r = 16
     for idx, day in enumerate(itn.days or [], start=1):
+        # Skip accommodations on the day-by-day section — they belong only in
+        # the Accommodations section below (per template + user request).
+        services = [s for s in (day.services or []) if s.type != "alojamiento"]
+        if not services:
+            # Still print the Day header so day numbering matches the trip
+            # length even when a day has no priced activities.
+            ws.cell(r, 1, f"Day {idx}").font = bold
+            d = _to_date(day.date)
+            cell = ws.cell(r, 2, d)
+            if hasattr(d, "year"):
+                cell.number_format = date_fmt
+            r += 1
+            continue
+
         ws.cell(r, 1, f"Day {idx}").font = bold
-        ws.cell(r, 2, _fmt_date(day.date))
-        ws.cell(r, 3, day.city or "")
-        for col_i in range(1, len(headers) + 1):
-            ws.cell(r, col_i).fill = header_fill
+        d = _to_date(day.date)
+        cell = ws.cell(r, 2, d)
+        if hasattr(d, "year"):
+            cell.number_format = date_fmt
         r += 1
-        for s in day.services:
+
+        for s in services:
             ws.cell(r, 4, s.type)
             ws.cell(r, 5, s.name)
             ws.cell(r, 6, s.quantity)
-            unit_excl = s.unit_price_tax_excl or 0
             unit_incl = s.unit_price_tax_incl or s.unit_price or 0
-            line_excl = unit_excl * (s.quantity or 0)
             line_incl = unit_incl * (s.quantity or 0)
-            line_pvp = line_incl * (1 + mk)
-            ws.cell(r, 7, round(line_excl, 2))
-            ws.cell(r, 8, round(line_incl, 2))
-            ws.cell(r, 9, round(line_pvp, 2))
-            activities_excl += line_excl
-            activities_incl += line_incl
+            price_cell = ws.cell(r, 7, round(line_incl, 2))
+            price_cell.number_format = money_fmt
             r += 1
 
-    # Accommodations
+    # --- Accommodations ----------------------------------------------------
     acc_section = r + 1
     ws.cell(acc_section, 1, "Accommodations").font = section_font
-    ws.cell(acc_section, 1).fill = section_fill
-    acc_head = acc_section + 1
-    acc_headers = ["", "Date", "Name", "", "Currency", "", "Precio sin IVA", "Precio con IVA", "PVP"]
-    for i, h in enumerate(acc_headers, start=1):
-        c = ws.cell(acc_head, i, h)
-        c.font = bold
-        c.fill = header_fill
-    r2 = acc_head + 1
-    acc_excl = 0.0
-    acc_incl = 0.0
+    head = acc_section + 1
+    ws.cell(head, 1, "Day").font = bold
+    ws.cell(head, 2, "Date").font = bold
+    ws.cell(head, 3, "Name").font = bold
+    ws.cell(head, 5, "Price").font = bold
+    ws.cell(head, 6, "Currency").font = bold
+
+    r2 = head + 1
     for a in itn.accommodations or []:
-        date_range = f"{_fmt_date(a.date_from)} - {_fmt_date(a.date_to)}"
+        date_range = f"{_fmt_date(a.date_from)} - {_fmt_date(a.date_to)}".strip(" -")
         ws.cell(r2, 2, date_range)
         ws.cell(r2, 3, a.name)
-        ws.cell(r2, 5, a.currency)
-        p_excl = a.price_tax_excl or 0
         p_incl = a.price_tax_incl or a.price or 0
-        ws.cell(r2, 7, round(p_excl, 2))
-        ws.cell(r2, 8, round(p_incl, 2))
-        ws.cell(r2, 9, round(p_incl * (1 + mk), 2))
-        acc_excl += p_excl
-        acc_incl += p_incl
+        price_cell = ws.cell(r2, 5, round(p_incl, 2))
+        price_cell.number_format = money_fmt
+        ws.cell(r2, 6, a.currency or "EUR")
         r2 += 1
 
-    # Totals
-    total_row = r2 + 2
-    sub_excl = activities_excl + acc_excl
-    sub_incl = activities_incl + acc_incl
-    pvp = sub_incl * (1 + mk)
-    ws.cell(total_row, 6, "Subtotal sin IVA").font = bold
-    ws.cell(total_row, 7, round(sub_excl, 2))
-    ws.cell(total_row + 1, 6, "Subtotal con IVA").font = bold
-    ws.cell(total_row + 1, 8, round(sub_incl, 2))
-    ws.cell(total_row + 2, 6, f"PVP (markup {itn.markup_pct or 0}% sobre IVA)").font = bold
-    ws.cell(total_row + 2, 9, round(pvp, 2))
-    for col_i in range(6, 10):
-        ws.cell(total_row + 2, col_i).fill = section_fill
-        ws.cell(total_row + 2, col_i).font = section_font
-
-    # Column widths
-    widths = [10, 14, 14, 16, 50, 10, 14, 14, 14]
+    # --- Column widths -----------------------------------------------------
+    widths = [12, 22, 4, 16, 50, 10, 12]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
 
