@@ -86,7 +86,7 @@ export default function AIGenerate() {
         <div className="mt-8 border border-pine bg-white p-6 animate-fade-up" data-testid="gen-result">
           <div className="smallcaps inline-flex items-center gap-1 text-pine"><Sparkles size={12}/> Borrador generado</div>
           <h2 className="font-serif text-3xl mt-2">{result.itinerary.name}</h2>
-          {result.ai_summary && <p className="text-sm text-clay-700 mt-2 italic">"{result.ai_summary}"</p>}
+          {result.ai_summary && <p className="text-sm text-clay-700 mt-2 italic">&quot;{result.ai_summary}&quot;</p>}
 
           <div className="grid grid-cols-4 gap-0 my-4 border border-clay-300">
             <Stat label="Días" v={result.itinerary.duration_days} />

@@ -7,8 +7,10 @@ import { fmtUSD } from "./utils";
 export function FxConverter({ fx, setFx, totals }) {
   const [busy, setBusy] = useState(false);
   const onChangeRate = (v) => {
+    // Accept any positive value (incl. partial typing). Empty stays at 0 until
+    // user types something — the multiplier just produces 0 in that case.
     const n = parseFloat(v);
-    if (Number.isFinite(n) && n > 0) setFx((prev) => ({ ...prev, rate: n, source: "manual" }));
+    setFx((prev) => ({ ...prev, rate: Number.isFinite(n) && n >= 0 ? n : 0, source: "manual" }));
   };
   const reload = async () => {
     setBusy(true);
@@ -38,10 +40,8 @@ export function FxConverter({ fx, setFx, totals }) {
         <input
           data-testid="fx-rate-input"
           type="number"
-          step="0.0001"
-          min="0.1"
-          max="10"
-          value={Number(fx.rate || 0).toFixed(4)}
+          step="0.01"
+          value={Number(fx.rate || 0).toFixed(2)}
           onChange={(e) => onChangeRate(e.target.value)}
           className="w-24 bg-white border border-clay-300 px-1 py-0.5 text-sm tabular text-right"
         />

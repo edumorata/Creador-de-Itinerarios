@@ -120,6 +120,35 @@ export default function ItineraryBuilder() {
   }, []);
 
   // Debounced save with the latest itinerary snapshot.
+  // Save the current itinerary immediately, cancelling any pending debounce.
+  // Used by `onBlur` handlers on critical fields (name, dates) so a focus
+  // change always persists the edit before the user can lose context.
+  const flushSave = useCallback(() => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    // Re-trigger save with 0ms delay (uses the latest state in setItn closure)
+    setItn((cur) => {
+      if (!cur) return cur;
+      (async () => {
+        setSaving(true);
+        try {
+          await api.patch(`/itineraries/${id}`, {
+            name: cur.name, main_traveler: cur.main_traveler,
+            start_date: cur.start_date, end_date: cur.end_date,
+            duration_days: cur.duration_days, num_travelers: cur.num_travelers,
+            travelers: cur.travelers, days: cur.days, accommodations: cur.accommodations,
+            markup_pct: cur.markup_pct, commission_pct: cur.commission_pct,
+            partner: cur.partner, currency: cur.currency, status: cur.status,
+            room_config: cur.room_config,
+          });
+        } finally { setSaving(false); }
+      })();
+      return cur;
+    });
+  }, [id]);
+
   const schedSave = useCallback((next) => {
     setItn(next);
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -422,9 +451,11 @@ export default function ItineraryBuilder() {
           <div className="flex-1">
             <input
               data-testid="itn-name-input"
-              className="font-serif text-4xl leading-none bg-transparent border-none outline-none w-full focus:border-b focus:border-terracotta"
-              value={itn.name}
+              className="font-serif text-4xl leading-none bg-transparent border-b border-clay-200 outline-none w-full px-1 py-1 hover:border-clay-400 focus:border-terracotta transition-colors"
+              value={itn.name || ""}
+              placeholder="Nombre del itinerario…"
               onChange={(e) => setField("name", e.target.value)}
+              onBlur={flushSave}
             />
             <div className="smallcaps mt-2 flex items-center gap-3">
               <span data-testid="save-state">{saving ? "Guardando…" : "Guardado"}</span>
@@ -507,7 +538,6 @@ export default function ItineraryBuilder() {
           <div className="border-b border-clay-300 p-5 bg-white">
             <div className="smallcaps">Coste</div>
             <div className="grid-borders mt-3">
-              <Row label="Subtotal sin IVA">{fmtEUR(totals.sub_excl)}</Row>
               <Row label="Subtotal con IVA">{fmtEUR(totals.sub_incl)}</Row>
               <Row label={(
                 <div className="flex items-center gap-2">

@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import api from "@/lib/api";
 import { TYPE_BADGE, BADGE_FALLBACK, fmtEUR } from "./utils";
 
@@ -6,6 +8,7 @@ export function AutocompleteInput({ value, dayCity, serviceType, pax, onTextChan
   const [open, setOpen] = useState(false);
   const [results, setResults] = useState([]);
   const [highlight, setHighlight] = useState(0);
+  const [deleting, setDeleting] = useState(null);
   const wrapRef = useRef(null);
   const timer = useRef(null);
 
@@ -87,27 +90,51 @@ export function AutocompleteInput({ value, dayCity, serviceType, pax, onTextChan
             const total = r.price_tax_incl ?? r.price ?? 0;
             const perPax = (r.pax || 1) > 0 ? total / r.pax : total;
             return (
-            <button
+            <div
               key={r.experience_id}
-              data-testid={`ac-${r.experience_id}`}
-              onClick={() => { onPick(r); setOpen(false); }}
               onMouseEnter={() => setHighlight(i)}
-              className={`w-full text-left px-3 py-2 text-sm border-b border-clay-200 last:border-0 ${i === highlight ? "bg-terracotta/10" : "hover:bg-clay-50"}`}
+              className={`flex items-stretch border-b border-clay-200 last:border-0 ${i === highlight ? "bg-terracotta/10" : "hover:bg-clay-50"}`}
             >
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="font-semibold">{r.title}</div>
-                  <div className="text-[11px] text-clay-700">{r.provider_name} · {[r.city, r.country].filter(Boolean).join(" · ")}</div>
-                </div>
-                <div className="text-right shrink-0 text-xs">
-                  <div className="tabular font-semibold">{fmtEUR(perPax)} <span className="text-[10px] font-normal text-clay-700">/pax</span></div>
-                  <div className="text-[10px] text-clay-700 tabular">
-                    total {fmtEUR(total)} · <span className={pax && (r.pax || 2) !== pax ? "text-amber-700 font-semibold" : ""}>{r.pax || 2} pax</span>
+              <button
+                data-testid={`ac-${r.experience_id}`}
+                onClick={() => { onPick(r); setOpen(false); }}
+                className="flex-1 text-left px-3 py-2 text-sm"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-semibold">{r.title}</div>
+                    <div className="text-[11px] text-clay-700">{r.provider_name} · {[r.city, r.country].filter(Boolean).join(" · ")}</div>
                   </div>
-                  <span className={`inline-block mt-0.5 px-1 py-0.5 text-[8px] tracking-widest uppercase ${TYPE_BADGE[r.type] || BADGE_FALLBACK}`}>{r.type}</span>
+                  <div className="text-right shrink-0 text-xs">
+                    <div className="tabular font-semibold">{fmtEUR(perPax)} <span className="text-[10px] font-normal text-clay-700">/pax</span></div>
+                    <div className="text-[10px] text-clay-700 tabular">
+                      total {fmtEUR(total)} · <span className={pax && (r.pax || 2) !== pax ? "text-amber-700 font-semibold" : ""}>{r.pax || 2} pax</span>
+                    </div>
+                    <span className={`inline-block mt-0.5 px-1 py-0.5 text-[8px] tracking-widest uppercase ${TYPE_BADGE[r.type] || BADGE_FALLBACK}`}>{r.type}</span>
+                  </div>
                 </div>
-              </div>
-            </button>
+              </button>
+              <button
+                data-testid={`ac-del-${r.experience_id}`}
+                disabled={deleting === r.experience_id}
+                onClick={async (e) => {
+                  e.stopPropagation(); e.preventDefault();
+                  if (!window.confirm(`Eliminar "${r.title}" del catálogo? Es permanente.`)) return;
+                  setDeleting(r.experience_id);
+                  try {
+                    await api.delete(`/experiences/${r.experience_id}`);
+                    setResults((prev) => prev.filter((x) => x.experience_id !== r.experience_id));
+                    toast.success("Eliminada del catálogo");
+                  } catch (err) {
+                    toast.error(err?.response?.data?.detail || "Error al eliminar");
+                  } finally { setDeleting(null); }
+                }}
+                title="Eliminar del catálogo (permanente)"
+                className="px-2 text-clay-400 hover:text-destructive hover:bg-destructive/10 border-l border-clay-200 flex items-center justify-center disabled:opacity-30"
+              >
+                <Trash2 size={13}/>
+              </button>
+            </div>
           );})}
         </div>
       )}

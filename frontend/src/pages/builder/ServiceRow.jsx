@@ -10,7 +10,10 @@ export function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, ac
   const totalPVP = totalIncl * (1 + (markup || 0) / 100);
   const isLodging = service.type === "alojamiento";
   const linkedAcc = service.acc_id ? (accommodations || []).find((a) => a.acc_id === service.acc_id) : null;
-  const canSaveCatalog = !!service.experience_id && !isLodging;
+  // Save to catalog: works for both EXISTING (PATCH) and NEW (POST) services.
+  // For new entries we need a provider — fall back to a placeholder "Manual"
+  // provider that's created lazily on the server side.
+  const canSaveCatalog = !isLodging && !!service.name?.trim();
   const [savingCatalog, setSavingCatalog] = useState(false);
 
   // Local state for the in-line check-in/out date inputs (only used for lodging).
@@ -39,13 +42,13 @@ export function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, ac
   };
 
   const saveToCatalog = async () => {
-    if (!service.experience_id) { toast.error("Sin experience_id, no se puede guardar"); return; }
+    if (!service.name?.trim()) { toast.error("Falta el nombre"); return; }
     setSavingCatalog(true);
     try {
       const pax = Math.max(1, parseInt(service.pax || 1, 10));
       const perPaxIncl = service.unit_price_tax_incl || service.unit_price || 0;
       const perPaxExcl = service.unit_price_tax_excl || perPaxIncl;
-      await api.patch(`/experiences/${service.experience_id}?source=itinerary`, {
+      const payload = {
         title: service.name,
         type: service.type,
         pax,
@@ -53,8 +56,26 @@ export function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, ac
         price_tax_incl: Math.round(perPaxIncl * pax * 100) / 100,
         price: Math.round(perPaxIncl * pax * 100) / 100,
         currency: service.currency || "EUR",
-      });
-      toast.success("Guardado en el catálogo");
+      };
+      if (service.experience_id) {
+        await api.patch(`/experiences/${service.experience_id}?source=itinerary`, payload);
+        toast.success("Catálogo actualizado");
+      } else {
+        // New: needs a provider. Look up or create a "Manual" placeholder provider.
+        let providerId = null;
+        try {
+          const { data } = await api.get("/providers", { params: { q: "Manual" } });
+          const hit = (data || []).find((p) => p.name === "Manual" || p.name === "Sin proveedor");
+          if (hit) providerId = hit.provider_id;
+        } catch (_e) { /* fall through */ }
+        if (!providerId) {
+          const { data: prov } = await api.post("/providers", { name: "Manual" });
+          providerId = prov.provider_id;
+        }
+        const { data: created } = await api.post("/experiences", { ...payload, provider_id: providerId });
+        onChange({ experience_id: created.experience_id });
+        toast.success("Añadida al catálogo");
+      }
       onSaveToCatalog?.(service);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Error al guardar en catálogo");
@@ -65,7 +86,7 @@ export function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, ac
 
   return (
     <div className="border-b border-clay-200 last:border-0">
-    <div className={`grid ${isLodging ? "grid-cols-[28px_110px_1fr_60px_100px_100px_100px_28px_28px]" : "grid-cols-[28px_110px_1fr_60px_100px_100px_100px_30px]"} gap-2 items-center px-3 py-2.5 text-sm hover:bg-clay-50 transition-colors`}>
+    <div className={`grid ${isLodging ? "grid-cols-[28px_110px_1fr_60px_100px_100px_28px_28px_28px]" : "grid-cols-[28px_110px_1fr_60px_100px_100px_28px_30px]"} gap-2 items-center px-3 py-2.5 text-sm hover:bg-clay-50 transition-colors`}>
       <span
         draggable
         onDragStart={onDragStart}
@@ -125,11 +146,7 @@ export function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, ac
       <input type="number" min="0" step="1" className="bg-transparent text-right outline-none tabular" value={service.quantity || 0} onChange={(e) => onChange({ quantity: parseFloat(e.target.value || "0") })} />
       <div className="flex items-center gap-1 justify-end">
         <span className="text-clay-500 text-[10px]">€</span>
-        <input type="number" min="0" step="0.01" className="bg-transparent text-right outline-none tabular w-16" value={service.unit_price_tax_excl || 0} onChange={(e) => onChange({ unit_price_tax_excl: parseFloat(e.target.value || "0") })} title="Sin IVA" />
-      </div>
-      <div className="flex items-center gap-1 justify-end">
-        <span className="text-clay-500 text-[10px]">€</span>
-        <input type="number" min="0" step="0.01" className="bg-transparent text-right outline-none tabular w-16" value={service.unit_price_tax_incl || service.unit_price || 0} onChange={(e) => onChange({ unit_price_tax_incl: parseFloat(e.target.value || "0") })} title="Con IVA" />
+        <input type="number" min="0" step="0.01" className="bg-transparent text-right outline-none tabular w-16" value={service.unit_price_tax_incl || service.unit_price || 0} onChange={(e) => onChange({ unit_price_tax_incl: parseFloat(e.target.value || "0") })} title="Precio unitario con IVA" />
       </div>
       <div className="text-right text-xs tabular text-clay-700 leading-tight">
         <div>{fmtEUR(totalIncl)}</div>
@@ -169,7 +186,7 @@ export function ServiceRow({ service, markup, dayCity, dayDate, numTravelers, ac
       <button onClick={onRemove} className="text-clay-500 hover:text-destructive p-1" title="Quitar"><Trash2 size={14}/></button>
     </div>
     {isLodging && (!service.acc_id || /^Check-in/.test(service.name || "")) && (
-      <div className="grid grid-cols-[28px_110px_1fr_60px_100px_100px_100px_28px_28px] gap-2 items-center px-3 pb-2 -mt-1 text-[11px] text-clay-700">
+      <div className="grid grid-cols-[28px_110px_1fr_60px_100px_100px_28px_28px_28px] gap-2 items-center px-3 pb-2 -mt-1 text-[11px] text-clay-700">
         <span />
         <span />
         <div className="flex items-center gap-2">

@@ -486,13 +486,23 @@ async def list_experiences(
     if country:
         flt["country"] = country
     if city:
-        # Support comma-separated multi-city filters and silently drop legacy
-        # dash-joined values (e.g. "Madrid-Barcelona") that have no matches.
-        cities = [c.strip() for c in city.split(",") if c.strip() and "-" not in c.strip()]
+        # Substring-with-word-boundary match per city token so that origin-
+        # destination trains ("Madrid - Bilbao") surface for either endpoint.
+        cities = []
+        for c in city.split(","):
+            c = c.strip()
+            if not c:
+                continue
+            if "-" in c and " - " not in c:
+                continue  # reject legacy dash-joined values like "Madrid-Barcelona"
+            cities.append(c)
         if len(cities) == 1:
-            flt["city"] = {"$regex": f"^{_re.escape(cities[0])}$", "$options": "i"}
+            flt["city"] = {"$regex": f"(?<![A-Za-z]){_re.escape(cities[0])}(?![A-Za-z])", "$options": "i"}
         elif len(cities) > 1:
-            flt["city"] = {"$in": [_re.compile(f"^{_re.escape(c)}$", _re.IGNORECASE) for c in cities]}
+            flt["city"] = {"$in": [
+                _re.compile(f"(?<![A-Za-z]){_re.escape(c)}(?![A-Za-z])", _re.IGNORECASE)
+                for c in cities
+            ]}
     if type:
         flt["type"] = type
     if provider_id:
@@ -1159,12 +1169,21 @@ async def experience_autocomplete(
                     ]
                 })
         if city:
-            # multi-city support via comma; ignore dash-joined legacy values
-            parts = [p.strip() for p in city.split(",") if p.strip() and "-" not in p.strip()]
+            parts = []
+            for p in city.split(","):
+                p = p.strip()
+                if not p:
+                    continue
+                if "-" in p and " - " not in p:
+                    continue
+                parts.append(p)
             if len(parts) == 1:
-                flt_h["city"] = {"$regex": f"^{_re.escape(parts[0])}$", "$options": "i"}
+                flt_h["city"] = {"$regex": f"(?<![A-Za-z]){_re.escape(parts[0])}(?![A-Za-z])", "$options": "i"}
             elif len(parts) > 1:
-                flt_h["city"] = {"$in": [_re.compile(f"^{_re.escape(p)}$", _re.IGNORECASE) for p in parts]}
+                flt_h["city"] = {"$in": [
+                    _re.compile(f"(?<![A-Za-z]){_re.escape(p)}(?![A-Za-z])", _re.IGNORECASE)
+                    for p in parts
+                ]}
         if country:
             flt_h["country"] = country
         proj = {"_id": 0, "hotel_id": 1, "name": 1, "city": 1, "country": 1, "tier": 1,
@@ -1190,16 +1209,32 @@ async def experience_autocomplete(
 
     # Default: search experiences
     # Helper: parse multi-city ("Madrid, Barcelona") and silently drop legacy
-    # dash-joined values that historically never matched anything.
+    # dash-joined query values like "Madrid-Barcelona" (no spaces). Each city
+    # token is matched as a SUBSTRING (not exact) so trains with "origin -
+    # destination" stored as the city (e.g. "Madrid - Bilbao") surface when the
+    # user filters by either endpoint.
     def _city_filter(c: Optional[str]) -> Optional[dict]:
         if not c:
             return None
-        parts = [p.strip() for p in c.split(",") if p.strip() and "-" not in p.strip()]
+        parts = []
+        for p in c.split(","):
+            p = p.strip()
+            if not p:
+                continue
+            # Reject legacy "A-B" (dash without surrounding spaces). Accept
+            # "A - B" or just "A" — both are valid filter tokens.
+            if "-" in p and " - " not in p:
+                continue
+            parts.append(p)
         if not parts:
             return None
         if len(parts) == 1:
-            return {"$regex": f"^{_re.escape(parts[0])}$", "$options": "i"}
-        return {"$in": [_re.compile(f"^{_re.escape(p)}$", _re.IGNORECASE) for p in parts]}
+            # word-boundary substring → "Madrid" matches "Madrid - Bilbao" AND "Madrid"
+            return {"$regex": f"(?<![A-Za-z]){_re.escape(parts[0])}(?![A-Za-z])", "$options": "i"}
+        return {"$in": [
+            _re.compile(f"(?<![A-Za-z]){_re.escape(p)}(?![A-Za-z])", _re.IGNORECASE)
+            for p in parts
+        ]}
 
     flt: dict = {}
     if tokens:

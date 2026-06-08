@@ -60,9 +60,9 @@ export function DayBlock({ day, idx, active, numTravelers, accommodations, cityF
       </div>
 
       {(day.services || []).length > 0 && (
-        <div className="grid grid-cols-[28px_110px_1fr_60px_100px_100px_100px_30px] gap-2 px-3 py-2 text-[10px] tracking-[0.2em] uppercase text-clay-700 font-semibold bg-clay-50 border-b border-clay-300">
+        <div className="grid grid-cols-[28px_110px_1fr_60px_100px_100px_30px] gap-2 px-3 py-2 text-[10px] tracking-[0.2em] uppercase text-clay-700 font-semibold bg-clay-50 border-b border-clay-300">
           <div></div><div>Tipo</div><div>Servicio</div><div className="text-right">Qty</div>
-          <div className="text-right">Sin IVA</div><div className="text-right">Con IVA</div><div className="text-right">PVP</div><div></div>
+          <div className="text-right">Con IVA</div><div className="text-right">PVP</div><div></div>
         </div>
       )}
 

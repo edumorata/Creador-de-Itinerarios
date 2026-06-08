@@ -332,9 +332,9 @@ export function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
           <div className="p-4 text-sm text-clay-700">Opcional. Añade alojamientos resumidos por estancia.</div>
         ) : (
           <>
-            <div className="grid grid-cols-[1fr_120px_120px_90px_90px_90px_28px_28px] gap-2 px-3 py-2 text-[10px] tracking-[0.2em] uppercase text-clay-700 font-semibold bg-clay-50 border-b border-clay-300">
+            <div className="grid grid-cols-[1fr_120px_120px_120px_90px_28px_28px] gap-2 px-3 py-2 text-[10px] tracking-[0.2em] uppercase text-clay-700 font-semibold bg-clay-50 border-b border-clay-300">
               <div>Hotel / Apartamento</div><div>Desde</div><div>Hasta</div>
-              <div className="text-right">Sin IVA</div><div className="text-right">Con IVA</div><div className="text-right">PVP</div><div></div><div></div>
+              <div className="text-right">Con IVA</div><div className="text-right">PVP</div><div></div><div></div>
             </div>
             {(itn.accommodations || []).map((a, idx) => {
               const incl = a.price_tax_incl || a.price || 0;
@@ -345,7 +345,7 @@ export function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
               const usingRooms = rooms.length > 0;
               return (
                 <div key={a.acc_id} className="border-t border-clay-300">
-                  <div className="grid grid-cols-[1fr_120px_120px_90px_90px_90px_28px_28px] gap-2 px-3 py-2 items-center text-sm">
+                  <div className="grid grid-cols-[1fr_120px_120px_120px_90px_28px_28px] gap-2 px-3 py-2 items-center text-sm">
                     <HotelAutocomplete
                       value={a.name}
                       onTextChange={(v) => updWithSpread(idx, { name: v })}
@@ -354,17 +354,6 @@ export function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
                     />
                     <input type="date" className="bg-transparent outline-none tabular" value={a.date_from || ""} onChange={(e) => updWithSpread(idx, { date_from: e.target.value })} />
                     <input type="date" className="bg-transparent outline-none tabular" value={a.date_to || ""} onChange={(e) => updWithSpread(idx, { date_to: e.target.value })} />
-                    <div className="flex items-center gap-1 justify-end">
-                      <span className="text-clay-500 text-[10px]">€</span>
-                      <input
-                        type="number" min="0" step="0.01"
-                        className={`bg-transparent text-right outline-none tabular w-full ${usingRooms ? "text-clay-500" : ""}`}
-                        value={a.price_tax_excl || 0}
-                        readOnly={usingRooms}
-                        title={usingRooms ? "Calculado a partir de las habitaciones" : "Editable"}
-                        onChange={(e) => upd(idx, { price_tax_excl: parseFloat(e.target.value || "0") })}
-                      />
-                    </div>
                     <div className="flex items-center gap-1 justify-end">
                       <span className="text-clay-500 text-[10px]">€</span>
                       <input
@@ -404,7 +393,7 @@ export function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
                         {rooms.map((r) => (
                           <div
                             key={r.room_id}
-                            className="grid grid-cols-[1fr_120px_120px_90px_90px_90px_28px_28px] gap-2 items-center text-xs border-l-2 border-clay-200 pl-2"
+                            className="grid grid-cols-[1fr_120px_120px_120px_90px_28px_28px] gap-2 items-center text-xs border-l-2 border-clay-200 pl-2"
                             data-testid={`room-${r.room_id}`}
                           >
                             <div className="flex items-center gap-2 text-[11px]">
@@ -429,17 +418,6 @@ export function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
                             </div>
                             <div />
                             <div />
-                            <div className="flex items-center gap-1 justify-end">
-                              <span className="text-clay-500 text-[10px]">€</span>
-                              <input
-                                type="number" min="0" step="0.01"
-                                className="bg-white border border-clay-200 px-1 py-0.5 text-right tabular w-full"
-                                value={r.price_per_night_excl || 0}
-                                onChange={(e) => patchRoom(idx, r.room_id, { price_per_night_excl: parseFloat(e.target.value || "0") })}
-                                title="Precio por noche sin IVA"
-                                data-testid={`room-excl-${r.room_id}`}
-                              />
-                            </div>
                             <div className="flex items-center gap-1 justify-end">
                               <span className="text-clay-500 text-[10px]">€</span>
                               <input
