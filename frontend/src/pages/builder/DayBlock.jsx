@@ -5,6 +5,13 @@ import { ServiceRow } from "./ServiceRow";
 
 export function DayBlock({ day, idx, active, numTravelers, accommodations, cityFacets, markup, onActivate, onUpdateDay, onAddBlank, onRemoveDay, onUpdateService, onRemoveService, onDragStart, onDropService, onOrient, onAccommodate }) {
   const [dragOverIdx, setDragOverIdx] = useState(null);
+  // Ephemeral toggle: while ON, the autocomplete search ignores `day.city` so
+  // the agent can browse the entire country without losing the city tags they
+  // had configured. Resets on page reload (intentional — most uses are quick
+  // lookups).
+  const [allCountry, setAllCountry] = useState(false);
+  // When toggle is ON, pass empty string to children so the search widens.
+  const effectiveCity = allCountry ? "" : (day.city || "");
   return (
     <div className={`border ${active ? "border-terracotta" : "border-clay-300"} bg-white transition-colors`} data-testid={`day-${idx}`} onClick={onActivate}>
       <div className="px-4 py-3 bg-clay-100 flex items-center justify-between border-b border-clay-300"
@@ -32,12 +39,20 @@ export function DayBlock({ day, idx, active, numTravelers, accommodations, cityF
             {day.city ? (
               <button
                 type="button"
-                data-testid={`day-city-clear-${idx}`}
-                onClick={(e) => { e.stopPropagation(); onUpdateDay({ city: "" }); }}
-                className="ml-1 px-1.5 py-0.5 text-[9px] uppercase tracking-wider bg-clay-100 hover:bg-terracotta hover:text-white"
-                title="Quitar filtro de ciudad — buscar por todo el país"
+                data-testid={`day-city-allcountry-${idx}`}
+                onClick={(e) => { e.stopPropagation(); setAllCountry((v) => !v); }}
+                className={`ml-1 px-1.5 py-0.5 text-[9px] uppercase tracking-wider transition-colors ${
+                  allCountry
+                    ? "bg-terracotta text-white"
+                    : "bg-clay-100 hover:bg-terracotta hover:text-white"
+                }`}
+                title={
+                  allCountry
+                    ? "Filtro de ciudad desactivado. Pulsa para volver a filtrar por la ciudad del día."
+                    : "Buscar en todo el país sin perder las ciudades del día. Pulsa otra vez para reactivar el filtro."
+                }
               >
-                Todo el país
+                {allCountry ? "Todo el país · ON" : "Todo el país"}
               </button>
             ) : (
               <span
@@ -85,7 +100,7 @@ export function DayBlock({ day, idx, active, numTravelers, accommodations, cityF
               onDrop={(e) => { e.preventDefault(); e.stopPropagation(); onDropService(day.day_id, sIdx); setDragOverIdx(null); }}
               className={dragOverIdx === sIdx ? "border-t-2 border-terracotta -mt-px" : ""}
             >
-              <ServiceRow service={s} markup={markup} dayCity={day.city} numTravelers={numTravelers}
+              <ServiceRow service={s} markup={markup} dayCity={effectiveCity} numTravelers={numTravelers}
                 accommodations={accommodations}
                 onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", s.service_id); onDragStart(day.day_id, s.service_id); }}
                 onChange={(patch) => onUpdateService(s.service_id, patch)}

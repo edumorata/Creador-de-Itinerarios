@@ -322,6 +322,12 @@ class Itinerary(BaseModel):
     partner: Optional[PartnerKind] = "kimkim"
     currency: str = "EUR"
     status: Literal["draft", "sold", "not_sold"] = "draft"
+    # Versioning: every trip belongs to a "version group". A fresh itinerary is
+    # v1 of its own group (version_group_id == itinerary_id). Duplicating an
+    # itinerary keeps the same version_group_id and increments `version`, so the
+    # Dashboard can collapse all versions of the same client trip under one row.
+    version_group_id: Optional[str] = None
+    version: int = 1
     created_by: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)

@@ -147,6 +147,25 @@ async def seed_database_if_empty():
 
 
 @app.on_event("startup")
+async def backfill_itinerary_versions():
+    """First-run migration: every existing itinerary without a version_group_id
+    becomes v1 of its own (singleton) group so the new grouping UI on the
+    Dashboard works even for legacy data."""
+    try:
+        res = await db.itineraries.update_many(
+            {"version_group_id": {"$exists": False}},
+            [{"$set": {
+                "version_group_id": "$itinerary_id",
+                "version": 1,
+            }}],
+        )
+        if res.modified_count:
+            logger.warning("backfilled version_group_id on %d itineraries", res.modified_count)
+    except Exception as e:
+        logger.warning("itinerary version backfill failed: %s", e)
+
+
+@app.on_event("startup")
 async def reap_orphan_bulk_jobs():
     """Any bulk_import_job left as queued/running from a previous process is
     orphaned — the in-memory asyncio task died with the restart. Mark them
@@ -1314,7 +1333,70 @@ async def list_itinerary_agents(user: Annotated[User, Depends(current_user)]):
 async def create_itinerary(payload: ItineraryUpsert, user: Annotated[User, Depends(current_user)]):
     data = payload.model_dump(exclude_unset=True)
     itn = Itinerary(**data, created_by=user.email)
+    # Fresh itineraries are v1 of their own version group.
+    if not itn.version_group_id:
+        itn.version_group_id = itn.itinerary_id
+        itn.version = 1
     itn.updated_at = now_iso()
+    await db.itineraries.insert_one(itn.model_dump())
+    return itn
+
+
+@api.post("/itineraries/{itinerary_id}/duplicate", response_model=Itinerary)
+async def duplicate_itinerary(
+    itinerary_id: str,
+    user: Annotated[User, Depends(current_user)],
+):
+    """Create a new version of an existing itinerary.
+
+    The duplicate keeps the same `version_group_id` so all versions of the same
+    client trip stay grouped on the Dashboard, and gets `version = max(group) + 1`.
+    The name gets a "· v{N}" suffix on first duplication (or the existing one is
+    bumped). Status resets to "draft" — selling status only applies to the
+    finalized version of a trip.
+    """
+    src = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+    if not src:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not _can_access(src, user):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este itinerario")
+
+    group_id = src.get("version_group_id") or src["itinerary_id"]
+    # Find the highest version in the group so we always bump above the max,
+    # even if intermediate versions were deleted.
+    last = await db.itineraries.find(
+        {"version_group_id": group_id}, {"_id": 0, "version": 1}
+    ).sort("version", -1).limit(1).to_list(1)
+    next_version = (last[0].get("version") if last else src.get("version") or 1) + 1
+
+    # Strip the existing "· v{N}" suffix so we don't accumulate "v2 · v3"
+    base_name = re.sub(r"\s*[·\-]\s*v\d+\s*$", "", src.get("name") or "Itinerario").strip()
+    new_name = f"{base_name} · v{next_version}"
+
+    new_doc = {
+        **src,
+        "itinerary_id": new_id("itn"),
+        "name": new_name,
+        "version_group_id": group_id,
+        "version": next_version,
+        "status": "draft",
+        "created_by": user.email,
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    # Refresh the inner IDs so day/service/accommodation primary keys don't
+    # collide between the original and the duplicate (drag-drop in the builder
+    # uses these IDs to identify rows).
+    for d in new_doc.get("days") or []:
+        d["day_id"] = new_id("day")
+        for s in d.get("services") or []:
+            s["service_id"] = new_id("svc")
+    for a in new_doc.get("accommodations") or []:
+        a["acc_id"] = new_id("acc")
+        for r in a.get("rooms") or []:
+            r["room_id"] = new_id("room")
+
+    itn = Itinerary(**new_doc)
     await db.itineraries.insert_one(itn.model_dump())
     return itn
 
@@ -1959,6 +2041,9 @@ async def import_travefy_confirm(
         accommodations=acc_out,
         created_by=user.email,
     )
+    # Fresh import → seed a version group of its own.
+    itn.version_group_id = itn.itinerary_id
+    itn.version = 1
     itn.updated_at = now_iso()
     await db.itineraries.insert_one(itn.model_dump())
     return itn

@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, Calendar, Users as UsersIcon, FileDown, Trash2, Pencil, Search, X, Wand2 } from "lucide-react";
+import { Plus, Calendar, Users as UsersIcon, FileDown, Trash2, Pencil, Search, X, Wand2, Copy, ChevronDown, ChevronRight } from "lucide-react";
 import api, { API_BASE } from "@/lib/api";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
@@ -50,6 +50,7 @@ export default function Dashboard() {
   const [filterTraveler, setFilterTraveler] = useState("");
   const [loading, setLoading] = useState(true);
   const [showTravefy, setShowTravefy] = useState(false);
+  const [expanded, setExpanded] = useState(() => new Set());  // group ids that show older versions
   const navigate = useNavigate();
 
   const load = async () => {
@@ -91,6 +92,50 @@ export default function Dashboard() {
     await api.delete(`/itineraries/${id}`);
     toast.success("Itinerario eliminado");
     load();
+  };
+
+  const duplicate = async (id) => {
+    try {
+      const { data } = await api.post(`/itineraries/${id}/duplicate`);
+      toast.success(`Versión v${data.version} creada`);
+      load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "No se pudo duplicar");
+    }
+  };
+
+  // Group itineraries by version_group_id and pick the latest version as the
+  // "main" row. Older versions stay nested and are revealed when the agent
+  // clicks the chevron. Legacy items without a group_id default to their own
+  // singleton group (the backend backfills this on startup, but we keep this
+  // fallback so the UI is robust on partial migrations).
+  const groups = useMemo(() => {
+    const map = new Map();
+    for (const it of items) {
+      const gid = it.version_group_id || it.itinerary_id;
+      if (!map.has(gid)) map.set(gid, []);
+      map.get(gid).push(it);
+    }
+    // Sort versions inside each group: newest version first
+    const groupList = [];
+    for (const [gid, versions] of map.entries()) {
+      versions.sort((a, b) => (b.version || 1) - (a.version || 1));
+      groupList.push({ gid, versions });
+    }
+    // Sort groups by the latest version's updated_at, newest first (matches
+    // the backend's existing sort so the table feels stable)
+    groupList.sort((a, b) =>
+      new Date(b.versions[0].updated_at || 0) - new Date(a.versions[0].updated_at || 0)
+    );
+    return groupList;
+  }, [items]);
+
+  const toggleGroup = (gid) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(gid)) next.delete(gid); else next.add(gid);
+      return next;
+    });
   };
 
   const exportXlsx = async (id, name) => {
@@ -198,36 +243,69 @@ export default function Dashboard() {
               <button onClick={create} className="px-4 py-2 bg-terracotta text-white text-sm tracking-wider uppercase hover:bg-terracotta-hover">Crear itinerario</button>
             )}
           </div>
-        ) : items.map((itn) => {
-          const t = calcTotals(itn);
-          const st = STATUS_LABEL[itn.status] || STATUS_LABEL.draft;
+        ) : groups.map(({ gid, versions }) => {
+          const latest = versions[0];
+          const olderVersions = versions.slice(1);
+          const isExpanded = expanded.has(gid);
+          const renderRow = (itn, opts = {}) => {
+            const t = calcTotals(itn);
+            const st = STATUS_LABEL[itn.status] || STATUS_LABEL.draft;
+            return (
+              <div
+                key={itn.itinerary_id}
+                className={`grid ${gridCols} gap-0 border-t border-clay-300 hover:bg-clay-50 transition-colors text-sm ${opts.isOlder ? "bg-clay-50/50" : ""}`}
+                data-testid={`itn-row-${itn.itinerary_id}`}
+              >
+                <div className={`px-4 py-3 flex items-center gap-3 min-w-0 ${opts.isOlder ? "pl-12" : ""}`}>
+                  {!opts.isOlder && (versions.length > 1 ? (
+                    <button
+                      onClick={() => toggleGroup(gid)}
+                      className="p-0.5 hover:bg-clay-200 -ml-1 shrink-0"
+                      title={isExpanded ? "Ocultar versiones anteriores" : `Ver ${olderVersions.length} versión(es) anterior(es)`}
+                      data-testid={`expand-group-${gid}`}
+                    >
+                      {isExpanded ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}
+                    </button>
+                  ) : <span className="w-[14px] shrink-0" />)}
+                  <span className={`inline-block px-2 py-0.5 text-[10px] tracking-widest uppercase ${st.color} shrink-0`}>{st.text}</span>
+                  {(itn.version || 1) > 1 && (
+                    <span className="inline-block px-1.5 py-0.5 text-[10px] tracking-widest uppercase bg-terracotta/15 text-terracotta border border-terracotta/40 shrink-0">
+                      v{itn.version}
+                    </span>
+                  )}
+                  <button className="text-left font-semibold hover:text-terracotta truncate" onClick={() => navigate(`/itineraries/${itn.itinerary_id}`)}>
+                    {itn.name}
+                  </button>
+                </div>
+                {isAdmin && (
+                  <div className="px-4 py-3 text-clay-700 truncate" title={itn.created_by}>{agentName(itn.created_by)}</div>
+                )}
+                <div className="px-4 py-3 text-clay-700 truncate">{itn.main_traveler || "—"}</div>
+                <div className="px-4 py-3 text-clay-700 tabular flex items-center gap-2"><Calendar size={13}/>{fmt(itn.start_date)} → {fmt(itn.end_date)}</div>
+                <div className="px-4 py-3 text-clay-700 tabular flex items-center gap-1"><UsersIcon size={13}/>{itn.num_travelers}</div>
+                <div className="px-4 py-3 text-right font-semibold tabular">€ {t.final.toLocaleString("es-ES", { maximumFractionDigits: 2 })}</div>
+                <div className="px-4 py-3 flex items-center justify-end gap-1">
+                  <button onClick={() => navigate(`/itineraries/${itn.itinerary_id}`)} className="p-1.5 hover:bg-clay-200" title="Editar" data-testid={`edit-${itn.itinerary_id}`}>
+                    <Pencil size={14} />
+                  </button>
+                  <button onClick={() => duplicate(itn.itinerary_id)} className="p-1.5 hover:bg-clay-200" title="Duplicar como nueva versión" data-testid={`dup-${itn.itinerary_id}`}>
+                    <Copy size={14} />
+                  </button>
+                  <button onClick={() => exportXlsx(itn.itinerary_id, itn.name)} className="p-1.5 hover:bg-clay-200" title="Exportar Excel" data-testid={`export-${itn.itinerary_id}`}>
+                    <FileDown size={14} />
+                  </button>
+                  <button onClick={() => del(itn.itinerary_id)} className="p-1.5 hover:bg-clay-200 text-destructive" title="Eliminar" data-testid={`del-${itn.itinerary_id}`}>
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
+            );
+          };
           return (
-            <div key={itn.itinerary_id} className={`grid ${gridCols} gap-0 border-t border-clay-300 hover:bg-clay-50 transition-colors text-sm`} data-testid={`itn-row-${itn.itinerary_id}`}>
-              <div className="px-4 py-3 flex items-center gap-3 min-w-0">
-                <span className={`inline-block px-2 py-0.5 text-[10px] tracking-widest uppercase ${st.color} shrink-0`}>{st.text}</span>
-                <button className="text-left font-semibold hover:text-terracotta truncate" onClick={() => navigate(`/itineraries/${itn.itinerary_id}`)}>
-                  {itn.name}
-                </button>
-              </div>
-              {isAdmin && (
-                <div className="px-4 py-3 text-clay-700 truncate" title={itn.created_by}>{agentName(itn.created_by)}</div>
-              )}
-              <div className="px-4 py-3 text-clay-700 truncate">{itn.main_traveler || "—"}</div>
-              <div className="px-4 py-3 text-clay-700 tabular flex items-center gap-2"><Calendar size={13}/>{fmt(itn.start_date)} → {fmt(itn.end_date)}</div>
-              <div className="px-4 py-3 text-clay-700 tabular flex items-center gap-1"><UsersIcon size={13}/>{itn.num_travelers}</div>
-              <div className="px-4 py-3 text-right font-semibold tabular">€ {t.final.toLocaleString("es-ES", { maximumFractionDigits: 2 })}</div>
-              <div className="px-4 py-3 flex items-center justify-end gap-1">
-                <button onClick={() => navigate(`/itineraries/${itn.itinerary_id}`)} className="p-1.5 hover:bg-clay-200" title="Editar" data-testid={`edit-${itn.itinerary_id}`}>
-                  <Pencil size={14} />
-                </button>
-                <button onClick={() => exportXlsx(itn.itinerary_id, itn.name)} className="p-1.5 hover:bg-clay-200" title="Exportar Excel" data-testid={`export-${itn.itinerary_id}`}>
-                  <FileDown size={14} />
-                </button>
-                <button onClick={() => del(itn.itinerary_id)} className="p-1.5 hover:bg-clay-200 text-destructive" title="Eliminar" data-testid={`del-${itn.itinerary_id}`}>
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            </div>
+            <React.Fragment key={gid}>
+              {renderRow(latest)}
+              {isExpanded && olderVersions.map((v) => renderRow(v, { isOlder: true }))}
+            </React.Fragment>
           );
         })}
       </div>
