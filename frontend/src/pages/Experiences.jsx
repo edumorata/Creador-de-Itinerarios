@@ -98,7 +98,17 @@ export default function Experiences() {
 
   const del = async (id) => {
     if (!window.confirm("¿Eliminar esta experiencia?")) return;
-    await api.delete(`/experiences/${id}`); load();
+    try {
+      await api.delete(`/experiences/${id}`);
+      // Drop any pending optimistic edit for the deleted row AND remove it
+      // from the local list immediately so the user gets instant feedback.
+      setPending((p) => { const n = { ...p }; delete n[id]; return n; });
+      setItems((prev) => prev.filter((x) => x.experience_id !== id));
+      toast.success("Eliminada");
+      load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Error al eliminar");
+    }
   };
 
   return (

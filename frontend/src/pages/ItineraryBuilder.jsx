@@ -1,11 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, FileDown, MapPin, Plus, Search } from "lucide-react";
+import { ArrowLeft, FileDown, Plus } from "lucide-react";
 import { toast } from "sonner";
 import api, { API_BASE } from "@/lib/api";
 
 import {
-  TYPE_BADGE, TYPES, BADGE_FALLBACK,
   PARTNER_LABELS,
   fmtEUR, uid, daysBetween, dateAdd,
 } from "./builder/utils";
@@ -23,11 +22,6 @@ export default function ItineraryBuilder() {
   const [saving, setSaving] = useState(false);
   const saveTimer = useRef(null);
 
-  const [q, setQ] = useState("");
-  const [filterCountry, setFilterCountry] = useState("");
-  const [filterCity, setFilterCity] = useState("");
-  const [filterType, setFilterType] = useState("");
-  const [experiences, setExperiences] = useState([]);
   const [facets, setFacets] = useState({ countries: [], cities: [], types: [] });
   const [activeDayId, setActiveDayId] = useState(null);
   const dragRef = useRef(null);
@@ -75,17 +69,6 @@ export default function ItineraryBuilder() {
       setFacets(data);
     })();
   }, []);
-
-  const searchExperiences = useCallback(async () => {
-    const params = {};
-    if (q) params.q = q;
-    if (filterCountry) params.country = filterCountry;
-    if (filterCity) params.city = filterCity;
-    if (filterType) params.type = filterType;
-    const { data } = await api.get("/experiences", { params });
-    setExperiences(data);
-  }, [q, filterCountry, filterCity, filterType]);
-  useEffect(() => { searchExperiences(); }, [searchExperiences]);
 
   // Global orientation modal state.
   const [orient, setOrient] = useState(null);
@@ -412,20 +395,6 @@ export default function ItineraryBuilder() {
     schedSave({ ...itn, days: itn.days.map((d) => d.day_id === dayId
       ? { ...d, services: d.services.filter((s) => s.service_id !== sid) } : d) });
 
-  const addExperienceToActive = (exp) => {
-    const targetDay = activeDayId || itn.days?.[0]?.day_id;
-    if (!targetDay) { toast.error("Añade un día primero"); return; }
-    addServiceToDay(targetDay, {
-      experience_id: exp.experience_id, type: exp.type, name: exp.title,
-      provider_name: exp.provider_name,
-      pax: exp.pax || 1,
-      unit_price_tax_excl: exp.price_tax_excl ?? 0,
-      unit_price_tax_incl: exp.price_tax_incl ?? exp.price ?? 0,
-      currency: exp.currency || "EUR",
-    });
-    toast.success(`Añadida a ${itn.days.find((d) => d.day_id === targetDay)?.label || "día"}`);
-  };
-
   const exportXlsx = async () => {
     try {
       const res = await fetch(`${API_BASE}/itineraries/${id}/export`, { credentials: "include" });
@@ -570,57 +539,6 @@ export default function ItineraryBuilder() {
                 <div className="font-serif text-2xl tabular">{fmtEUR(totals.pvp)}</div>
               </div>
               <FxConverter fx={fx} setFx={setFx} totals={totals} />
-            </div>
-          </div>
-
-          <div className="p-5">
-            <div className="smallcaps mb-3">Librería de experiencias</div>
-            <div className="space-y-2">
-              <div className="relative">
-                <Search size={14} className="absolute left-3 top-3 text-clay-500" />
-                <input data-testid="exp-search" placeholder="Buscar título, proveedor…" value={q} onChange={(e) => setQ(e.target.value)} className="w-full pl-9 pr-3 py-2 bg-white border border-clay-300 text-sm focus:border-terracotta outline-none" />
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <select data-testid="filter-country" value={filterCountry} onChange={(e) => setFilterCountry(e.target.value)} className="bg-white border border-clay-300 px-2 py-2 text-sm">
-                  <option value="">País: todos</option>
-                  {facets.countries.map((c) => <option key={c} value={c}>{c}</option>)}
-                </select>
-                <select data-testid="filter-type" value={filterType} onChange={(e) => setFilterType(e.target.value)} className="bg-white border border-clay-300 px-2 py-2 text-sm">
-                  <option value="">Tipo: todos</option>
-                  {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                </select>
-              </div>
-              <input data-testid="filter-city" value={filterCity} onChange={(e) => setFilterCity(e.target.value)} placeholder="Ciudad" list="city-list-aside" className="w-full bg-white border border-clay-300 px-2 py-2 text-sm" />
-              <datalist id="city-list-aside">
-                {facets.cities.map((c) => <option key={c} value={c} />)}
-              </datalist>
-              <div className="text-[11px] text-clay-700">
-                {experiences.length} resultados · día activo: <b>{itn.days.find((d) => d.day_id === activeDayId)?.label || "—"}</b>
-              </div>
-            </div>
-
-            <div className="mt-4 space-y-2 max-h-[58vh] overflow-auto pr-1" data-testid="exp-results">
-              {experiences.length === 0 ? (
-                <div className="text-xs text-clay-700 p-4 border border-dashed border-clay-300">Sin resultados.</div>
-              ) : experiences.map((e) => (
-                <button key={e.experience_id} data-testid={`exp-add-${e.experience_id}`} onClick={() => addExperienceToActive(e)} className="w-full text-left p-3 bg-white border border-clay-300 hover:border-terracotta hover:bg-terracotta/5 transition-colors">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-sm font-semibold truncate">{e.title}</div>
-                      <div className="text-[11px] text-clay-700 mt-0.5 truncate flex items-center gap-1">
-                        <MapPin size={10}/> {[e.city, e.country].filter(Boolean).join(" · ") || "—"} · {e.provider_name}
-                      </div>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <div className="font-semibold tabular text-sm">{fmtEUR(((e.price_tax_incl ?? e.price ?? 0) / Math.max(1, e.pax || 1)))} <span className="text-[9px] font-normal text-clay-700">/pax</span></div>
-                      <div className="text-[10px] text-clay-700 tabular">
-                        total {fmtEUR(e.price_tax_incl ?? e.price)} · <b>{e.pax || 2} pax</b>
-                      </div>
-                      <span className={`inline-block mt-1 px-1.5 py-0.5 text-[9px] tracking-widest uppercase ${TYPE_BADGE[e.type] || BADGE_FALLBACK}`}>{e.type}</span>
-                    </div>
-                  </div>
-                </button>
-              ))}
             </div>
           </div>
         </div>
