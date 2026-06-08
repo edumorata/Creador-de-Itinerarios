@@ -1591,6 +1591,22 @@ def _classify_travefy(name: str) -> ServiceType:
     return "actividad"
 
 
+# Travefy uses "Free day in X" / "Departure" / "Día libre" as placeholder rows
+# on rest days. They aren't services and should NEVER end up in the itinerary
+# (otherwise the day shows a phantom "⚠ Sin match · Revisar" line).
+_FREE_DAY_PATTERN = re.compile(
+    r"\b(free\s+day|d[ií]a\s+libre|free\s+time|leisure\s+day|day\s+at\s+leisure|"
+    r"departure|farewell|safe\s+travels|welcome)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_free_day_marker(name: str) -> bool:
+    if not name:
+        return True
+    return bool(_FREE_DAY_PATTERN.search(name))
+
+
 async def _match_experience(name: str, city: Optional[str], num_travelers: int) -> Optional[dict]:
     """Find best matching experience in DB for the given Travefy item name."""
     city = _norm_city(city)
@@ -1738,7 +1754,8 @@ async def _run_travefy_preview_job(job_id: str, url: str):
             items_out = []
             for a in d.get("activities") or []:
                 name = (a.get("name") or "").strip()
-                if not name:
+                if not name or _is_free_day_marker(name):
+                    # Free Day / Departure / Welcome placeholder → leave the day empty.
                     continue
                 kind = _classify_travefy(name)
                 match = None
