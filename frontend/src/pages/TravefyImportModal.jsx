@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Link2, Check, AlertTriangle, X, Loader2, MapPin, Bed, Wand2 } from "lucide-react";
+import { Link2, Check, AlertTriangle, X, Loader2, MapPin, Bed, Wand2, Search, Pencil, Link } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import api from "@/lib/api";
 import { toast } from "sonner";
@@ -8,12 +8,102 @@ import { toast } from "sonner";
 //  1. url       — agent pastes a Travefy URL
 //  2. running   — backend job is reading the page + matching against BBDD
 //  3. preview   — agent reviews matched items, excludes any, then confirms
+//
+// Inside step 3, every item exposes a "Cambiar/Vincular" button that opens
+// an inline search dropdown (limited to that day's city + the item's type)
+// so the agent can fix a wrong match or attach an experience to a row the
+// automated matcher missed.
 
 const CONFIDENCE_LABEL = {
   high:   { txt: "Match alto",  cls: "bg-pine text-white" },
   medium: { txt: "Match medio", cls: "bg-clay-300 text-clay-900" },
   low:    { txt: "Match dudoso", cls: "bg-amber-200 text-amber-900" },
+  manual: { txt: "Manual",      cls: "bg-terracotta text-white" },
 };
+
+/** Inline search for vinculating an unmatched item (or replacing a wrong match).
+ *  Renders below the item row, search results inline (no absolute popover that
+ *  would get clipped by the scrollable modal body). */
+function InlineMatchPicker({ initialQuery, dayCity, type, pax, onPick, onClose }) {
+  const isHotel = type === "alojamiento";
+  const [q, setQ] = useState(initialQuery || "");
+  const [results, setResults] = useState([]);
+  const [busy, setBusy] = useState(true);
+
+  // Debounced search effect — fires on mount (initial query) and on every
+  // change to `q` / pre-filters. Cancelled cleanly on unmount or rapid typing.
+  useEffect(() => {
+    let cancelled = false;
+    const handler = setTimeout(async () => {
+      const params = { q: (q || "").trim(), type, limit: 8 };
+      if (dayCity) params.city = dayCity;
+      if (pax) params.pax = pax;
+      try {
+        const { data } = await api.get("/experiences/autocomplete", { params });
+        if (!cancelled) { setResults(data || []); setBusy(false); }
+      } catch (_e) {
+        if (!cancelled) { setResults([]); setBusy(false); }
+      }
+    }, 220);
+    return () => { cancelled = true; clearTimeout(handler); };
+  }, [q, dayCity, type, pax]);
+
+  const onQ = (e) => setQ(e.target.value);
+
+  return (
+    <div className="border-t border-clay-300 bg-clay-50 px-3 py-2 col-span-full" data-testid="match-picker">
+      <div className="flex items-center gap-2 mb-2">
+        <Search size={13} className="text-clay-500"/>
+        <input
+          autoFocus
+          data-testid="match-picker-input"
+          value={q}
+          onChange={onQ}
+          placeholder={dayCity ? `Buscar en ${dayCity}…` : "Buscar en la BBDD…"}
+          className="flex-1 bg-white border border-clay-300 px-2 py-1 text-sm outline-none focus:border-terracotta"
+        />
+        <button onClick={onClose} className="text-clay-500 hover:text-clay-900 text-xs uppercase tracking-wider" data-testid="match-picker-close">
+          Cerrar
+        </button>
+      </div>
+      {busy && <div className="text-xs text-clay-500 py-2">Buscando…</div>}
+      {!busy && results.length === 0 && (
+        <div className="text-xs text-clay-500 py-2 italic">
+          Sin resultados. Prueba con menos palabras o quita el filtro de ciudad.
+        </div>
+      )}
+      {!busy && results.length > 0 && (
+        <div className="space-y-1 max-h-56 overflow-y-auto">
+          {results.map((r) => {
+            const id = isHotel ? r.hotel_id : r.experience_id;
+            const price = isHotel
+              ? (r.price_per_night_incl ?? r.price_tax_incl ?? 0)
+              : (r.price_tax_incl ?? r.price ?? 0);
+            return (
+              <button
+                key={id}
+                data-testid={`match-pick-${id}`}
+                onClick={() => onPick(r)}
+                className="w-full text-left bg-white border border-clay-200 hover:border-terracotta hover:bg-terracotta/5 px-2.5 py-1.5 text-sm flex items-center gap-2"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold truncate">{r.title}</div>
+                  <div className="text-[11px] text-clay-700 truncate">
+                    {[r.provider_name, r.city, r.country].filter(Boolean).join(" · ")}
+                  </div>
+                </div>
+                <div className="text-right shrink-0 tabular text-xs">
+                  <div className="font-semibold">€ {Number(price).toLocaleString("es-ES", {maximumFractionDigits: 2})}{isHotel ? "/n" : ""}</div>
+                  {!isHotel && r.pax ? <div className="text-[10px] text-clay-700">{r.pax} pax</div> : null}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function TravefyImportModal({ onClose }) {
   const [step, setStep] = useState("url");
@@ -22,6 +112,10 @@ export function TravefyImportModal({ onClose }) {
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState(null);
   const [confirming, setConfirming] = useState(false);
+  // Tracks which row is currently being re-matched. Strings:
+  //   "day:{di}:{ii}"  → an activity row
+  //   "hotel:{hi}"     → a hotel row
+  const [pickerOpen, setPickerOpen] = useState(null);
   const navigate = useNavigate();
   const pollRef = useRef(null);
 
@@ -93,6 +187,71 @@ export function TravefyImportModal({ onClose }) {
     setPreview((p) => {
       const hotels = [...p.hotels];
       hotels[hotelIdx] = { ...hotels[hotelIdx], excluded: !hotels[hotelIdx].excluded };
+      return { ...p, hotels };
+    });
+  };
+
+  // Build a "match" payload from an /experiences/autocomplete result.
+  // The autocomplete endpoint returns experiences or hotels (when type=alojamiento)
+  // — we normalize both into the same {match} shape the confirm endpoint expects.
+  const pickItemMatch = (dayIdx, itemIdx, result) => {
+    setPreview((p) => {
+      const days = [...p.days];
+      const items = [...days[dayIdx].items];
+      const newMatch = {
+        experience_id: result.experience_id,
+        title: result.title,
+        type: result.type || items[itemIdx].type,
+        pax: result.pax,
+        city: result.city,
+        provider_name: result.provider_name,
+        price_tax_excl: result.price_tax_excl || 0,
+        price_tax_incl: result.price_tax_incl || result.price || 0,
+        currency: result.currency || "EUR",
+        confidence: "manual",
+      };
+      items[itemIdx] = { ...items[itemIdx], match: newMatch, type: newMatch.type };
+      days[dayIdx] = { ...days[dayIdx], items };
+      return { ...p, days };
+    });
+    setPickerOpen(null);
+    toast.success("Match vinculado");
+  };
+
+  const unlinkItemMatch = (dayIdx, itemIdx) => {
+    setPreview((p) => {
+      const days = [...p.days];
+      const items = [...days[dayIdx].items];
+      items[itemIdx] = { ...items[itemIdx], match: null };
+      days[dayIdx] = { ...days[dayIdx], items };
+      return { ...p, days };
+    });
+  };
+
+  const pickHotelMatch = (hotelIdx, result) => {
+    setPreview((p) => {
+      const hotels = [...p.hotels];
+      const newMatch = {
+        hotel_id: result.hotel_id,
+        name: result.title,  // autocomplete returns hotel name in `title`
+        city: result.city,
+        tier: result.tier,
+        price_per_night_excl: result.price_tax_excl || 0,
+        price_per_night_incl: result.price_tax_incl || 0,
+        currency: result.currency || "EUR",
+        confidence: "manual",
+      };
+      hotels[hotelIdx] = { ...hotels[hotelIdx], match: newMatch };
+      return { ...p, hotels };
+    });
+    setPickerOpen(null);
+    toast.success("Hotel vinculado");
+  };
+
+  const unlinkHotelMatch = (hotelIdx) => {
+    setPreview((p) => {
+      const hotels = [...p.hotels];
+      hotels[hotelIdx] = { ...hotels[hotelIdx], match: null };
       return { ...p, hotels };
     });
   };
@@ -241,41 +400,74 @@ export function TravefyImportModal({ onClose }) {
                     ) : (day.items || []).map((it, ii) => {
                       const m = it.match;
                       const conf = m ? CONFIDENCE_LABEL[m.confidence] : null;
+                      const pickerKey = `day:${di}:${ii}`;
+                      const isPickerOpen = pickerOpen === pickerKey;
                       return (
-                        <div
-                          key={ii}
-                          className={`grid grid-cols-[22px_70px_1fr_auto] gap-2 items-center px-3 py-2 border-t border-clay-200 ${it.excluded ? "opacity-40" : ""}`}
-                          data-testid={`travefy-item-${di}-${ii}`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={!it.excluded}
-                            onChange={() => toggleItem(di, ii)}
-                            className="cursor-pointer"
-                            data-testid={`travefy-item-toggle-${di}-${ii}`}
-                          />
-                          <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 bg-clay-200 text-clay-900 text-center">
-                            {it.type}
-                          </span>
-                          <div className="min-w-0">
-                            <div className="text-sm truncate" title={it.travefy_name}>{it.travefy_name}</div>
-                            {m ? (
-                              <div className="text-xs text-clay-700 truncate flex items-center gap-2">
-                                <Check size={11} className="text-pine shrink-0"/>
-                                <span className="truncate">{m.title}</span>
-                                <span className={`text-[9px] uppercase tracking-wider px-1.5 py-0.5 ${conf.cls}`}>{conf.txt}</span>
-                              </div>
-                            ) : (
-                              <div className="text-xs text-amber-700 truncate flex items-center gap-2">
-                                <AlertTriangle size={11} className="shrink-0"/>
-                                <span>Sin match · Revisar precio después</span>
-                              </div>
-                            )}
+                        <React.Fragment key={ii}>
+                          <div
+                            className={`grid grid-cols-[22px_70px_1fr_auto_auto] gap-2 items-center px-3 py-2 border-t border-clay-200 ${it.excluded ? "opacity-40" : ""}`}
+                            data-testid={`travefy-item-${di}-${ii}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={!it.excluded}
+                              onChange={() => toggleItem(di, ii)}
+                              className="cursor-pointer"
+                              data-testid={`travefy-item-toggle-${di}-${ii}`}
+                            />
+                            <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 bg-clay-200 text-clay-900 text-center">
+                              {it.type}
+                            </span>
+                            <div className="min-w-0">
+                              <div className="text-sm truncate" title={it.travefy_name}>{it.travefy_name}</div>
+                              {m ? (
+                                <div className="text-xs text-clay-700 truncate flex items-center gap-2">
+                                  <Check size={11} className="text-pine shrink-0"/>
+                                  <span className="truncate">{m.title}</span>
+                                  <span className={`text-[9px] uppercase tracking-wider px-1.5 py-0.5 ${conf.cls}`}>{conf.txt}</span>
+                                </div>
+                              ) : (
+                                <div className="text-xs text-amber-700 truncate flex items-center gap-2">
+                                  <AlertTriangle size={11} className="shrink-0"/>
+                                  <span>Sin match · Revisar precio después</span>
+                                </div>
+                              )}
+                            </div>
+                            <div className="text-right tabular text-sm font-semibold whitespace-nowrap">
+                              {m ? `€ ${(m.price_tax_incl || 0).toLocaleString("es-ES", {maximumFractionDigits: 2})}` : "—"}
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                onClick={() => setPickerOpen(isPickerOpen ? null : pickerKey)}
+                                className="p-1.5 hover:bg-clay-200 text-clay-700"
+                                title={m ? "Cambiar match" : "Vincular a la BBDD"}
+                                data-testid={`travefy-item-pick-${di}-${ii}`}
+                              >
+                                {m ? <Pencil size={13}/> : <Link size={13}/>}
+                              </button>
+                              {m && (
+                                <button
+                                  onClick={() => unlinkItemMatch(di, ii)}
+                                  className="p-1.5 hover:bg-clay-200 text-clay-400 hover:text-destructive"
+                                  title="Quitar match"
+                                  data-testid={`travefy-item-unlink-${di}-${ii}`}
+                                >
+                                  <X size={13}/>
+                                </button>
+                              )}
+                            </div>
                           </div>
-                          <div className="text-right tabular text-sm font-semibold whitespace-nowrap">
-                            {m ? `€ ${(m.price_tax_incl || 0).toLocaleString("es-ES", {maximumFractionDigits: 2})}` : "—"}
-                          </div>
-                        </div>
+                          {isPickerOpen && (
+                            <InlineMatchPicker
+                              initialQuery={it.travefy_name}
+                              dayCity={day.city}
+                              type={it.type}
+                              pax={preview.num_travelers}
+                              onPick={(r) => pickItemMatch(di, ii, r)}
+                              onClose={() => setPickerOpen(null)}
+                            />
+                          )}
+                        </React.Fragment>
                       );
                     })}
                   </div>
@@ -290,38 +482,70 @@ export function TravefyImportModal({ onClose }) {
                     {(preview.hotels || []).map((h, hi) => {
                       const m = h.match;
                       const conf = m ? CONFIDENCE_LABEL[m.confidence] : null;
+                      const pickerKey = `hotel:${hi}`;
+                      const isPickerOpen = pickerOpen === pickerKey;
                       return (
-                        <div
-                          key={hi}
-                          className={`grid grid-cols-[22px_1fr_auto_auto] gap-2 items-center px-3 py-2 border-t border-clay-200 ${h.excluded ? "opacity-40" : ""}`}
-                          data-testid={`travefy-hotel-${hi}`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={!h.excluded}
-                            onChange={() => toggleHotel(hi)}
-                            className="cursor-pointer"
-                          />
-                          <div className="min-w-0">
-                            <div className="text-sm truncate font-semibold" title={h.travefy_name}>{h.travefy_name}</div>
-                            {m ? (
-                              <div className="text-xs text-clay-700 truncate flex items-center gap-2">
-                                <Check size={11} className="text-pine shrink-0"/>
-                                <span className="truncate">{m.name}</span>
-                                <span className={`text-[9px] uppercase tracking-wider px-1.5 py-0.5 ${conf.cls}`}>{conf.txt}</span>
-                              </div>
-                            ) : (
-                              <div className="text-xs text-amber-700 truncate flex items-center gap-2">
-                                <AlertTriangle size={11} className="shrink-0"/>
-                                <span>Sin match · Lo creas o eliges hotel en el builder</span>
-                              </div>
-                            )}
+                        <React.Fragment key={hi}>
+                          <div
+                            className={`grid grid-cols-[22px_1fr_auto_auto_auto] gap-2 items-center px-3 py-2 border-t border-clay-200 ${h.excluded ? "opacity-40" : ""}`}
+                            data-testid={`travefy-hotel-${hi}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={!h.excluded}
+                              onChange={() => toggleHotel(hi)}
+                              className="cursor-pointer"
+                            />
+                            <div className="min-w-0">
+                              <div className="text-sm truncate font-semibold" title={h.travefy_name}>{h.travefy_name}</div>
+                              {m ? (
+                                <div className="text-xs text-clay-700 truncate flex items-center gap-2">
+                                  <Check size={11} className="text-pine shrink-0"/>
+                                  <span className="truncate">{m.name}</span>
+                                  <span className={`text-[9px] uppercase tracking-wider px-1.5 py-0.5 ${conf.cls}`}>{conf.txt}</span>
+                                </div>
+                              ) : (
+                                <div className="text-xs text-amber-700 truncate flex items-center gap-2">
+                                  <AlertTriangle size={11} className="shrink-0"/>
+                                  <span>Sin match · Vincúlalo manualmente o créalo en el builder</span>
+                                </div>
+                              )}
+                            </div>
+                            <div className="text-xs text-clay-700 tabular whitespace-nowrap">{h.check_in} → {h.check_out}</div>
+                            <div className="text-right tabular text-sm font-semibold whitespace-nowrap">
+                              {m ? `€ ${(m.price_per_night_incl || 0).toLocaleString("es-ES", {maximumFractionDigits: 2})}/n` : "—"}
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                onClick={() => setPickerOpen(isPickerOpen ? null : pickerKey)}
+                                className="p-1.5 hover:bg-clay-200 text-clay-700"
+                                title={m ? "Cambiar hotel" : "Vincular a la BBDD"}
+                                data-testid={`travefy-hotel-pick-${hi}`}
+                              >
+                                {m ? <Pencil size={13}/> : <Link size={13}/>}
+                              </button>
+                              {m && (
+                                <button
+                                  onClick={() => unlinkHotelMatch(hi)}
+                                  className="p-1.5 hover:bg-clay-200 text-clay-400 hover:text-destructive"
+                                  title="Quitar match"
+                                  data-testid={`travefy-hotel-unlink-${hi}`}
+                                >
+                                  <X size={13}/>
+                                </button>
+                              )}
+                            </div>
                           </div>
-                          <div className="text-xs text-clay-700 tabular whitespace-nowrap">{h.check_in} → {h.check_out}</div>
-                          <div className="text-right tabular text-sm font-semibold whitespace-nowrap">
-                            {m ? `€ ${(m.price_per_night_incl || 0).toLocaleString("es-ES", {maximumFractionDigits: 2})}/n` : "—"}
-                          </div>
-                        </div>
+                          {isPickerOpen && (
+                            <InlineMatchPicker
+                              initialQuery={h.travefy_name}
+                              dayCity={h.city}
+                              type="alojamiento"
+                              onPick={(r) => pickHotelMatch(hi, r)}
+                              onClose={() => setPickerOpen(null)}
+                            />
+                          )}
+                        </React.Fragment>
                       );
                     })}
                   </div>
