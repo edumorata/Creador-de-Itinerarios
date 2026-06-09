@@ -23,6 +23,35 @@ EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 _PW_INSTALL_LOCK = asyncio.Lock()
 _PW_INSTALL_DONE = False
 
+# Production pods only have ~512 MiB of RAM available; running TWO chromium
+# processes in parallel reliably OOM-kills the backend. Force every scrape to
+# go through a Semaphore(1) so only one headless Chromium is alive at a time.
+# Concurrent Travefy import requests queue here (they're async, so they yield
+# the event loop while waiting — the FastAPI worker keeps serving other
+# endpoints normally).
+_BROWSER_SEMAPHORE = asyncio.Semaphore(1)
+
+# Memory-saving launch args for Chromium. `--single-process` collapses the
+# renderer/browser into the same OS process (saves ~80 MiB) and the V8
+# heap cap keeps a single page from runaway-growing in memory. These args
+# are safe for headless scraping (no GPU, no extensions, no multiprocess
+# isolation needs); they would NOT be safe for an interactive user-facing
+# browser, but we only use Playwright server-side here.
+_CHROMIUM_LAUNCH_ARGS = [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--single-process",
+    "--no-zygote",
+    "--disable-gpu",
+    "--disable-extensions",
+    "--disable-background-networking",
+    "--disable-default-apps",
+    "--disable-sync",
+    "--metrics-recording-only",
+    "--mute-audio",
+    "--js-flags=--max-old-space-size=128",
+]
+
 
 async def _ensure_chromium_installed() -> bool:
     """Install Playwright's chromium binary if it isn't there.
@@ -64,7 +93,13 @@ async def _ensure_chromium_installed() -> bool:
 
 
 async def _render_url(url: str) -> dict:
-    """Open the URL in a headless Chromium and return the rendered body text + source label."""
+    """Open the URL in a headless Chromium and return the rendered body text + source label.
+
+    Wrapped in a global semaphore so we never spawn more than one Chromium at
+    a time (production pods OOM-kill instantly when two run concurrently).
+    The semaphore queues additional requests; FastAPI's event loop keeps
+    serving other endpoints while a scrape is in flight.
+    """
     source = "anonymous"
     text = ""
     ok = False
@@ -72,90 +107,83 @@ async def _render_url(url: str) -> dict:
     is_gestion = "gestion.viajadverdad.com" in url
     is_travefy = "travefy.com" in url
 
-    # Lazy-install chromium the first time we need it (also recovers from a
-    # Playwright SDK upgrade that left the cached binary stale).
-    try:
-        pw_ctx = async_playwright()
-    except Exception:
-        pw_ctx = None
-    # We can't actually open the context here twice cleanly, so we attempt the
-    # launch and if it complains about a missing executable, we install + retry.
-    async with async_playwright() as pw:
-        try:
-            browser = await pw.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
-        except Exception as e:
-            msg = str(e)
-            if "Executable doesn't exist" in msg or "playwright install" in msg:
-                logger.warning("chromium binary missing on first launch — auto-installing")
-                installed = await _ensure_chromium_installed()
-                if not installed:
+    async with _BROWSER_SEMAPHORE:
+        async with async_playwright() as pw:
+            try:
+                browser = await pw.chromium.launch(args=_CHROMIUM_LAUNCH_ARGS)
+            except Exception as e:
+                msg = str(e)
+                if "Executable doesn't exist" in msg or "playwright install" in msg:
+                    logger.warning("chromium binary missing on first launch — auto-installing")
+                    installed = await _ensure_chromium_installed()
+                    if not installed:
+                        raise
+                    browser = await pw.chromium.launch(args=_CHROMIUM_LAUNCH_ARGS)
+                else:
                     raise
-                browser = await pw.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
-            else:
-                raise
-        try:
-            ctx = await browser.new_context(user_agent="Mozilla/5.0 (X11; Linux x86_64) ItineraryBot/1.0")
-            page = await ctx.new_page()
+            try:
+                ctx = await browser.new_context(user_agent="Mozilla/5.0 (X11; Linux x86_64) ItineraryBot/1.0")
+                page = await ctx.new_page()
 
-            if is_gestion:
-                source = "gestion"
+                if is_gestion:
+                    source = "gestion"
+                    try:
+                        await page.goto("https://gestion.viajadverdad.com/login", wait_until="networkidle", timeout=30000)
+                        await page.fill('input[name="username"]', GESTION_USER)
+                        await page.fill('input[name="password"]', GESTION_PASS)
+                        await page.click('button[type="submit"], input[type="submit"]')
+                        await page.wait_for_load_state("networkidle", timeout=20000)
+                        if "/login" in page.url:
+                            error = "login_failed"
+                    except Exception as e:
+                        error = f"login_error: {e}"
+
                 try:
-                    await page.goto("https://gestion.viajadverdad.com/login", wait_until="networkidle", timeout=30000)
-                    await page.fill('input[name="username"]', GESTION_USER)
-                    await page.fill('input[name="password"]', GESTION_PASS)
-                    await page.click('button[type="submit"], input[type="submit"]')
-                    await page.wait_for_load_state("networkidle", timeout=20000)
-                    if "/login" in page.url:
-                        error = "login_failed"
+                    await page.goto(url, wait_until="networkidle", timeout=45000)
                 except Exception as e:
-                    error = f"login_error: {e}"
+                    error = error or f"goto_error: {e}"
 
-            try:
-                await page.goto(url, wait_until="networkidle", timeout=45000)
-            except Exception as e:
-                error = error or f"goto_error: {e}"
+                if is_travefy:
+                    try:
+                        await page.wait_for_selector("text=/Day|Jun|Jan|Feb|Mar|Apr|May|Jul|Aug|Sep|Oct|Nov|Dec/", timeout=15000)
+                    except Exception:
+                        pass
+                    await page.wait_for_timeout(2500)
 
-            if is_travefy:
+                await page.wait_for_timeout(1500)
                 try:
-                    await page.wait_for_selector("text=/Day|Jun|Jan|Feb|Mar|Apr|May|Jul|Aug|Sep|Oct|Nov|Dec/", timeout=15000)
-                except Exception:
-                    pass
-                await page.wait_for_timeout(2500)
+                    text = await page.evaluate("document.body.innerText")
+                    text = "\n".join(line.strip() for line in (text or "").splitlines() if line.strip())
+                except Exception as e:
+                    error = error or f"extract_error: {e}"
 
-            await page.wait_for_timeout(1500)
-            try:
-                text = await page.evaluate("document.body.innerText")
-                text = "\n".join(line.strip() for line in (text or "").splitlines() if line.strip())
-            except Exception as e:
-                error = error or f"extract_error: {e}"
+                # For gestion: the /trips/form/{type}/{tripId} page only shows the lead form;
+                # the actual bookings/services live in /reservas/list/3?app_bookings___trip_id_raw={tripId}
+                # Travelers in /trips/list/2?app_travelers___trip_id_raw={tripId}. Fetch both and concat.
+                if is_gestion and not error:
+                    m = re.search(r"/trips/form/\d+/(\d+)", url)
+                    if m:
+                        trip_id = m.group(1)
+                        extra_chunks = []
+                        for label, sub in [
+                            ("TRAVELERS", f"/trips/list/2?app_travelers___trip_id_raw={trip_id}&limitstart2=0&resetfilters=1"),
+                            ("BOOKINGS", f"/reservas/list/3?app_bookings___trip_id_raw={trip_id}&limitstart3=0&resetfilters=1"),
+                        ]:
+                            full = "https://gestion.viajadverdad.com" + sub
+                            try:
+                                await page.goto(full, wait_until="networkidle", timeout=30000)
+                                await page.wait_for_timeout(2000)
+                                t2 = await page.evaluate("document.body.innerText")
+                                t2 = "\n".join(line.strip() for line in (t2 or "").splitlines() if line.strip())
+                                extra_chunks.append(f"=== {label} ({full}) ===\n{t2}")
+                            except Exception as e:
+                                extra_chunks.append(f"=== {label} (error: {e}) ===")
+                        text = (text or "") + "\n\n" + "\n\n".join(extra_chunks)
 
-            # For gestion: the /trips/form/{type}/{tripId} page only shows the lead form;
-            # the actual bookings/services live in /reservas/list/3?app_bookings___trip_id_raw={tripId}
-            # Travelers in /trips/list/2?app_travelers___trip_id_raw={tripId}. Fetch both and concat.
-            if is_gestion and not error:
-                m = re.search(r"/trips/form/\d+/(\d+)", url)
-                if m:
-                    trip_id = m.group(1)
-                    extra_chunks = []
-                    for label, sub in [
-                        ("TRAVELERS", f"/trips/list/2?app_travelers___trip_id_raw={trip_id}&limitstart2=0&resetfilters=1"),
-                        ("BOOKINGS", f"/reservas/list/3?app_bookings___trip_id_raw={trip_id}&limitstart3=0&resetfilters=1"),
-                    ]:
-                        full = "https://gestion.viajadverdad.com" + sub
-                        try:
-                            await page.goto(full, wait_until="networkidle", timeout=30000)
-                            await page.wait_for_timeout(2000)
-                            t2 = await page.evaluate("document.body.innerText")
-                            t2 = "\n".join(line.strip() for line in (t2 or "").splitlines() if line.strip())
-                            extra_chunks.append(f"=== {label} ({full}) ===\n{t2}")
-                        except Exception as e:
-                            extra_chunks.append(f"=== {label} (error: {e}) ===")
-                    text = (text or "") + "\n\n" + "\n\n".join(extra_chunks)
-
-            if len(text) > 200 and not (is_gestion and error == "login_failed"):
-                ok = True
-        finally:
-            await browser.close()
+                if len(text) > 200 and not (is_gestion and error == "login_failed"):
+                    ok = True
+            finally:
+                await browser.close()
 
     return {"ok": ok, "source": source, "text": text[:80000], "error": error}
 
