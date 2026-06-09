@@ -1706,6 +1706,31 @@ def _classify_travefy(name: str) -> ServiceType:
     return "actividad"
 
 
+# The DB still contains experiences with legacy taxonomy values like
+# 'restaurante', 'transporte', 'otro' that we cleaned in preview but never
+# back-migrated in production. Map them to the closed enum the Itinerary
+# Pydantic model accepts so the confirm endpoint doesn't fail validation.
+_LEGACY_TYPE_REMAP: dict[str, ServiceType] = {
+    "restaurante": "actividad",
+    "transporte": "tren",
+    "otro": "entradas",
+    # Anything that came in with the right enum value is passed through below.
+}
+_VALID_TYPES: set[str] = {"alojamiento", "actividad", "entradas", "transfer", "tren", "vuelo", "hotel"}
+
+
+def _normalize_service_type(t: Optional[str]) -> ServiceType:
+    """Coerce any string into the ServiceType Literal. Unknown values fall
+    back to 'actividad' (the safe catch-all) so a stale catalog entry can't
+    bring down the confirm endpoint."""
+    if not t:
+        return "actividad"
+    t = t.strip().lower()
+    if t in _VALID_TYPES:
+        return t  # type: ignore[return-value]
+    return _LEGACY_TYPE_REMAP.get(t, "actividad")
+
+
 # Travefy uses "Free day in X" / "Departure" / "Día libre" as placeholder rows
 # on rest days. They aren't services and should NEVER end up in the itinerary
 # (otherwise the day shows a phantom "⚠ Sin match · Revisar" line).
@@ -2092,7 +2117,7 @@ async def _run_travefy_preview_job(job_id: str, url: str):
                         match = {
                             "experience_id": m.get("experience_id"),
                             "title": m.get("title"),
-                            "type": m.get("type"),
+                            "type": _normalize_service_type(m.get("type")),
                             "pax": m.get("pax"),
                             "city": m.get("city"),
                             "provider_name": m.get("provider_name"),
@@ -2229,7 +2254,7 @@ async def _build_itinerary_from_travefy_preview(payload: dict, user: User) -> It
             if item.get("excluded"):
                 continue
             m = item.get("match") or {}
-            kind = item.get("type") or "actividad"
+            kind = _normalize_service_type(item.get("type") or "actividad")
             name = m.get("title") or item.get("travefy_name") or "Sin título"
             unit_excl = float(m.get("price_tax_excl") or 0)
             unit_incl = float(m.get("price_tax_incl") or 0) or unit_excl
