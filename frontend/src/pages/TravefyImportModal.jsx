@@ -137,15 +137,27 @@ export function TravefyImportModal({ onClose }) {
     }
     setError(null);
     setStep("running");
-    try {
-      const { data } = await api.post("/itineraries/import-travefy/preview", { url });
-      setJobId(data.job_id);
-      // Begin polling
-      pollRef.current = setInterval(() => poll(data.job_id), 2500);
-    } catch (e) {
-      setError(e?.response?.data?.detail || e.message || "Error iniciando importación");
-      setStep("url");
+
+    // Cloudflare occasionally returns 520/521/522/524 when an Emergent pod is
+    // cold-starting right after a deploy. The kickoff endpoint itself is
+    // < 100ms, so a single transparent retry covers that edge without showing
+    // a confusing error to the agent.
+    const RETRYABLE = new Set([502, 503, 504, 520, 521, 522, 524]);
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const { data } = await api.post("/itineraries/import-travefy/preview", { url });
+        setJobId(data.job_id);
+        pollRef.current = setInterval(() => poll(data.job_id), 2500);
+        return;
+      } catch (e) {
+        lastErr = e;
+        if (!RETRYABLE.has(e?.response?.status)) break;
+        await new Promise((r) => setTimeout(r, 1500));
+      }
     }
+    setError(lastErr?.response?.data?.detail || lastErr?.message || "Error iniciando importación");
+    setStep("url");
   };
 
   const poll = async (jid) => {

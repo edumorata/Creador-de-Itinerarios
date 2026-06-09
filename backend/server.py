@@ -159,6 +159,27 @@ async def seed_database_if_empty():
 
 
 @app.on_event("startup")
+async def reap_stuck_travefy_jobs():
+    """Any `travefy_import_jobs` doc left in status='running' after a backend
+    restart is by definition orphaned — the asyncio task that owned it died
+    when the process did. Flip them to `error` so the modal in the UI can
+    surface a clean message instead of polling forever."""
+    try:
+        res = await db.travefy_import_jobs.update_many(
+            {"status": "running"},
+            {"$set": {
+                "status": "error",
+                "error": "Job interrumpido por reinicio del backend. Vuelve a intentar.",
+                "finished_at": now_iso(),
+            }},
+        )
+        if res.modified_count:
+            logger.warning("reaped %d orphan travefy_import_jobs", res.modified_count)
+    except Exception as e:
+        logger.warning("could not reap stuck travefy jobs: %s", e)
+
+
+@app.on_event("startup")
 async def backfill_itinerary_versions():
     """First-run migration: every existing itinerary without a version_group_id
     becomes v1 of its own (singleton) group so the new grouping UI on the
