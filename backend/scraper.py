@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import sys
 import uuid
 from typing import Optional
 
@@ -17,6 +18,41 @@ GESTION_USER = os.environ.get("GESTION_VIAJADVERDAD_USER", "")
 GESTION_PASS = os.environ.get("GESTION_VIAJADVERDAD_PASS", "")
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 
+# `playwright install` only needs to succeed once per container lifetime.
+# Guard with an asyncio.Lock so concurrent imports don't all spawn it.
+_PW_INSTALL_LOCK = asyncio.Lock()
+_PW_INSTALL_DONE = False
+
+
+async def _ensure_chromium_installed() -> bool:
+    """Install Playwright's chromium binary if it isn't there.
+
+    This makes the scraper robust to:
+      * fresh container boots where the playwright cache is empty
+      * Playwright upgrades that bump the required browser version
+        (the SDK ships pinned to one version; an upgrade leaves the old
+        chromium-NNNN dir behind and the new version missing)
+    """
+    global _PW_INSTALL_DONE
+    if _PW_INSTALL_DONE:
+        return True
+    async with _PW_INSTALL_LOCK:
+        if _PW_INSTALL_DONE:
+            return True
+        logger.warning("playwright chromium missing — running 'playwright install chromium'…")
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "playwright", "install", "chromium",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await proc.communicate()
+        if proc.returncode == 0:
+            _PW_INSTALL_DONE = True
+            logger.warning("playwright chromium install OK")
+            return True
+        logger.error("playwright install failed (code=%s): %s", proc.returncode, (out or b"")[-1000:])
+        return False
+
 
 async def _render_url(url: str) -> dict:
     """Open the URL in a headless Chromium and return the rendered body text + source label."""
@@ -27,8 +63,27 @@ async def _render_url(url: str) -> dict:
     is_gestion = "gestion.viajadverdad.com" in url
     is_travefy = "travefy.com" in url
 
+    # Lazy-install chromium the first time we need it (also recovers from a
+    # Playwright SDK upgrade that left the cached binary stale).
+    try:
+        pw_ctx = async_playwright()
+    except Exception:
+        pw_ctx = None
+    # We can't actually open the context here twice cleanly, so we attempt the
+    # launch and if it complains about a missing executable, we install + retry.
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+        try:
+            browser = await pw.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+        except Exception as e:
+            msg = str(e)
+            if "Executable doesn't exist" in msg or "playwright install" in msg:
+                logger.warning("chromium binary missing on first launch — auto-installing")
+                installed = await _ensure_chromium_installed()
+                if not installed:
+                    raise
+                browser = await pw.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+            else:
+                raise
         try:
             ctx = await browser.new_context(user_agent="Mozilla/5.0 (X11; Linux x86_64) ItineraryBot/1.0")
             page = await ctx.new_page()

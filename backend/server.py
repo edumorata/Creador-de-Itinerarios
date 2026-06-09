@@ -1714,6 +1714,123 @@ def _classify_room_type(raw: Optional[str]) -> RoomType:
     return "doble"
 
 
+# How many travelers can sleep in a room of each type. Used to derive how many
+# rooms a multi-pax group needs when Travefy only describes the base type.
+_ROOM_CAPACITY: dict[str, int] = {
+    "single": 1,
+    "doble": 2,
+    "twin": 2,
+    "triple": 3,
+    "cuadruple": 4,
+    "suite": 4,
+    "family": 4,
+}
+
+
+# Words that translate to a number when Travefy spells it out.
+_NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5, "seis": 6,
+}
+
+
+def _parse_explicit_layout(raw: Optional[str]) -> list[tuple[RoomType, int]]:
+    """Detect "2 Double Rooms", "1 Suite + 1 Twin", "Two Doubles + 1 Single"
+    patterns in the Travefy room description and return the explicit layout.
+
+    Returns [] when no multi-room pattern is found (caller will fall back to
+    deriving the layout from num_travelers + base type)."""
+    if not raw:
+        return []
+    text = raw.lower()
+    # Normalise the connectors so " + " / " and " / " & " all split the same way.
+    text = re.sub(r"\s*(?:\+|&|\band\b|,)\s*", "|", text)
+    segments = [seg.strip() for seg in text.split("|") if seg.strip()]
+    layout: list[tuple[RoomType, int]] = []
+    # Match either "(N) (type word)" or "(N)x (type word)"
+    PATTERN = re.compile(r"^\s*(\d+|" + "|".join(_NUMBER_WORDS.keys()) + r")\s*x?\s*(.+)$", re.IGNORECASE)
+    for seg in segments:
+        m = PATTERN.match(seg)
+        if not m:
+            continue
+        n_token = m.group(1).lower()
+        rest = m.group(2)
+        try:
+            count = int(n_token) if n_token.isdigit() else _NUMBER_WORDS.get(n_token, 0)
+        except ValueError:
+            count = 0
+        if count <= 0:
+            continue
+        rtype = _classify_room_type(rest)
+        layout.append((rtype, count))
+    # Only honour the explicit layout if it actually mentioned more than one
+    # room — otherwise it was just the regular "Superior Room" / "Comfort
+    # Room" pattern which doesn't carry a quantity.
+    total = sum(c for _, c in layout)
+    return layout if total >= 2 else []
+
+
+def _derive_room_layout(
+    num_travelers: int,
+    room_type_raw: Optional[str],
+) -> list[tuple[RoomType, int]]:
+    """Return a list of (room_type, pax_in_room) tuples.
+
+    1. If Travefy described an explicit multi-room layout, honour it.
+    2. Else, split `num_travelers` into rooms of the base type using each
+       type's capacity. Leftover travelers go into the last room.
+    Examples (num_travelers, base_type → layout):
+      (1, "single")     → [("single", 1)]
+      (2, "doble")      → [("doble", 2)]
+      (3, "doble")      → [("doble", 2), ("doble", 1)]
+      (4, "doble")      → [("doble", 2), ("doble", 2)]
+      (4, "family")     → [("family", 4)]
+      (6, "doble")      → [("doble", 2), ("doble", 2), ("doble", 2)]
+    """
+    num_travelers = max(1, int(num_travelers or 1))
+    # Detect "2 Doubles + 1 Single" etc. in the raw text
+    explicit = _parse_explicit_layout(room_type_raw)
+    if explicit:
+        # Expand each (type, count) into `count` rooms; assign all pax up to
+        # capacity, then dump the remainder into the last room.
+        rooms: list[tuple[RoomType, int]] = []
+        for rtype, count in explicit:
+            cap = _ROOM_CAPACITY.get(rtype, 2)
+            for _ in range(count):
+                rooms.append((rtype, cap))
+        # Trim total capacity down to num_travelers (rest = 0 → drop empties)
+        # The pax-per-room becomes min(capacity, remaining travelers).
+        remaining = num_travelers
+        assigned: list[tuple[RoomType, int]] = []
+        for rtype, cap in rooms:
+            pax_here = min(cap, max(0, remaining))
+            if pax_here <= 0:
+                continue
+            assigned.append((rtype, pax_here))
+            remaining -= pax_here
+        return assigned or [(rooms[0][0], num_travelers)]
+
+    rtype = _classify_room_type(room_type_raw)
+    cap = _ROOM_CAPACITY.get(rtype, 2)
+    # Round-up the number of rooms needed
+    n_rooms = max(1, -(-num_travelers // cap))
+    rooms_out: list[tuple[RoomType, int]] = []
+    remaining = num_travelers
+    for i in range(n_rooms):
+        pax_here = min(cap, remaining)
+        rooms_out.append((rtype, pax_here))
+        remaining -= pax_here
+    return rooms_out
+
+
+def _layout_summary(layout: list[tuple[RoomType, int]]) -> str:
+    """Human-readable summary: "2× doble + 1× single" — used in preview UI."""
+    from collections import Counter
+    counts = Counter(rtype for rtype, _ in layout)
+    parts = [(f"{n}× {rt}" if n > 1 else f"{rt}") for rt, n in counts.items()]
+    return " + ".join(parts)
+
+
 async def _match_experience(name: str, city: Optional[str], num_travelers: int) -> Optional[dict]:
     """Find best matching experience in DB for the given Travefy item name."""
     city = _norm_city(city)
@@ -1933,6 +2050,10 @@ async def _run_travefy_preview_job(job_id: str, url: str):
                 "match": match,
                 "room_type_raw": block.get("room_type_raw"),
                 "room_type": _classify_room_type(block.get("room_type_raw")),
+                "rooms_layout": [
+                    {"room_type": rt, "pax": px}
+                    for rt, px in _derive_room_layout(num_travelers, block.get("room_type_raw"))
+                ],
             })
 
         trip_name = structured.get("trip_name") or "Itinerario importado"
@@ -2035,29 +2156,34 @@ async def import_travefy_confirm(
             nights = 1
         per_night_excl = float(m.get("price_per_night_excl") or 0)
         per_night_incl = float(m.get("price_per_night_incl") or 0) or per_night_excl
-        # Build one Room with the type Travefy described (or "doble" by default).
-        # Pax-per-room defaults to num_travelers so the smart quantity math
-        # ("nights × rooms") stays correct out of the box. Agent can split
-        # the room layout later in the builder if there are multiple rooms.
+        # Derive the room layout from Travefy's room type + group size.
+        # If the preview already shipped a layout (the agent may have tweaked
+        # it manually in the UI) we trust it; otherwise we derive on the fly.
         rtype_raw = (h.get("room_type_raw") or "").strip() or None
-        rtype = h.get("room_type") or _classify_room_type(rtype_raw)
-        room = Room(
-            room_type=rtype,
-            pax=num_travelers,
-            price_per_night_excl=per_night_excl,
-            price_per_night_incl=per_night_incl,
-            currency=m.get("currency") or "EUR",
-            notes=f"Travefy: {rtype_raw}" if rtype_raw else None,
-        )
+        layout = h.get("rooms_layout") or [
+            {"room_type": rt, "pax": px}
+            for rt, px in _derive_room_layout(num_travelers, rtype_raw)
+        ]
+        rooms_list: list[Room] = []
+        for r_in in layout:
+            rooms_list.append(Room(
+                room_type=r_in.get("room_type") or "doble",
+                pax=int(r_in.get("pax") or num_travelers),
+                price_per_night_excl=per_night_excl,
+                price_per_night_incl=per_night_incl,
+                currency=m.get("currency") or "EUR",
+                notes=f"Travefy: {rtype_raw}" if rtype_raw else None,
+            ))
+        num_rooms = max(1, len(rooms_list))
         acc_out.append(Accommodation(
             date_from=date_from,
             date_to=date_to,
             name=m.get("name") or h.get("travefy_name") or "Sin nombre",
-            price_tax_excl=per_night_excl * nights,
-            price_tax_incl=per_night_incl * nights,
-            price=per_night_incl * nights,
+            price_tax_excl=per_night_excl * nights * num_rooms,
+            price_tax_incl=per_night_incl * nights * num_rooms,
+            price=per_night_incl * nights * num_rooms,
             currency=m.get("currency") or "EUR",
-            rooms=[room],
+            rooms=rooms_list,
         ))
 
     # Main traveler heuristic

@@ -288,7 +288,7 @@ export default function Experiences() {
                 data-testid={`edit-${e.experience_id}`}
                 title="Editar todo (modal: descripción, proveedor, país, etc.)"
               ><Pencil size={14}/></button>
-              <button onClick={() => del(e.experience_id)} className="p-1.5 hover:bg-clay-200 text-destructive" title="Eliminar"><Trash2 size={14}/></button>
+              <button onClick={() => del(e.experience_id)} className="p-1.5 hover:bg-clay-200 text-destructive" title="Eliminar" data-testid={`del-${e.experience_id}`}><Trash2 size={14}/></button>
             </div>
           </div>
         );})}

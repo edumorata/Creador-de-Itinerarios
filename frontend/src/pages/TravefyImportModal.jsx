@@ -21,6 +21,14 @@ const CONFIDENCE_LABEL = {
   manual: { txt: "Manual",      cls: "bg-terracotta text-white" },
 };
 
+/** "[(doble,2),(doble,1)]" → "2× doble" — collapses identical types. */
+function layoutSummary(layout) {
+  if (!layout || layout.length === 0) return "";
+  const counts = new Map();
+  for (const r of layout) counts.set(r.room_type, (counts.get(r.room_type) || 0) + 1);
+  return [...counts.entries()].map(([t, n]) => (n > 1 ? `${n}× ${t}` : t)).join(" + ");
+}
+
 /** Inline search for vinculating an unmatched item (or replacing a wrong match).
  *  Renders below the item row, search results inline (no absolute popover that
  *  would get clipped by the scrollable modal body). */
@@ -513,8 +521,12 @@ export function TravefyImportModal({ onClose }) {
                               {(h.room_type || h.room_type_raw) && (
                                 <div className="text-[10px] text-clay-700 mt-0.5 flex items-center gap-1.5 truncate">
                                   <Bed size={10} className="shrink-0 text-clay-500"/>
-                                  <span className="uppercase tracking-wider font-semibold text-pine">{h.room_type}</span>
-                                  {h.room_type_raw && h.room_type_raw.toLowerCase() !== h.room_type && (
+                                  <span className="uppercase tracking-wider font-semibold text-pine">
+                                    {h.rooms_layout && h.rooms_layout.length > 0
+                                      ? layoutSummary(h.rooms_layout)
+                                      : h.room_type}
+                                  </span>
+                                  {h.room_type_raw && (
                                     <span className="text-clay-500 italic truncate">· &ldquo;{h.room_type_raw}&rdquo;</span>
                                   )}
                                 </div>
