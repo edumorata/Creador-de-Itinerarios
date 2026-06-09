@@ -107,28 +107,21 @@ async def shutdown_db_client():
 @app.on_event("startup")
 async def ensure_playwright_browser():
     """Pods sometimes lose the Playwright Chromium binary after image recycling.
-    Run `playwright install chromium` on every startup — it's idempotent and
-    only downloads the version the *current* SDK requires (older 1208/1223
-    folders may exist but be unusable after an SDK upgrade)."""
-    logger.info("Verifying Playwright browser is up-to-date…")
+
+    We fire `playwright install chromium` in the BACKGROUND so the FastAPI app
+    starts answering /api/* requests in <1s even while the 185 MiB chromium
+    download is still in flight. Any request that actually needs the browser
+    (Travefy import) hits the lazy retry in `scraper._render_url` which waits
+    on the same shared lock for the binary to land. Without this background
+    pattern, the install blocked startup for ~60s and Kubernetes' ingress
+    returned 502 to every early request — exactly what production was seeing
+    right after a deploy.
+    """
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "playwright", "install", "chromium",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        try:
-            stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=180)
-            tail = stdout_bytes.decode(errors="ignore")[-300:].strip()
-            if proc.returncode == 0:
-                logger.info("Playwright browser ready · %s", tail.splitlines()[-1] if tail else "ok")
-            else:
-                logger.error("playwright install exit=%s · %s", proc.returncode, tail)
-        except asyncio.TimeoutError:
-            proc.kill()
-            logger.error("playwright install timed out after 180s")
+        from scraper import _ensure_chromium_installed
+        asyncio.create_task(_ensure_chromium_installed())
     except Exception as e:
-        logger.error("Could not auto-install Playwright browser: %s", e)
+        logger.warning("playwright warmup skipped: %s", e)
 
 
 @app.on_event("startup")

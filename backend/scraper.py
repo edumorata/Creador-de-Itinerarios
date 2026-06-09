@@ -27,11 +27,10 @@ _PW_INSTALL_DONE = False
 async def _ensure_chromium_installed() -> bool:
     """Install Playwright's chromium binary if it isn't there.
 
-    This makes the scraper robust to:
-      * fresh container boots where the playwright cache is empty
-      * Playwright upgrades that bump the required browser version
-        (the SDK ships pinned to one version; an upgrade leaves the old
-        chromium-NNNN dir behind and the new version missing)
+    Idempotent and safe to call from multiple places (FastAPI startup + the
+    lazy retry inside `_render_url`). The asyncio.Lock guarantees only one
+    `playwright install` subprocess runs at a time; concurrent callers wait
+    for the in-flight install to finish.
     """
     global _PW_INSTALL_DONE
     if _PW_INSTALL_DONE:
@@ -39,19 +38,29 @@ async def _ensure_chromium_installed() -> bool:
     async with _PW_INSTALL_LOCK:
         if _PW_INSTALL_DONE:
             return True
-        logger.warning("playwright chromium missing — running 'playwright install chromium'…")
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "playwright", "install", "chromium",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        out, _ = await proc.communicate()
-        if proc.returncode == 0:
-            _PW_INSTALL_DONE = True
-            logger.warning("playwright chromium install OK")
-            return True
-        logger.error("playwright install failed (code=%s): %s", proc.returncode, (out or b"")[-1000:])
-        return False
+        logger.warning("Running 'playwright install chromium' (idempotent — quick when cached)…")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "playwright", "install", "chromium",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            try:
+                out, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
+            except asyncio.TimeoutError:
+                proc.kill()
+                logger.error("playwright install timed out after 300s")
+                return False
+            if proc.returncode == 0:
+                _PW_INSTALL_DONE = True
+                tail = (out or b"").decode(errors="ignore")[-200:].strip()
+                logger.warning("playwright install OK — %s", tail.splitlines()[-1] if tail else "ok")
+                return True
+            logger.error("playwright install failed (code=%s): %s", proc.returncode, (out or b"")[-500:])
+            return False
+        except Exception as e:
+            logger.error("playwright install crashed: %s", e)
+            return False
 
 
 async def _render_url(url: str) -> dict:
