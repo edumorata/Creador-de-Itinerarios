@@ -2183,6 +2183,19 @@ async def import_travefy_confirm(
     payload: dict = Body(...),
 ):
     """Create a real Itinerary from a (possibly edited) preview payload."""
+    try:
+        return await _build_itinerary_from_travefy_preview(payload, user)
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Pydantic + Mongo errors are notoriously useless when surfaced as a
+        # bare 500. Log the full traceback server-side and return a structured
+        # message the agent can act on (or copy-paste into a bug report).
+        logger.exception("travefy confirm failed for user=%s", user.email)
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+async def _build_itinerary_from_travefy_preview(payload: dict, user: User) -> Itinerary:
     days_in = payload.get("days") or []
     hotels_in = payload.get("hotels") or []
     num_travelers = int(payload.get("num_travelers") or 2) or 2

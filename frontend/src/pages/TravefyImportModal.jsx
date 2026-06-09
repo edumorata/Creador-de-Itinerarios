@@ -272,7 +272,19 @@ export function TravefyImportModal({ onClose }) {
       onClose();
       navigate(`/itineraries/${data.itinerary_id}`);
     } catch (e) {
-      toast.error(e?.response?.data?.detail || "Error creando itinerario");
+      // FastAPI 422 errors arrive as { detail: [{...}, ...] }; flatten so the
+      // agent can actually see what field broke and copy it into a bug report.
+      const det = e?.response?.data?.detail;
+      let msg = "Error creando itinerario";
+      if (Array.isArray(det)) {
+        msg = det.map((d) => `${(d.loc || []).join(".")}: ${d.msg}`).join(" · ");
+      } else if (typeof det === "string") {
+        msg = det;
+      } else if (e?.message) {
+        msg = e.message;
+      }
+      toast.error(msg, { duration: 12000 });
+      console.error("Travefy confirm failed:", e?.response?.data || e);
     } finally {
       setConfirming(false);
     }
