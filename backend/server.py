@@ -119,9 +119,28 @@ async def ensure_playwright_browser():
     """
     try:
         from scraper import _ensure_chromium_installed
-        asyncio.create_task(_ensure_chromium_installed())
+        _spawn_bg(_ensure_chromium_installed())
     except Exception as e:
         logger.warning("playwright warmup skipped: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# Background task registry — strong references prevent the event loop from
+# garbage-collecting fire-and-forget coroutines mid-execution. Python's
+# asyncio.create_task() only stores a WEAK reference; without this registry,
+# long-running tasks (chromium install, travefy preview workers) can vanish
+# silently mid-run. That manifests exactly as "the modal spins forever
+# without updating the job to done/error" — which is what the user saw in
+# production when chromium was still downloading.
+# ---------------------------------------------------------------------------
+_bg_tasks: set = set()
+
+
+def _spawn_bg(coro):
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    return task
 
 
 @app.on_event("startup")
@@ -1893,6 +1912,41 @@ def _confidence_label(score: float) -> str:
     return "low"
 
 
+@api.get("/itineraries/import-travefy/health")
+async def import_travefy_health(user: Annotated[User, Depends(current_user)]):
+    """Diagnostic endpoint — surfaces whether chromium is installed and what
+    the most recent travefy job looked like. Useful to debug stuck imports
+    in production where we can't tail logs directly."""
+    import os as _os
+    import json as _json
+    from scraper import _PW_INSTALL_DONE
+
+    pw_dir = "/pw-browsers"
+    pw_files: list[str] = []
+    try:
+        if _os.path.isdir(pw_dir):
+            pw_files = sorted(_os.listdir(pw_dir))
+    except Exception as e:
+        pw_files = [f"<error listing: {e}>"]
+
+    # Last 3 jobs created by ANY user — admins see all, regular agents only
+    # their own (matches the rest of the access model).
+    flt = {} if user.role == "admin" else {"created_by": user.email}
+    recent = await db.travefy_import_jobs.find(flt, {"_id": 0}).sort("created_at", -1).limit(3).to_list(3)
+    for r in recent:
+        # Don't dump the whole parsed preview here, just whether it landed.
+        r["preview_size"] = len(_json.dumps(r.get("preview") or {}))
+        r.pop("preview", None)
+
+    return {
+        "chromium_install_done_flag": _PW_INSTALL_DONE,
+        "pw_browsers_dir": pw_dir,
+        "pw_browsers_contents": pw_files,
+        "bg_task_count": len(_bg_tasks),
+        "recent_jobs": recent,
+    }
+
+
 @api.post("/itineraries/import-travefy/preview")
 async def import_travefy_preview(
     payload: dict = Body(...),
@@ -1920,7 +1974,10 @@ async def import_travefy_preview(
         "preview": None,
         "error": None,
     })
-    asyncio.create_task(_run_travefy_preview_job(job_id, url))
+    # Hold a strong ref via _spawn_bg → the event loop won't GC the task while
+    # chromium downloads in the background. Without this, production users
+    # saw the modal spin forever because the worker vanished mid-run.
+    _spawn_bg(_run_travefy_preview_job_safely(job_id, url))
     return {"job_id": job_id, "status": "running"}
 
 
@@ -1943,6 +2000,38 @@ async def import_travefy_preview_status(
         "preview": job.get("preview"),
         "error": job.get("error"),
     }
+
+
+async def _run_travefy_preview_job_safely(job_id: str, url: str):
+    """Top-level wrapper that GUARANTEES the job ends in done/error.
+
+    Catches *any* exception (including ones that bubble past the inner
+    handler) and enforces a hard 6-minute timeout so a hung Playwright /
+    chromium install can't leave the modal spinning forever."""
+    try:
+        await asyncio.wait_for(_run_travefy_preview_job(job_id, url), timeout=360)
+    except asyncio.TimeoutError:
+        logger.error("travefy preview job %s timed out (>360s)", job_id)
+        await db.travefy_import_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {
+                "status": "error",
+                "error": ("Tiempo agotado (>6 min). Si acabas de redeployar, "
+                          "el navegador Playwright puede estar descargándose. "
+                          "Espera 1-2 min y vuelve a intentar."),
+                "finished_at": now_iso(),
+            }},
+        )
+    except Exception as e:
+        logger.exception("travefy preview job %s wrapper crashed", job_id)
+        await db.travefy_import_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {
+                "status": "error",
+                "error": f"Error inesperado: {type(e).__name__}: {e}",
+                "finished_at": now_iso(),
+            }},
+        )
 
 
 async def _run_travefy_preview_job(job_id: str, url: str):
