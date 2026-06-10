@@ -19,14 +19,26 @@ export const ROOM_TYPES = ["single", "doble", "twin", "triple", "cuadruple", "su
 export const ROOM_PAX_DEFAULT = { single: 1, doble: 2, twin: 2, triple: 3, cuadruple: 4, suite: 2, family: 4, otro: 2 };
 
 // Partner labels used by the cost summary + selector.
+// `commission_pct` is the partner's cut; `markup_pct` is the agency's own
+// margin on top of cost. Travel-agent tiers are pre-negotiated rates.
 export const PARTNER_OPTIONS = [
-  { value: "kimkim", label: "KimKim", hint: "+15% sobre coste · markup 33%" },
-  { value: "zicasso", label: "Zicasso", hint: "+10.5% sobre coste · markup 30%" },
-  { value: "responsible_travel", label: "Responsible Travel", hint: "+10% sobre coste · markup 30%" },
-  { value: "direct", label: "Directo", hint: "sin comisión · markup 35%" },
-  { value: "other", label: "Otro", hint: "manual" },
+  { value: "kimkim",             label: "KimKim",             hint: "+15% sobre coste · markup 33%",  markup_pct: 33,   commission_pct: 15 },
+  { value: "zicasso",            label: "Zicasso",            hint: "10.5% deductivo · markup 30%",   markup_pct: 30,   commission_pct: 10.5 },
+  { value: "responsible_travel", label: "Responsible Travel", hint: "7% deductivo · markup 30%",      markup_pct: 30,   commission_pct: 7 },
+  { value: "baboo",              label: "Baboo",              hint: "15% deductivo · markup 30%",     markup_pct: 30,   commission_pct: 15 },
+  { value: "travel_agent_10",    label: "Travel Agent 10%",   hint: "10% comisión · markup 30%",      markup_pct: 30,   commission_pct: 10 },
+  { value: "travel_agent_12",    label: "Travel Agent 12%",   hint: "12% comisión · markup 30%",      markup_pct: 30,   commission_pct: 12 },
+  { value: "travel_agent_15",    label: "Travel Agent 15%",   hint: "15% comisión · markup 30%",      markup_pct: 30,   commission_pct: 15 },
+  { value: "direct",             label: "Directo",            hint: "sin comisión · markup 35%",      markup_pct: 35,   commission_pct: 0 },
+  { value: "other",              label: "Otro",               hint: "manual",                         markup_pct: 30,   commission_pct: 0 },
 ];
 export const PARTNER_LABELS = Object.fromEntries(PARTNER_OPTIONS.map((p) => [p.value, p.label]));
+export const PARTNER_DEFAULTS = Object.fromEntries(
+  PARTNER_OPTIONS.map((p) => [p.value, { markup_pct: p.markup_pct, commission_pct: p.commission_pct }])
+);
+
+// PayPal processing fee — applied on top of the final PVP when toggled on.
+export const PAYPAL_FEE_PCT = 3;
 
 export const fmtEUR = (n) => `€${Number(n || 0).toLocaleString("es-ES", { maximumFractionDigits: 2, minimumFractionDigits: 2 })}`;
 export const fmtUSD = (n) => `$${Number(n || 0).toLocaleString("en-US", { maximumFractionDigits: 0, minimumFractionDigits: 0 })}`;

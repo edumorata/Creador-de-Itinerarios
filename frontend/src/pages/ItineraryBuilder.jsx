@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import api, { API_BASE } from "@/lib/api";
 
 import {
-  PARTNER_LABELS,
+  PARTNER_LABELS, PARTNER_DEFAULTS, PAYPAL_FEE_PCT,
   fmtEUR, uid, daysBetween, dateAdd,
 } from "./builder/utils";
 import { Field, Row } from "./builder/atoms";
@@ -14,6 +14,7 @@ import { DayBlock } from "./builder/DayBlock";
 import { OrientationModal } from "./builder/OrientationModal";
 import { FxConverter } from "./builder/FxConverter";
 import { PartnerSelector } from "./builder/PartnerSelector";
+import { RotateCw } from "lucide-react";
 
 export default function ItineraryBuilder() {
   const { id } = useParams();
@@ -123,7 +124,7 @@ export default function ItineraryBuilder() {
             duration_days: cur.duration_days, num_travelers: cur.num_travelers,
             travelers: cur.travelers, days: cur.days, accommodations: cur.accommodations,
             markup_pct: cur.markup_pct, commission_pct: cur.commission_pct,
-            partner: cur.partner, currency: cur.currency, status: cur.status,
+            partner: cur.partner, paypal_fee: cur.paypal_fee, currency: cur.currency, status: cur.status,
             room_config: cur.room_config,
           });
         } finally { setSaving(false); }
@@ -144,7 +145,7 @@ export default function ItineraryBuilder() {
           duration_days: next.duration_days, num_travelers: next.num_travelers,
           travelers: next.travelers, days: next.days, accommodations: next.accommodations,
           markup_pct: next.markup_pct, commission_pct: next.commission_pct,
-          partner: next.partner, currency: next.currency, status: next.status,
+          partner: next.partner, paypal_fee: next.paypal_fee, currency: next.currency, status: next.status,
           room_config: next.room_config,
         });
       } finally { setSaving(false); }
@@ -152,7 +153,7 @@ export default function ItineraryBuilder() {
   }, [id]);
 
   const totals = useMemo(() => {
-    if (!itn) return { sub_excl: 0, sub_incl: 0, sub_with_markup: 0, commission_eur: 0, markup_eur: 0, pvp: 0, iva: 0 };
+    if (!itn) return { sub_excl: 0, sub_incl: 0, sub_with_markup: 0, commission_eur: 0, markup_eur: 0, paypal_eur: 0, pvp: 0, iva: 0 };
     let excl = 0, incl = 0;
     (itn.days || []).forEach((d) => (d.services || []).forEach((s) => {
       excl += (s.unit_price_tax_excl || 0) * (s.quantity || 0);
@@ -167,26 +168,33 @@ export default function ItineraryBuilder() {
     const markup_eur = incl * mk;
     const sub_with_markup = incl + markup_eur;
     const commission_eur = sub_with_markup * com;
-    const pvp = sub_with_markup + commission_eur;
-    return { sub_excl: excl, sub_incl: incl, sub_with_markup, markup_eur, commission_eur, pvp, iva: incl - excl };
+    const pvp_pre_paypal = sub_with_markup + commission_eur;
+    // PayPal processing fee: +3% on the otherwise final PVP, paid by the
+    // client to cover PayPal's cut. Toggleable per itinerary.
+    const paypal_eur = itn.paypal_fee ? pvp_pre_paypal * (PAYPAL_FEE_PCT / 100) : 0;
+    const pvp = pvp_pre_paypal + paypal_eur;
+    return { sub_excl: excl, sub_incl: incl, sub_with_markup, markup_eur, commission_eur, paypal_eur, pvp, iva: incl - excl };
   }, [itn]);
 
   if (!itn) return <div className="p-10 text-sm text-clay-700">Cargando itinerario…</div>;
 
+  // Re-apply the partner's default markup + commission to the current itinerary.
+  // Triggered by the ↻ Auto button next to the partner selector. Manual edits
+  // to either field stay untouched UNTIL the agent explicitly clicks this.
+  const applyPartnerDefaults = () => {
+    const d = PARTNER_DEFAULTS[itn.partner];
+    if (!d) { toast.error("Partner desconocido"); return; }
+    schedSave({ ...itn, markup_pct: d.markup_pct, commission_pct: d.commission_pct });
+    toast.success(`Markup ${d.markup_pct}% · Comisión ${d.commission_pct}% aplicados`);
+  };
+
   const setField = (k, v) => {
     const next = { ...itn, [k]: v };
-    // Auto-apply per-partner markup & commission defaults when the partner changes.
-    if (k === "partner") {
-      const defaults = {
-        kimkim: { markup_pct: 33, commission_pct: 15 },
-        zicasso: { markup_pct: 30, commission_pct: 10.5 },
-        responsible_travel: { markup_pct: 30, commission_pct: 10 },
-        direct: { markup_pct: 35, commission_pct: 0 },
-        other: { markup_pct: 30, commission_pct: 0 },
-      }[v] || { markup_pct: 30, commission_pct: 0 };
-      next.markup_pct = defaults.markup_pct;
-      next.commission_pct = defaults.commission_pct;
-    }
+    // NOTE: changing `partner` deliberately does NOT touch markup_pct or
+    // commission_pct anymore — agents complained that their manual override
+    // was silently overwritten when they revisited an itinerary. To re-apply
+    // the partner's default markup+commission, use the ↻ Auto button next to
+    // the partner selector (calls `applyPartnerDefaults()` below).
     if (k === "start_date" || k === "end_date") {
       const n = daysBetween(k === "start_date" ? v : itn.start_date, k === "end_date" ? v : itn.end_date);
       next.duration_days = n;
@@ -531,9 +539,32 @@ export default function ItineraryBuilder() {
                       className="w-16 bg-transparent border border-clay-300 px-1 py-0.5 text-sm tabular text-right"
                     />
                     <span className="text-xs text-clay-700">%</span>
+                    <button
+                      data-testid="auto-partner-defaults"
+                      onClick={applyPartnerDefaults}
+                      className="p-0.5 hover:bg-clay-200 text-clay-600 hover:text-terracotta inline-flex items-center gap-0.5"
+                      title={`Auto: markup ${PARTNER_DEFAULTS[itn.partner]?.markup_pct}% · comisión ${PARTNER_DEFAULTS[itn.partner]?.commission_pct}%`}
+                    >
+                      <RotateCw size={11}/>
+                      <span className="text-[9px] uppercase tracking-wider">Auto</span>
+                    </button>
                   </div>
                 )}>+ {fmtEUR(totals.commission_eur)}</Row>
               )}
+              {/* PayPal Fee toggle — adds 3% on top of the otherwise final PVP */}
+              <div className="flex items-center justify-between py-2 px-3 text-sm">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    data-testid="paypal-fee-toggle"
+                    checked={!!itn.paypal_fee}
+                    onChange={(e) => setField("paypal_fee", e.target.checked)}
+                    className="cursor-pointer"
+                  />
+                  <span>PayPal Fee <span className="text-clay-500">(+{PAYPAL_FEE_PCT}%)</span></span>
+                </label>
+                <span className="tabular text-clay-700">{itn.paypal_fee ? `+ ${fmtEUR(totals.paypal_eur)}` : "—"}</span>
+              </div>
               <div className="flex items-center justify-between py-3 bg-clay-900 text-white px-3 mt-2" data-testid="final-price">
                 <div className="smallcaps text-white/70">PVP final</div>
                 <div className="font-serif text-2xl tabular">{fmtEUR(totals.pvp)}</div>

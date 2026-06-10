@@ -36,7 +36,14 @@ RoomType = Literal[
 ]
 HotelTier = Literal["luxury", "upscale", "comfort", "standard", "budget"]
 TripOutcome = Literal["sold", "not_sold", "pending"]
-PartnerKind = Literal["kimkim", "zicasso", "responsible_travel", "direct", "other"]
+PartnerKind = Literal[
+    # Aggregators / OTAs
+    "kimkim", "zicasso", "responsible_travel", "baboo",
+    # Travel-agent tiers (the agency negotiates a per-agent commission)
+    "travel_agent_10", "travel_agent_12", "travel_agent_15",
+    # Direct / fallback buckets
+    "direct", "other",
+]
 BulkJobStatus = Literal[
     "queued", "running", "completed", "failed", "cancelled", "interrupted",
 ]
@@ -320,6 +327,9 @@ class Itinerary(BaseModel):
     markup_pct: float = 33.0
     commission_pct: float = 15.0
     partner: Optional[PartnerKind] = "kimkim"
+    # Optional PayPal processing fee (3%) added on top of the final PVP when
+    # the client is paying via PayPal. Toggleable per itinerary.
+    paypal_fee: bool = False
     currency: str = "EUR"
     status: Literal["draft", "sold", "not_sold"] = "draft"
     # Versioning: every trip belongs to a "version group". A fresh itinerary is
@@ -347,6 +357,7 @@ class ItineraryUpsert(BaseModel):
     markup_pct: Optional[float] = None
     commission_pct: Optional[float] = None
     partner: Optional[PartnerKind] = None
+    paypal_fee: Optional[bool] = None
     currency: Optional[str] = None
     status: Optional[Literal["draft", "sold", "not_sold"]] = None
 

@@ -1305,10 +1305,25 @@ async def experience_autocomplete(
     if country:
         flt["country"] = country
     if type:
-        flt["type"] = type
+        # Production still has experiences stored under the legacy taxonomy
+        # ('transporte' for trains/transfers, 'restaurante'/'otro' for activities)
+        # that preview migrated. Expand the filter so trains stored as
+        # 'transporte' surface when the agent filters by 'tren'.
+        _LEGACY_EXPAND: dict[str, list[str]] = {
+            "tren": ["tren", "transporte"],
+            "transfer": ["transfer", "transporte"],
+            "actividad": ["actividad", "restaurante", "otro"],
+            "entradas": ["entradas", "otro"],
+        }
+        synonyms = _LEGACY_EXPAND.get(type, [type])
+        flt["type"] = {"$in": synonyms} if len(synonyms) > 1 else type
     proj = {"_id": 0, "experience_id": 1, "title": 1, "provider_name": 1, "city": 1, "country": 1,
             "type": 1, "price_tax_excl": 1, "price_tax_incl": 1, "price": 1, "currency": 1, "pax": 1}
     items = await db.experiences.find(flt, proj).sort("title", 1).limit(limit * 2 if pax else limit).to_list(limit * 2 if pax else limit)
+    # Normalize legacy types on the way out so the UI shows the clean enum
+    # badge ('tren' / 'actividad') instead of the raw DB value ('transporte').
+    for it in items:
+        it["type"] = _normalize_service_type(it.get("type"))
     if pax:
         # Sort so that exact-pax matches come first, then closest pax, then the rest.
         def _rank(it):
