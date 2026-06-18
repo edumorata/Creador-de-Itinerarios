@@ -27,12 +27,23 @@ export default function ItineraryBuilder() {
   const [activeDayId, setActiveDayId] = useState(null);
   const dragRef = useRef(null);
 
-  // FX rate for EUR↔USD conversion.
+  // FX rate for EUR↔USD conversion. Starts from the daily ECB feed, but if
+  // the itinerary already has a `fx_rate` value saved on the doc, that value
+  // overrides the live feed once the itinerary loads. Agents can change the
+  // rate inline (it gets persisted), or click "Auto" to clear the override
+  // and revert to the live feed.
   const [fx, setFx] = useState({ rate: 1.10, source: "loading", date: "" });
   useEffect(() => {
     let alive = true;
     api.get("/fx/rate").then(({ data }) => {
-      if (alive && data && data.rate) setFx({ rate: Number(data.rate), source: data.source, date: data.date });
+      // RACE GUARD: the itinerary loader (other useEffect) may resolve first
+      // and set source="manual" from the saved fx_rate. If that happened, we
+      // must NOT stomp on the manual value with today's live ECB rate.
+      if (alive && data && data.rate) {
+        setFx((prev) => prev.source === "manual"
+          ? prev
+          : { rate: Number(data.rate), source: data.source, date: data.date });
+      }
     }).catch(() => {});
     return () => { alive = false; };
   }, []);
@@ -61,6 +72,10 @@ export default function ItineraryBuilder() {
       if (cleaned) toast.message("Limpieza automática de filtros antiguos de ciudad (formato con guión).");
       setItn(data);
       setActiveDayId(data.days?.[0]?.day_id || null);
+      // Honour a manually-saved FX rate if present — overrides the live feed.
+      if (typeof data.fx_rate === "number" && data.fx_rate > 0) {
+        setFx({ rate: Number(data.fx_rate), source: "manual", date: "" });
+      }
     })();
   }, [id]);
 
@@ -125,7 +140,7 @@ export default function ItineraryBuilder() {
             travelers: cur.travelers, days: cur.days, accommodations: cur.accommodations,
             markup_pct: cur.markup_pct, commission_pct: cur.commission_pct,
             partner: cur.partner, paypal_fee: cur.paypal_fee, currency: cur.currency, status: cur.status,
-            room_config: cur.room_config,
+            room_config: cur.room_config, fx_rate: cur.fx_rate, notes: cur.notes,
           });
         } finally { setSaving(false); }
       })();
@@ -146,7 +161,7 @@ export default function ItineraryBuilder() {
           travelers: next.travelers, days: next.days, accommodations: next.accommodations,
           markup_pct: next.markup_pct, commission_pct: next.commission_pct,
           partner: next.partner, paypal_fee: next.paypal_fee, currency: next.currency, status: next.status,
-          room_config: next.room_config,
+          room_config: next.room_config, fx_rate: next.fx_rate, notes: next.notes,
         });
       } finally { setSaving(false); }
     }, 600);
@@ -468,6 +483,23 @@ export default function ItineraryBuilder() {
           </Field>
         </div>
 
+        {/* Notes — free-form reminders, client preferences, hand-off context.
+            Saved on debounce like the rest of the fields. Sits at the top of
+            the page so the next agent sees it the moment they open the trip. */}
+        <div className="mt-6 border border-clay-300">
+          <div className="px-4 py-2 bg-clay-100 border-b border-clay-300 smallcaps">
+            Notas internas
+          </div>
+          <textarea
+            data-testid="itin-notes"
+            value={itn.notes || ""}
+            onChange={(e) => setField("notes", e.target.value)}
+            placeholder="Recordatorios, preferencias del cliente, condiciones especiales, contexto para otros agentes…"
+            rows={3}
+            className="w-full bg-white outline-none text-sm px-4 py-3 resize-y min-h-[72px] focus:bg-amber-50/30"
+          />
+        </div>
+
         {/* Default room configuration */}
         <div className="mt-6">
           <RoomConfigEditor
@@ -569,7 +601,12 @@ export default function ItineraryBuilder() {
                 <div className="smallcaps text-white/70">PVP final</div>
                 <div className="font-serif text-2xl tabular">{fmtEUR(totals.pvp)}</div>
               </div>
-              <FxConverter fx={fx} setFx={setFx} totals={totals} />
+              <FxConverter
+                fx={fx}
+                setFx={setFx}
+                totals={totals}
+                onPersist={(rate) => setField("fx_rate", rate)}
+              />
             </div>
           </div>
         </div>

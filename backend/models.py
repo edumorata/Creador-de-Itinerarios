@@ -330,6 +330,14 @@ class Itinerary(BaseModel):
     # Optional PayPal processing fee (3%) added on top of the final PVP when
     # the client is paying via PayPal. Toggleable per itinerary.
     paypal_fee: bool = False
+    # Optional locked exchange rate (EUR → trip currency, typically USD). When
+    # set, the builder honors this value across sessions instead of refreshing
+    # from the daily ECB feed. Agents can override via the FX converter or
+    # click "Auto" to fall back to the live rate.
+    fx_rate: Optional[float] = None
+    # Free-form notes the agent leaves on top of the itinerary — reminders,
+    # client preferences, hand-off context. Plain text.
+    notes: Optional[str] = None
     currency: str = "EUR"
     status: Literal["draft", "sold", "not_sold"] = "draft"
     # Versioning: every trip belongs to a "version group". A fresh itinerary is
@@ -358,6 +366,8 @@ class ItineraryUpsert(BaseModel):
     commission_pct: Optional[float] = None
     partner: Optional[PartnerKind] = None
     paypal_fee: Optional[bool] = None
+    fx_rate: Optional[float] = None
+    notes: Optional[str] = None
     currency: Optional[str] = None
     status: Optional[Literal["draft", "sold", "not_sold"]] = None
 

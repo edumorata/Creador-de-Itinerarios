@@ -2,21 +2,29 @@ import React, { useState } from "react";
 import api from "@/lib/api";
 import { fmtUSD } from "./utils";
 
-// FX converter — shows the EUR totals in USD using the daily ECB rate fetched
-// from /api/fx/rate. The rate is editable; "auto" resets it to the cached one.
-export function FxConverter({ fx, setFx, totals }) {
+// FX converter — shows the EUR totals in USD using either the rate the agent
+// has explicitly saved on this itinerary (preferred) or the daily ECB rate.
+//
+// The rate is editable; clicking "Auto" replaces it with today's live ECB
+// value AND clears the persisted override so future visits also use the
+// live feed. Manual edits persist via `onPersist` so they survive close/open.
+export function FxConverter({ fx, setFx, totals, onPersist }) {
   const [busy, setBusy] = useState(false);
   const onChangeRate = (v) => {
-    // Accept any positive value (incl. partial typing). Empty stays at 0 until
-    // user types something — the multiplier just produces 0 in that case.
     const n = parseFloat(v);
-    setFx((prev) => ({ ...prev, rate: Number.isFinite(n) && n >= 0 ? n : 0, source: "manual" }));
+    const next = { ...fx, rate: Number.isFinite(n) && n >= 0 ? n : 0, source: "manual" };
+    setFx(next);
+    if (onPersist) onPersist(next.rate);  // save to the itinerary doc
   };
   const reload = async () => {
     setBusy(true);
     try {
       const { data } = await api.get("/fx/rate", { params: { refresh: true } });
-      if (data?.rate) setFx({ rate: Number(data.rate), source: data.source, date: data.date });
+      if (data?.rate) {
+        setFx({ rate: Number(data.rate), source: data.source, date: data.date });
+        // Clear the persisted override → future loads track the live feed again.
+        if (onPersist) onPersist(null);
+      }
     } catch (_e) {
       // FX refresh is best-effort; we keep showing the previously cached rate.
     } finally {
@@ -27,7 +35,7 @@ export function FxConverter({ fx, setFx, totals }) {
   const sourceLabel = fx.source === "fresh" ? "ECB (hoy)"
     : fx.source === "cache" ? "ECB (cache)"
     : fx.source === "stale" ? "ECB (último guardado)"
-    : fx.source === "manual" ? "Manual"
+    : fx.source === "manual" ? "Manual (guardado)"
     : fx.source === "fallback" ? "Fallback 1.10" : "Cargando…";
   return (
     <div className="mt-3 border border-clay-300 bg-clay-50/50 p-3" data-testid="fx-converter">
