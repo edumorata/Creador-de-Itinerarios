@@ -99,8 +99,8 @@ function Header({ dryRun, phase, onClose }) {
   return (
     <div className="px-6 py-4 border-b border-clay-300 flex items-center justify-between bg-clay-50">
       <div className="flex items-center gap-3">
-        {phase === "running" && <Loader2 size={18} className="animate-spin text-pine-700" />}
-        {phase === "done" && <CheckCircle2 size={18} className="text-pine-700" />}
+        {phase === "running" && <Loader2 size={18} className="animate-spin text-pine" />}
+        {phase === "done" && <CheckCircle2 size={18} className="text-pine" />}
         {phase === "error" && <AlertTriangle size={18} className="text-red-700" />}
         <h3 className="font-serif text-xl">
           {dryRun ? "Sofi · Vista previa (dry-run)" : "Sofi · Enviar itinerario"}
@@ -166,7 +166,7 @@ function DryRunDoneState({ result, onCancel, onConfirmReal }) {
 
   return (
     <div className="space-y-4">
-      <div className={`border px-4 py-3 ${errored ? "border-amber-400 bg-amber-50/40" : "border-pine-300 bg-pine-50/40"}`}>
+      <div className={`border px-4 py-3 ${errored ? "border-amber-400 bg-amber-50/40" : "border-pine-soft bg-pine-soft/20"}`}>
         <p className="text-sm font-medium">
           {errored
             ? `Vista previa OK con ${errored} campo${errored === 1 ? "" : "s"} que falló · Sofi quedó en el formulario relleno (sin enviar).`
@@ -224,7 +224,7 @@ function DryRunDoneState({ result, onCancel, onConfirmReal }) {
         </button>
         <button onClick={launchReal}
                 data-testid="sofi-dryrun-confirm-real"
-                className="px-4 py-2 text-sm bg-pine-700 text-white hover:bg-pine-800 inline-flex items-center gap-2">
+                className="px-4 py-2 text-sm bg-pine text-white hover:bg-pine-hover inline-flex items-center gap-2">
           <Send size={14} /> Enviar de verdad ({1 + bookings.length} envíos)
         </button>
       </div>
@@ -298,8 +298,8 @@ function RealPushDoneState({ result, onClose }) {
   const bookingsFailed = bookingsResults.filter((b) => !b.ok);
   return (
     <div className="space-y-4">
-      <div className="border border-pine-300 bg-pine-50/40 px-4 py-4">
-        <p className="text-sm font-medium text-pine-800">
+      <div className="border border-pine-soft bg-pine-soft/20 px-4 py-4">
+        <p className="text-sm font-medium text-pine">
           ✓ Itinerario enviado a Sofi correctamente
         </p>
         {tripId && (
@@ -318,7 +318,7 @@ function RealPushDoneState({ result, onClose }) {
         {url && (
           <a href={url} target="_blank" rel="noreferrer"
              data-testid="sofi-pushed-link"
-             className="inline-flex items-center gap-1 mt-2 text-sm text-pine-700 underline hover:text-pine-900">
+             className="inline-flex items-center gap-1 mt-2 text-sm text-pine underline hover:text-pine-hover">
             Abrir en Sofi <ExternalLink size={14} />
           </a>
         )}
@@ -359,13 +359,13 @@ function RealPushDoneState({ result, onClose }) {
                   <td className="px-3 py-1.5 tabular text-clay-500">{i + 1}</td>
                   <td className="px-3 py-1.5">{b.service}</td>
                   <td className="px-3 py-1.5">
-                    {b.ok ? <span className="text-pine-700">✓ OK</span>
+                    {b.ok ? <span className="text-pine">✓ OK</span>
                           : <span className="text-red-700">✗ {b.error?.slice(0, 40) || "Error"}</span>}
                   </td>
                   <td className="px-3 py-1.5 tabular">
                     {b.sofi_booking_id ? (
                       <a href={b.url} target="_blank" rel="noreferrer"
-                         className="text-pine-700 hover:underline">
+                         className="text-pine hover:underline">
                         #{b.sofi_booking_id}
                       </a>
                     ) : "—"}
@@ -389,7 +389,7 @@ function RealPushDoneState({ result, onClose }) {
       )}
 
       <div className="flex justify-end pt-2 border-t border-clay-300">
-        <button onClick={onClose} className="px-4 py-2 text-sm bg-pine-700 text-white hover:bg-pine-800"
+        <button onClick={onClose} className="px-4 py-2 text-sm bg-pine text-white hover:bg-pine-hover"
                 data-testid="sofi-real-close">
           Cerrar
         </button>

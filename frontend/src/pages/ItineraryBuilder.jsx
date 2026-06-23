@@ -478,7 +478,7 @@ export default function ItineraryBuilder() {
                 target="_blank" rel="noreferrer"
                 data-testid="sofi-already-pushed-link"
                 title={`Enviado a Sofi el ${itn.sofi_pushed_at?.slice(0, 10) || "(fecha no registrada)"}`}
-                className="inline-flex items-center gap-2 px-4 py-2 border border-pine-400 bg-pine-50 hover:bg-pine-100 text-sm text-pine-800"
+                className="inline-flex items-center gap-2 px-4 py-2 border border-pine-soft bg-pine-soft/30 hover:bg-pine-soft/50 text-sm text-pine"
               >
                 <ExternalLink size={14} /> En Sofi #{itn.sofi_trip_id}
               </a>
@@ -491,7 +491,7 @@ export default function ItineraryBuilder() {
                 </button>
                 <button onClick={() => setSofiModal({ open: true, dryRun: false })}
                         data-testid="sofi-push-btn"
-                        className="inline-flex items-center gap-2 px-4 py-2 bg-pine-700 text-white hover:bg-pine-800 text-sm">
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-pine text-white hover:bg-pine-hover text-sm">
                   <Send size={14} /> Enviar a Sofi
                 </button>
               </>
