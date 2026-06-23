@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Plus, Trash2, Pencil, X } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
+import { confirmAsync } from "@/lib/safeConfirm";
 
 const EMPTY = { name: "", country: "", contact: "", notes: "" };
 
@@ -36,7 +37,7 @@ export default function Providers() {
   };
 
   const del = async (id) => {
-    if (!window.confirm("¿Eliminar proveedor?")) return;
+    if (!(await confirmAsync("¿Eliminar proveedor?", { destructive: true, confirmLabel: "Eliminar" }))) return;
     try { await api.delete(`/providers/${id}`); load(); }
     catch (e) { toast.error(e?.response?.data?.detail || "Error"); }
   };

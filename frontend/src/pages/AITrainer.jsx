@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
+import { confirmAsync } from "@/lib/safeConfirm";
 
 const OUTCOMES = [
   { v: "sold", label: "Vendido", icon: CheckCircle2, cls: "bg-pine text-white border-pine", iconCls: "text-white" },
@@ -136,7 +137,7 @@ export default function AITrainer() {
 
   const cancelBulk = async () => {
     if (!activeJob?.job_id) return;
-    if (!window.confirm("¿Cancelar la importación? Los viajes ya listados se procesarán igual.")) return;
+    if (!(await confirmAsync("¿Cancelar la importación? Los viajes ya listados se procesarán igual."))) return;
     try {
       const { data } = await api.post(`/training-examples/bulk-import-jobs/${activeJob.job_id}/cancel`);
       setActiveJob(data);
@@ -186,7 +187,7 @@ export default function AITrainer() {
   };
 
   const del = async (id) => {
-    if (!window.confirm("¿Eliminar este ejemplo?")) return;
+    if (!(await confirmAsync("¿Eliminar este ejemplo?", { destructive: true, confirmLabel: "Eliminar" }))) return;
     await api.delete(`/training-examples/${id}`); load();
   };
 
@@ -713,7 +714,7 @@ function PendingCard({ ex, onSaved }) {
   };
 
   const dismiss = async () => {
-    if (!window.confirm("¿Eliminar este entrenamiento sin solicitud?")) return;
+    if (!(await confirmAsync("¿Eliminar este entrenamiento sin solicitud?", { destructive: true, confirmLabel: "Eliminar" }))) return;
     await api.delete(`/training-examples/${ex.example_id}`);
     toast.info("Eliminado");
     onSaved();
@@ -956,12 +957,13 @@ function CalibrationCard() {
     if (reset) {
       // Double confirmation to prevent accidental clicks that would burn the
       // LLM budget by re-evaluating every trip from scratch.
-      const yes1 = window.confirm(
+      const yes1 = await confirmAsync(
         "⚠️ RESET COMPLETO\n\n"
         + "Esto borrará TODA la marca de viajes ya analizados y re-evaluará "
         + "los 167 viajes desde cero.\n\n"
         + "Coste estimado: ~$22 de presupuesto LLM y ~2 horas de ejecución.\n\n"
-        + "¿Quieres continuar?"
+        + "¿Quieres continuar?",
+        { destructive: true, confirmLabel: "Continuar" }
       );
       if (!yes1) return;
       const yes2 = window.prompt(

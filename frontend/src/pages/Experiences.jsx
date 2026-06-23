@@ -3,6 +3,7 @@ import { Plus, Search, Trash2, Pencil, Upload, X, Server, History } from "lucide
 import { toast } from "sonner";
 import api from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { confirmAsync } from "@/lib/safeConfirm";
 
 const TYPE_BADGE = {
   alojamiento: "bg-pine text-white",
@@ -97,7 +98,7 @@ export default function Experiences() {
   };
 
   const del = async (id) => {
-    if (!window.confirm("¿Eliminar esta experiencia?")) return;
+    if (!(await confirmAsync("¿Eliminar esta experiencia?", { destructive: true, confirmLabel: "Eliminar" }))) return;
     try {
       await api.delete(`/experiences/${id}`);
       // Drop any pending optimistic edit for the deleted row AND remove it
@@ -136,7 +137,7 @@ export default function Experiences() {
                 data-testid="bulk-import-btn"
                 disabled={bulkBusy}
                 onClick={async () => {
-                  if (!window.confirm("Importar TODOS los Excel de proveedores almacenados en el servidor (~94 archivos)?")) return;
+                  if (!(await confirmAsync("Importar TODOS los Excel de proveedores almacenados en el servidor (~94 archivos)?"))) return;
                   setBulkBusy(true);
                   try {
                     const { data } = await api.post("/experiences/import-all-server");

@@ -1543,8 +1543,53 @@ def _fmt_date(s: Optional[str]) -> str:
         return s
 
 
+def _fmt_travefy_date(s: Optional[str]) -> str:
+    """Travefy export format: 'Jul 16, 2026' (3-letter month, no leading zero
+    on day, comma-separated year). Used in the trip-prices template."""
+    if not s:
+        return ""
+    try:
+        d = datetime.fromisoformat(s)
+        return d.strftime("%b %-d, %Y")
+    except (TypeError, ValueError):
+        return s
+
+
+def _fmt_travefy_long_range(date_from: Optional[str], date_to: Optional[str]) -> str:
+    """'July 16 - July 20, 2026 (4 nights)' style range Travefy uses on the
+    Accommodations rows."""
+    if not date_from:
+        return ""
+    try:
+        df = datetime.fromisoformat(date_from)
+        dt_obj = datetime.fromisoformat(date_to) if date_to else df
+        nights = max(0, (dt_obj.date() - df.date()).days)
+        nights_word = "night" if nights == 1 else "nights"
+        if df.year == dt_obj.year:
+            return (f"{df.strftime('%B %-d')} - {dt_obj.strftime('%B %-d, %Y')} "
+                    f"({nights} {nights_word})")
+        return (f"{df.strftime('%B %-d, %Y')} - {dt_obj.strftime('%B %-d, %Y')} "
+                f"({nights} {nights_word})")
+    except (TypeError, ValueError):
+        return f"{date_from} - {date_to}".strip(" -")
+
+
 @api.get("/itineraries/{itinerary_id}/export")
 async def export_itinerary(itinerary_id: str, user: Annotated[User, Depends(current_user)]):
+    """Generate the Sofi-compatible 'Trip Prices' workbook.
+
+    Matches the Travefy export the agency already uses internally:
+      - Header rows 1-7: trip metadata
+      - Banner row "Traveler Details" + table
+      - Banner row "Activities and transportation" + day-by-day table
+      - TOTAL row for activities
+      - Banner row "Accommodations" + table + TOTAL
+      - Footer with Base total, Mark up %, Commission %, Total price
+
+    The agent imports this file directly into Sofi via the existing manual
+    Excel import flow on the agency side (the same one they used before this
+    tool existed), so the structure must replicate Travefy's bit-for-bit.
+    """
     itn_doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
     if not itn_doc:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1556,104 +1601,192 @@ async def export_itinerary(itinerary_id: str, user: Annotated[User, Depends(curr
     ws = wb.active
     ws.title = "Trip Prices"
 
-    bold = Font(bold=True)
-    section_font = Font(bold=True)
-    date_fmt = "DD/MM/YYYY"
+    BOLD = Font(bold=True, size=11)
+    BOLD_BANNER = Font(bold=True, size=11)
+    BANNER_FILL = PatternFill(start_color="FFC4DAF0", end_color="FFC4DAF0", fill_type="solid")
+    DAY_FILL = PatternFill(start_color="FFEEEEEE", end_color="FFEEEEEE", fill_type="solid")
     money_fmt = "#,##0.00"
 
-    # --- Trip summary (rows 1-5) -------------------------------------------
-    ws.cell(1, 1, "Main traveler name").font = bold
-    ws.cell(1, 2, itn.main_traveler or "")
-    ws.cell(2, 1, "Trip start date").font = bold
-    start = _to_date(itn.start_date)
-    c = ws.cell(2, 2, start)
-    if hasattr(start, "year"):
-        c.number_format = date_fmt
-    ws.cell(3, 1, "Trip end date").font = bold
-    end = _to_date(itn.end_date)
-    c = ws.cell(3, 2, end)
-    if hasattr(end, "year"):
-        c.number_format = date_fmt
-    ws.cell(4, 1, "Duration (days)").font = bold
-    ws.cell(4, 2, itn.duration_days)
-    ws.cell(5, 1, "Number of travelers").font = bold
-    ws.cell(5, 2, itn.num_travelers)
+    def banner(row: int, last_col: int, label: str):
+        for col in range(1, last_col + 1):
+            cell = ws.cell(row, col, label if col == 1 else "")
+            cell.font = BOLD_BANNER
+            cell.fill = BANNER_FILL
 
-    # --- Traveler details (rows 9-...) -------------------------------------
-    ws.cell(9, 1, "Traveler Details").font = section_font
-    ws.cell(10, 1, "First name").font = bold
-    ws.cell(10, 2, "Last name").font = bold
-    row = 11
-    for t in itn.travelers or []:
-        ws.cell(row, 1, t.first_name or "")
-        ws.cell(row, 2, t.last_name or "")
-        row += 1
+    def day_row(row: int, last_col: int, label: str, date_str: str):
+        for col in range(1, last_col + 1):
+            cell = ws.cell(row, col, "")
+            cell.fill = DAY_FILL
+        ws.cell(row, 1, label)
+        ws.cell(row, 2, date_str)
 
-    # --- Activities and transportation (starts at row 14) ------------------
-    ws.cell(14, 1, "Activities and transportation").font = section_font
-    ws.cell(15, 1, "Day").font = bold
-    ws.cell(15, 2, "Date").font = bold
-    ws.cell(15, 4, "Type").font = bold
-    ws.cell(15, 5, "Name").font = bold
-    ws.cell(15, 6, "Quantity").font = bold
-    ws.cell(15, 7, "Price").font = bold
+    # Header rows 1-7 ---------------------------------------------------------
+    ws.cell(1, 1, "Main traveler name").font = BOLD
+    ws.cell(1, 2, itn.main_traveler or itn.name or "")
+    ws.cell(2, 1, "Trip start date").font = BOLD
+    ws.cell(2, 2, _fmt_travefy_date(itn.start_date))
+    ws.cell(3, 1, "Trip end date").font = BOLD
+    ws.cell(3, 2, _fmt_travefy_date(itn.end_date))
+    ws.cell(4, 1, "Duration (days)").font = BOLD
+    ws.cell(4, 2, itn.duration_days or 0)
+    ws.cell(5, 1, "Number of travelers").font = BOLD
+    ws.cell(5, 2, itn.num_travelers or 0)
+    ws.cell(6, 1, "Flight details").font = BOLD
 
-    r = 16
+    # Traveler Details (rows 9 banner, 10 headers, 11+ rows) ------------------
+    banner(9, 7, "Traveler Details")
+    headers = ["First name", "Last name", "Gender", "Date of birth",
+               "Nationality", "Passport #", "Special requests & comments"]
+    for i, h in enumerate(headers, start=1):
+        ws.cell(10, i, h).font = BOLD
+    r = 11
+    for t in (itn.travelers or []):
+        ws.cell(r, 1, t.first_name or "")
+        ws.cell(r, 2, t.last_name or "")
+        ws.cell(r, 3, getattr(t, "gender", "") or "")
+        ws.cell(r, 4, _fmt_travefy_date(getattr(t, "date_of_birth", None)))
+        ws.cell(r, 5, getattr(t, "nationality", "") or "")
+        ws.cell(r, 6, getattr(t, "passport_number", "") or "")
+        ws.cell(r, 7, getattr(t, "special_requests", "") or "")
+        r += 1
+    # If no travelers were entered, still reserve the typical 5 rows so the
+    # vertical alignment with the activities banner matches a Travefy export.
+    activities_banner_row = max(18, r + 3)
+
+    # Activities and transportation -------------------------------------------
+    banner(activities_banner_row, 11, "Activities and transportation")
+    act_headers = ["Day", "Date", "Time/Confirmation", "Type", "Name",
+                   "Quantity", "Duration", "Operator", "Contact details",
+                   "Price", "Currency"]
+    head_row = activities_banner_row + 1
+    for i, h in enumerate(act_headers, start=1):
+        ws.cell(head_row, i, h).font = BOLD
+
+    r = head_row + 1
+    activities_total = 0.0
+    qty_str = _qty_label(itn)
     for idx, day in enumerate(itn.days or [], start=1):
-        # Skip accommodations on the day-by-day section — they belong only in
-        # the Accommodations section below (per template + user request).
-        services = [s for s in (day.services or []) if s.type != "alojamiento"]
-        if not services:
-            # Still print the Day header so day numbering matches the trip
-            # length even when a day has no priced activities.
-            ws.cell(r, 1, f"Day {idx}").font = bold
-            d = _to_date(day.date)
-            cell = ws.cell(r, 2, d)
-            if hasattr(d, "year"):
-                cell.number_format = date_fmt
+        # Skip auto-spread accommodation carriers (Check-in/Alojamiento/Check-out)
+        # — the actual hotel goes once in the Accommodations section below.
+        services = [s for s in (day.services or [])
+                    if not getattr(s, "acc_id", None) and s.type != "alojamiento"]
+        day_row(r, 11, f"Day {idx}", _fmt_travefy_date(day.date))
+        r += 1
+        for s in services:
+            ws.cell(r, 4, _travefy_type(s.type))
+            ws.cell(r, 5, s.name or "")
+            ws.cell(r, 6, qty_str)
+            ws.cell(r, 7, getattr(s, "duration", "") or "")
+            ws.cell(r, 8, getattr(s, "provider_name", "") or "")
+            ws.cell(r, 9, getattr(s, "provider_contact", "") or "")
+            unit_incl = float(s.unit_price_tax_incl or s.unit_price or 0)
+            line_total = round(unit_incl * (s.quantity or 0), 2)
+            cell = ws.cell(r, 10, line_total)
+            cell.number_format = money_fmt
+            ws.cell(r, 11, getattr(s, "currency", None) or "EUR")
+            activities_total += line_total
             r += 1
-            continue
 
-        ws.cell(r, 1, f"Day {idx}").font = bold
-        d = _to_date(day.date)
-        cell = ws.cell(r, 2, d)
-        if hasattr(d, "year"):
-            cell.number_format = date_fmt
+    # TOTAL row for activities
+    ws.cell(r, 1, "TOTAL").font = BOLD
+    cell = ws.cell(r, 10, round(activities_total, 2))
+    cell.number_format = money_fmt
+    cell.font = BOLD
+    ws.cell(r, 11, "EUR").font = BOLD
+    r += 3  # spacer rows like Travefy does
+
+    # Accommodations ----------------------------------------------------------
+    banner(r, 6, "Accommodations")
+    r += 1
+    acc_headers = ["Day", "Date", "Name", "Notes", "Price", "Currency"]
+    for i, h in enumerate(acc_headers, start=1):
+        ws.cell(r, i, h).font = BOLD
+    r += 1
+    accommodations_total = 0.0
+    # Map each accommodation to a "Day X - Y" range based on day.date matches.
+    day_dates = [d.date for d in (itn.days or [])]
+
+    def _day_range(date_from: Optional[str], date_to: Optional[str]) -> str:
+        if not date_from:
+            return ""
+        try:
+            d_in = day_dates.index(date_from) + 1
+        except ValueError:
+            d_in = 1
+        if not date_to:
+            return f"Day {d_in}"
+        try:
+            d_out = day_dates.index(date_to) + 1
+        except ValueError:
+            d_out = d_in + 1
+        return f"Day {d_in} - {d_out}" if d_out > d_in else f"Day {d_in}"
+
+    for a in (itn.accommodations or []):
+        ws.cell(r, 1, _day_range(a.date_from, a.date_to))
+        ws.cell(r, 2, _fmt_travefy_long_range(a.date_from, a.date_to))
+        # Multi-line "Name + room types" exactly like Travefy
+        rooms_lines = "\n".join((rm.room_type or "Doble") for rm in (a.rooms or []))
+        name_cell = (a.name or "") + (("\n\n" + rooms_lines + "\n") if rooms_lines else "")
+        cell = ws.cell(r, 3, name_cell)
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+        ws.cell(r, 4, getattr(a, "notes", "") or "")
+        p_incl = float(a.price_tax_incl or a.price or 0)
+        cell = ws.cell(r, 5, round(p_incl, 2))
+        cell.number_format = money_fmt
+        ws.cell(r, 6, getattr(a, "currency", None) or "EUR")
+        accommodations_total += p_incl
         r += 1
 
-        for s in services:
-            ws.cell(r, 4, s.type)
-            ws.cell(r, 5, s.name)
-            ws.cell(r, 6, s.quantity)
-            unit_incl = s.unit_price_tax_incl or s.unit_price or 0
-            line_incl = unit_incl * (s.quantity or 0)
-            price_cell = ws.cell(r, 7, round(line_incl, 2))
-            price_cell.number_format = money_fmt
-            r += 1
+    ws.cell(r, 1, "TOTAL").font = BOLD
+    cell = ws.cell(r, 5, round(accommodations_total, 2))
+    cell.number_format = money_fmt
+    cell.font = BOLD
+    ws.cell(r, 6, "EUR").font = BOLD
+    r += 3
 
-    # --- Accommodations ----------------------------------------------------
-    acc_section = r + 1
-    ws.cell(acc_section, 1, "Accommodations").font = section_font
-    head = acc_section + 1
-    ws.cell(head, 1, "Day").font = bold
-    ws.cell(head, 2, "Date").font = bold
-    ws.cell(head, 3, "Name").font = bold
-    ws.cell(head, 5, "Price").font = bold
-    ws.cell(head, 6, "Currency").font = bold
+    # Footer totals -----------------------------------------------------------
+    base_total = round(activities_total + accommodations_total, 2)
+    ws.cell(r, 1, "Base total").font = BOLD
+    cell = ws.cell(r, 5, base_total)
+    cell.number_format = money_fmt
+    ws.cell(r, 6, "EUR").font = BOLD
+    r += 1
+    ws.cell(r, 1, "Base total (excluding non-commissioned)").font = BOLD
+    cell = ws.cell(r, 5, base_total)
+    cell.number_format = money_fmt
+    ws.cell(r, 6, "EUR").font = BOLD
+    r += 1
 
-    r2 = head + 1
-    for a in itn.accommodations or []:
-        date_range = f"{_fmt_date(a.date_from)} - {_fmt_date(a.date_to)}".strip(" -")
-        ws.cell(r2, 2, date_range)
-        ws.cell(r2, 3, a.name)
-        p_incl = a.price_tax_incl or a.price or 0
-        price_cell = ws.cell(r2, 5, round(p_incl, 2))
-        price_cell.number_format = money_fmt
-        ws.cell(r2, 6, a.currency or "EUR")
-        r2 += 1
+    markup_pct = float(itn.markup_pct or 0)
+    markup_eur = round(base_total * markup_pct / 100.0, 2)
+    ws.cell(r, 1, "Mark up (%)").font = BOLD
+    ws.cell(r, 2, markup_pct)
+    cell = ws.cell(r, 5, markup_eur)
+    cell.number_format = money_fmt
+    ws.cell(r, 6, "EUR").font = BOLD
+    r += 1
 
-    # --- Column widths -----------------------------------------------------
-    widths = [12, 22, 4, 16, 50, 10, 12]
+    com_pct = float(itn.commission_pct or 0)
+    # Travefy formula: commission = (base + markup) * com_pct / (1 - com_pct/100)
+    sub_with_markup = base_total + markup_eur
+    com_eur = round(sub_with_markup * com_pct / max(1e-9, (100.0 - com_pct)), 2) if com_pct else 0.0
+    com_label = f"{_partner_label(itn.partner)} commission (%)"
+    ws.cell(r, 1, com_label).font = BOLD
+    ws.cell(r, 2, com_pct)
+    cell = ws.cell(r, 5, com_eur)
+    cell.number_format = money_fmt
+    ws.cell(r, 6, "EUR").font = BOLD
+    r += 1
+
+    total_price = round(sub_with_markup + com_eur, 2)
+    ws.cell(r, 1, "Total price").font = BOLD
+    cell = ws.cell(r, 5, total_price)
+    cell.number_format = money_fmt
+    cell.font = BOLD
+    ws.cell(r, 6, "EUR").font = BOLD
+
+    # Column widths matching the Travefy template proportions ----------------
+    widths = [10, 22, 20, 14, 50, 32, 14, 18, 18, 12, 10]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
 
@@ -1661,12 +1794,67 @@ async def export_itinerary(itinerary_id: str, user: Annotated[User, Depends(curr
     wb.save(buf)
     buf.seek(0)
     safe_name = "".join(c for c in (itn.name or "itinerary") if c.isalnum() or c in "-_ ").strip() or "itinerary"
-    filename = f"{safe_name}.xlsx"
+    filename = f"trip_prices_{safe_name}.xlsx"
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def _qty_label(itn: "Itinerary") -> str:
+    """'2 adults, 3 children (ages 8, 11, and 17)' style traveler-count label
+    that Travefy uses in the Quantity column for every activity row."""
+    adults = sum(1 for t in (itn.travelers or []) if not getattr(t, "is_child", False))
+    children = [t for t in (itn.travelers or []) if getattr(t, "is_child", False)]
+    if not (itn.travelers or []):
+        # Fallback when traveler list is empty: derive from num_travelers
+        n = int(itn.num_travelers or 0)
+        return f"{n} {'traveler' if n == 1 else 'travelers'}"
+    parts = [f"{adults} {'adult' if adults == 1 else 'adults'}"]
+    if children:
+        ages = [str(getattr(t, "age", "")) for t in children if getattr(t, "age", None)]
+        ch_label = f"{len(children)} {'child' if len(children) == 1 else 'children'}"
+        if ages:
+            if len(ages) == 1:
+                ch_label += f" (age {ages[0]})"
+            elif len(ages) == 2:
+                ch_label += f" (ages {ages[0]} and {ages[1]})"
+            else:
+                ch_label += f" (ages {', '.join(ages[:-1])}, and {ages[-1]})"
+        parts.append(ch_label)
+    return ", ".join(parts)
+
+
+def _travefy_type(t: Optional[str]) -> str:
+    """Map our internal ServiceType enum to Travefy's display labels."""
+    return {
+        "actividad": "Activity",
+        "transfer": "Transport",
+        "tren": "Transport",
+        "vuelo": "Transport",
+        "rental_car": "Transport",
+        "entradas": "Activity",
+        "alojamiento": "Accommodation",
+        "restaurante": "Activity",
+    }.get((t or "").lower(), (t or "").title())
+
+
+def _partner_label(p: Optional[str]) -> str:
+    """Travefy's commission row reads 'Kimkim commission (%)' / 'Zicasso ...'.
+    We mirror that wording for whatever partner the agency is shipping under.
+    """
+    return {
+        "kimkim": "Kimkim",
+        "zicasso": "Zicasso",
+        "responsible_travel": "Responsible Travel",
+        "baboo": "Baboo",
+        "travel_agent_10": "Travel Agency",
+        "travel_agent_12": "Travel Agency",
+        "travel_agent_15": "Travel Agency",
+        "direct": "Direct",
+        "other": "Direct",
+    }.get((p or "kimkim").lower(), "Partner")
 
 
 # ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@ import { Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
 import { TYPE_BADGE, BADGE_FALLBACK, fmtEUR } from "./utils";
+import { confirmAsync } from "@/lib/safeConfirm";
 
 export function AutocompleteInput({ value, dayCity, serviceType, pax, onTextChange, onPick }) {
   const [open, setOpen] = useState(false);
@@ -119,7 +120,7 @@ export function AutocompleteInput({ value, dayCity, serviceType, pax, onTextChan
                 disabled={deleting === r.experience_id}
                 onClick={async (e) => {
                   e.stopPropagation(); e.preventDefault();
-                  if (!window.confirm(`Eliminar "${r.title}" del catálogo? Es permanente.`)) return;
+                  if (!(await confirmAsync(`Eliminar "${r.title}" del catálogo? Es permanente.`, { destructive: true, confirmLabel: "Eliminar" }))) return;
                   setDeleting(r.experience_id);
                   try {
                     await api.delete(`/experiences/${r.experience_id}`);

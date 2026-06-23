@@ -3,6 +3,7 @@ import { Plus, Trash2, Pencil, X, Search, Server, Tag } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { confirmAsync } from "@/lib/safeConfirm";
 
 const TIERS = ["luxury", "upscale", "comfort", "standard", "budget"];
 const TIER_COLOR = {
@@ -49,7 +50,7 @@ export default function Hotels() {
   };
 
   const del = async (id) => {
-    if (!window.confirm("¿Eliminar este hotel?")) return;
+    if (!(await confirmAsync("¿Eliminar este hotel?", { destructive: true, confirmLabel: "Eliminar" }))) return;
     await api.delete(`/hotels/${id}`); load();
   };
 
@@ -86,7 +87,7 @@ export default function Hotels() {
   };
 
   const promoteToLibrary = async (h) => {
-    if (!window.confirm(`Mover "${h.name}" al catálogo oficial (library)?`)) return;
+    if (!(await confirmAsync(`Mover "${h.name}" al catálogo oficial (library)?`))) return;
     try {
       await api.patch(`/hotels/${h.hotel_id}`, { source: "library" });
       toast.success("Hotel promovido a library");
@@ -108,7 +109,7 @@ export default function Hotels() {
               data-testid="bulk-import-hotels"
               disabled={bulkBusy}
               onClick={async () => {
-                if (!window.confirm("Importar TODOS los archivos de hoteles del servidor (España/Portugal/Italia/Marruecos + apartamentos)?")) return;
+                if (!(await confirmAsync("Importar TODOS los archivos de hoteles del servidor (España/Portugal/Italia/Marruecos + apartamentos)?"))) return;
                 setBulkBusy(true);
                 try {
                   const { data } = await api.post("/hotels/import-all-server");

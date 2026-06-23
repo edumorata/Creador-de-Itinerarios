@@ -5,6 +5,7 @@ import api, { API_BASE } from "@/lib/api";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
 import { TravefyImportModal } from "./TravefyImportModal";
+import { confirmAsync } from "@/lib/safeConfirm";
 
 const STATUS_LABEL = {
   draft: { text: "Borrador", color: "bg-clay-200 text-clay-900" },
@@ -88,7 +89,7 @@ export default function Dashboard() {
   };
 
   const del = async (id) => {
-    if (!window.confirm("¿Eliminar este itinerario?")) return;
+    if (!(await confirmAsync("¿Eliminar este itinerario?", { destructive: true, confirmLabel: "Eliminar" }))) return;
     try {
       await api.delete(`/itineraries/${id}`);
       toast.success("Itinerario eliminado");
@@ -216,7 +217,7 @@ export default function Dashboard() {
         <div className="mb-4 grid grid-cols-[260px_1fr_auto] gap-3 items-center" data-testid="admin-filters">
           <select data-testid="filter-agent" value={filterAgent} onChange={(e) => setFilterAgent(e.target.value)} className="bg-white border border-clay-300 px-3 py-2 text-sm">
             <option value="">Agente: todos</option>
-            {agents.map((a) => <option key={a} value={a}>{agentName(a)} <span>({a})</span></option>)}
+            {agents.map((a) => <option key={a} value={a}>{agentName(a)} ({a})</option>)}
           </select>
           <div className="relative">
             <Search size={14} className="absolute left-3 top-3 text-clay-500" />

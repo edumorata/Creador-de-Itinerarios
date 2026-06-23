@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
+import { confirmAsync } from "@/lib/safeConfirm";
 
 export default function AdminUsers() {
   const [allowed, setAllowed] = useState([]);
@@ -26,7 +27,7 @@ export default function AdminUsers() {
   };
 
   const remove = async (em) => {
-    if (!window.confirm(`Revocar acceso a ${em}?`)) return;
+    if (!(await confirmAsync(`Revocar acceso a ${em}?`, { destructive: true, confirmLabel: "Revocar" }))) return;
     try { await api.delete(`/admin/allowed-emails/${encodeURIComponent(em)}`); load(); }
     catch (e) { toast.error(e?.response?.data?.detail || "Error"); }
   };

@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { Calendar, MapPin, Plus } from "lucide-react";
 import { fmt } from "./utils";
 import { ServiceRow } from "./ServiceRow";
+import { confirmAsync } from "@/lib/safeConfirm";
 
 export function DayBlock({ day, idx, active, numTravelers, accommodations, cityFacets, markup, onActivate, onUpdateDay, onAddBlank, onRemoveDay, onUpdateService, onRemoveService, onDragStart, onDropService, onOrient, onAccommodate }) {
   const [dragOverIdx, setDragOverIdx] = useState(null);
@@ -68,7 +69,7 @@ export function DayBlock({ day, idx, active, numTravelers, accommodations, cityF
           <button data-testid={`add-blank-${idx}`} className="text-xs px-2 py-1 hover:bg-clay-200 inline-flex items-center gap-1" onClick={(e) => { e.stopPropagation(); onAddBlank(); }}>
             <Plus size={12}/> servicio en blanco
           </button>
-          <button className="text-xs px-2 py-1 hover:bg-clay-200 text-destructive" onClick={(e) => { e.stopPropagation(); if (window.confirm("¿Eliminar este día?")) onRemoveDay(); }}>
+          <button className="text-xs px-2 py-1 hover:bg-clay-200 text-destructive" onClick={async (e) => { e.stopPropagation(); if (await confirmAsync("¿Eliminar este día?", { destructive: true, confirmLabel: "Eliminar" })) onRemoveDay(); }}>
             Eliminar día
           </button>
         </div>
