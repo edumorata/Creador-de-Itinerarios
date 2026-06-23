@@ -105,6 +105,23 @@ async def shutdown_db_client():
 
 
 @app.on_event("startup")
+async def ensure_indexes():
+    """Idempotent index setup. Currently:
+    - sofi_push_jobs.created_at_dt TTL=7 days. We mirror created_at (ISO
+      string) into a BSON Date field because Mongo TTL only acts on Date.
+      The job inserter writes both fields atomically.
+    """
+    try:
+        await db.sofi_push_jobs.create_index(
+            "created_at_dt",
+            expireAfterSeconds=7 * 24 * 3600,
+            name="created_at_dt_ttl",
+        )
+    except Exception as e:
+        logger.warning("ensure_indexes sofi_push_jobs failed: %s", e)
+
+
+@app.on_event("startup")
 async def ensure_playwright_browser():
     """Pods sometimes lose the Playwright Chromium binary after image recycling.
 
@@ -2455,7 +2472,8 @@ async def push_itinerary_to_sofi_endpoint(
     if not _can_access(doc, user):
         raise HTTPException(status_code=403, detail="No tienes acceso a este itinerario")
 
-    dry_run = bool(payload.get("dry_run") or False)
+    # Strict bool coercion — accept true/false (json) but reject sneaky strings.
+    dry_run = bool(payload.get("dry_run")) if isinstance(payload.get("dry_run"), bool) else False
     # When the trip already lives in Sofi, refuse to create a duplicate. The
     # builder hides the button at this point but a stale tab could still POST.
     if not dry_run and doc.get("sofi_trip_id"):
@@ -2465,17 +2483,35 @@ async def push_itinerary_to_sofi_endpoint(
                     "Para evitar duplicados, edítalo directamente en Sofi."),
         )
 
+    # One running job at a time per itinerary — prevents accidental loops if
+    # the modal is reopened while a previous job is still in flight.
+    existing = await db.sofi_push_jobs.find_one(
+        {"itinerary_id": itinerary_id, "status": "running"},
+        {"_id": 0, "job_id": 1, "dry_run": 1},
+    )
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"Ya hay un push en curso para este itinerario "
+                    f"(job {existing['job_id']}). Espera a que termine."),
+        )
+
     job_id = f"sofi_{uuid.uuid4().hex[:12]}"
+    now = now_iso()
     await db.sofi_push_jobs.insert_one({
         "job_id": job_id,
         "itinerary_id": itinerary_id,
         "dry_run": dry_run,
         "status": "running",
         "created_by": user.email,
-        "created_at": now_iso(),
+        "created_at": now,
+        # BSON Date mirror for the TTL index (auto-cleanup after 7 days).
+        "created_at_dt": datetime.now(timezone.utc),
         "result": None,
         "error": None,
     })
+    logger.info("sofi_push.start job_id=%s itn=%s dry_run=%s by=%s",
+                job_id, itinerary_id, dry_run, user.email)
     _spawn_bg(_run_sofi_push_job_safely(job_id, itinerary_id, dry_run))
     return {"job_id": job_id, "status": "running", "dry_run": dry_run}
 
@@ -2578,6 +2614,8 @@ async def _run_sofi_push_job(job_id: str, itinerary_id: str, dry_run: bool):
             "finished_at": now_iso(),
         }},
     )
+    logger.info("sofi_push.done job_id=%s itn=%s dry_run=%s trip_id=%s",
+                job_id, itinerary_id, dry_run, out.get("trip_id"))
 
 
 # --- Rental car detector ---------------------------------------------------

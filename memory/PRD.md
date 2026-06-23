@@ -416,3 +416,69 @@ Files touched:
   rewritten to render rooms + default config; new `RoomConfigEditor` component.
 - `frontend/src/pages/Experiences.jsx` — TYPES list and TYPE_BADGE updated.
 
+### Iteration 16 (2026-06-23) — Sofi push (gestion.viajadverdad.com) automation
+- **Goal**: replace the manual copy-paste from the builder into the agency's
+  internal management system (Sofi/Joomla+Fabrik) with a one-click headless
+  Playwright submission.
+- **Two operating modes** wired via the same backend pair of endpoints:
+  - `POST /api/itineraries/{id}/push-to-sofi {dry_run: true}` → opens Sofi,
+    logs in, navigates to `/trips/form/1/`, fills 16+ trip-header + summary
+    fields, captures a full-page screenshot, returns WITHOUT clicking submit.
+  - `{dry_run: false}` → identical flow + clicks Submit + reads back the new
+    Sofi `trip_id`. Stamps the itinerary doc with `sofi_trip_id`,
+    `sofi_url`, `sofi_pushed_at`.
+- **Polling pattern**: same async background-job model as the Travefy
+  importer. Job rows in `db.sofi_push_jobs`, TTL=7 days on `created_at_dt`.
+  `GET /api/itineraries/push-to-sofi/{job_id}` polls for status.
+- **Robustness against Fabrik markup quirks**:
+  - YesNo radios (`paypal_fee`, `trip_sold_in_euro`, `status`) have the
+    `<input type=radio>` hidden behind a styled `<label>`; standard
+    `el.click()` times out. Fallback chain: `label[for=id]` click → native
+    click → JS-level `dispatchEvent('click'+'change')`.
+  - Override inputs (e.g. `customer_price_euro_override`) ship with
+    `size="0"`, breaking Playwright `fill()`. Fallback: direct
+    `el.value = val` + dispatch `input/change/blur`.
+- **Mappings**: internal partner enum → Sofi's `Source` and `Partner`
+  selects. `_CITY_TO_COUNTRY` (~80 entries) maps day cities to Spain /
+  Italy / Portugal / Morocco / France / Cuba / RD for the destination
+  multi-select; falls back to "Spain".
+- **Pricing**: `_compute_pricing_totals(itn)` mirrors the frontend's PVP
+  math (sub_excl/sub_incl → markup → commission → optional PayPal 3%) and
+  ships EUR + EUR×fx_rate USD into Sofi's override fields.
+- **Frontend UX**:
+  - New `SofiPushModal` (`builder/SofiPushModal.jsx`): dry-run done →
+    filled-fields table + screenshot accordion + "Enviar de verdad" CTA;
+    real-push done → trip_id + Sofi link; error → red banner + filled
+    fields for debug.
+  - Itinerary Builder header gained 3 mutually-exclusive slots next to
+    "Exportar Excel": **(a)** "Vista previa Sofi" + "Enviar a Sofi" buttons
+    when not yet pushed; **(b)** green pill "En Sofi #1234 ↗" after success
+    (buttons hidden → prevents duplicate creates).
+  - "Vista previa → Enviar de verdad" is a continuous flow: clicking the
+    CTA fires a `confirm()` and swaps the modal to `dry_run=false` mode
+    with a fresh job (key-based remount).
+- **Concurrency guards**: re-uses the global Playwright semaphore from
+  `scraper.py` (one Chromium at a time). Backend refuses a new job for the
+  same itinerary_id while a previous one is still running (409). Also 409
+  if the itinerary already has `sofi_trip_id` (real push only; dry-run
+  still allowed for re-validation).
+- **Auth**: both endpoints use `current_user` (any agent), per user
+  request. `_can_access(doc, user)` enforces ownership.
+- **Tests**: `backend/tests/test_sofi_push.py` — 8 cases · `7 passed + 1
+  skipped` (the skipped one creates a real Sofi trip, gated by
+  `SOFI_RUN_REAL_PUSH=1`).
+- **Verified end-to-end** against the live Sofi instance in dry-run mode:
+  16 fields filled, 0 errors, ~28-45s per job.
+
+Files touched:
+- `backend/models.py` — Itinerary now has `sofi_trip_id` + `sofi_url` + `sofi_pushed_at`.
+- `backend/sofi.py` — full rewrite: dry-run support + 3-layer Fabrik
+  fallbacks for radios and override inputs.
+- `backend/server.py` — `_compute_pricing_totals()`, the two new endpoints,
+  background runner, TTL index startup, per-itinerary one-job guard,
+  structured INFO logging.
+- `frontend/src/pages/builder/SofiPushModal.jsx` (new).
+- `frontend/src/pages/ItineraryBuilder.jsx` — header buttons + modal mount.
+- `backend/tests/test_sofi_push.py` (new, by testing agent).
+
+
