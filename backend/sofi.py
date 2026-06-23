@@ -413,16 +413,48 @@ async def _fill_and_submit(page, itn: dict, totals: dict, *, dry_run: bool) -> d
     # We re-use the authenticated context so we don't pay another login round-
     # trip per booking. The global Playwright semaphore in scraper.py already
     # ensures we never run two Chromiums in parallel.
-    bookings_plan = list(_iter_bookings(itn, trip_id))
+    # --- Phase 2: push every booking via DIRECT HTTP POST instead of opening
+    # the form in a tab. We reuse the authenticated browser context's cookies
+    # via `page.request`, which goes through the same cookie jar but skips
+    # the entire render pipeline (CSS/JS/Fabrik recalcs). One-time we GET
+    # /reservas/form/3/ to extract the Joomla CSRF token + Fabrik hidden
+    # fields; then every booking is just a form-encoded POST that returns a
+    # 303 on success.
     bookings_results: list[dict] = []
-    for b in bookings_plan:
+    bookings_plan = list(_iter_bookings(itn, trip_id))
+    if bookings_plan:
         try:
-            r = await _push_one_booking(page, b, dry_run=False)
+            template = await _fetch_booking_form_hidden(page)
         except Exception as e:
-            logger.exception("booking push crashed for service=%s", b.get("service_name"))
-            r = {"ok": False, "service": b.get("service_name"),
-                 "kind": b.get("kind"), "error": f"{type(e).__name__}: {e}"}
-        bookings_results.append(r)
+            logger.exception("could not fetch booking form template")
+            return {
+                "ok": True,
+                "dry_run": False,
+                "trip_id": trip_id,
+                "url": f"{GESTION_BASE}/trips/details/1/{trip_id}",
+                "filled_fields": filled,
+                "bookings_results": [{"ok": False, "service": b.get("service_name"),
+                                       "kind": b.get("kind"),
+                                       "error": f"No pude cargar el form template: {e}"}
+                                     for b in bookings_plan],
+                "bookings_total": len(bookings_plan),
+                "bookings_ok": 0,
+            }
+        for b in bookings_plan:
+            try:
+                r = await _push_one_booking_fast(page, b, template)
+                # Joomla CSRF tokens are usually session-scoped (reusable
+                # across forms within the same session). If a submit ever
+                # rejects with "token invalid", refresh the template once
+                # and retry that booking.
+                if not r.get("ok") and "token" in (r.get("error") or "").lower():
+                    template = await _fetch_booking_form_hidden(page)
+                    r = await _push_one_booking_fast(page, b, template)
+            except Exception as e:
+                logger.exception("booking push crashed for service=%s", b.get("service_name"))
+                r = {"ok": False, "service": b.get("service_name"),
+                     "kind": b.get("kind"), "error": f"{type(e).__name__}: {e}"}
+            bookings_results.append(r)
 
     return {
         "ok": True,
@@ -955,4 +987,198 @@ async def _push_one_booking(page, b: dict, *, dry_run: bool) -> dict:
         "service": b.get("service_name"),
         "sofi_booking_id": booking_id,  # may be None — that's OK now
         "url": (f"{GESTION_BASE}/reservas/details/3/{booking_id}" if booking_id else None),
+    }
+
+
+
+# ---------------------------------------------------------------------------
+# OPTION B — Direct HTTP POST to the Fabrik bookings form, bypassing the
+# render pipeline. Cuts each booking from ~25s to ~2-3s.
+# ---------------------------------------------------------------------------
+import re as _re_mod  # local alias to avoid shadowing top-level `re`
+
+
+_FABRIK_TYPE_VALUE = {0: "activity", 1: "accomodation", 2: "freeday"}
+
+
+async def _fetch_booking_form_hidden(page) -> dict:
+    """GET /reservas/form/3/ and parse every <input type="hidden"> from the
+    response so we have the CSRF token + Fabrik routing fields. We use the
+    Playwright `page.request` API which reuses the browser's cookie jar
+    (kept hot from the trip-header phase, so we're already logged in).
+    """
+    resp = await page.request.get(
+        f"{GESTION_BASE}/reservas/form/3/?format=html",
+        timeout=20000,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"Form template GET status={resp.status}")
+    html = await resp.text()
+    hidden: dict[str, str] = {}
+    # Capture every <input type="hidden" name=".." value=".."> verbatim. We
+    # accept value="..." anywhere in the tag (Fabrik inserts other attrs
+    # between name= and value=). For inputs with the same name we keep the
+    # FIRST occurrence — those fields are bookkeeping (csrf, formid…), not
+    # the data fields we'll override below.
+    pattern = _re_mod.compile(
+        r'<input\s[^>]*?type="hidden"[^>]*?>',
+        _re_mod.IGNORECASE,
+    )
+    for tag in pattern.findall(html):
+        m_name = _re_mod.search(r'name="([^"]+)"', tag)
+        m_val = _re_mod.search(r'value="([^"]*)"', tag)
+        if not m_name:
+            continue
+        name = m_name.group(1)
+        val = m_val.group(1) if m_val else ""
+        # Only set first occurrence (csrf+routing); duplicates would clobber.
+        if name not in hidden:
+            hidden[name] = val
+    return hidden
+
+
+def _booking_form_data(b: dict, hidden: dict) -> list[tuple[str, str]]:
+    """Build the multipart form body for a booking POST. Returns a list of
+    (name, value) tuples (ordered) since Fabrik's multi-value fields use
+    `name[]` and we may need to send the same name twice."""
+    data: list[tuple[str, str]] = []
+
+    # Send every hidden field first — except duplicates of fields we override
+    # below. Some hidden inputs (like `app_bookings___operator[]`) are placed
+    # in the form to back-fill the autocomplete; we clear them.
+    overrides = {
+        "rowid", "app_bookings___id",  # blank means "create new"
+        "app_bookings___operator[]",
+    }
+    for name, val in hidden.items():
+        if name in overrides:
+            continue
+        data.append((name, val))
+
+    # Trip + service basics
+    data.append(("rowid", ""))                   # blank => create
+    data.append(("app_bookings___id", ""))
+    data.append(("app_bookings___trip_id[]", str(b.get("trip_id") or "")))
+    data.append(("app_bookings___service", b.get("service_name") or ""))
+    data.append(("app_bookings___ciudad", b.get("city") or ""))
+    data.append(("app_bookings___quantity", str(b.get("quantity") or 1)))
+    data.append(("app_bookings___number_of_children", "0"))
+    data.append(("app_bookings___date_entry", _to_sofi_iso(b.get("date_entry"))))
+    if b.get("date_exit"):
+        data.append(("app_bookings___date_exit", _to_sofi_iso(b["date_exit"])))
+    if b.get("room"):
+        data.append(("app_bookings___room", b["room"]))
+
+    # Type radio (multi-value join group). We send only the chosen value.
+    type_value = _FABRIK_TYPE_VALUE.get(int(b.get("type_radio") or 0), "activity")
+    data.append(("app_bookings___type[]", type_value))
+
+    # Currency = EUR, status_reserva = "sin" (Sin Seleccion) per user choice 5d.
+    data.append(("app_bookings___currency[]", "eur"))
+    data.append(("app_bookings___status_reserva[]", "sin"))
+    data.append(("app_bookings___status_facturacion[]", "sin"))
+
+    # Pricing
+    data.append(("app_bookings___price", f"{float(b.get('price_total') or 0):.2f}"))
+    data.append(("app_bookings___invoice_tax_excl", f"{float(b.get('invoice_excl') or 0):.2f}"))
+    data.append(("app_bookings___invoice_tax_incl", f"{float(b.get('invoice_incl') or 0):.2f}"))
+
+    # Notes + provider
+    if b.get("notes"):
+        data.append(("app_bookings___note", (b["notes"] or "")[:255]))
+    if b.get("provider"):
+        # Fabrik databasejoin autocomplete: writes the visible label here +
+        # the joined id in `operator[]`. Sending the typed name only puts the
+        # label in place; the agent can fix it inside Sofi if needed.
+        data.append(("app_bookings___operator-auto-complete", b["provider"]))
+        data.append(("app_bookings___operator[]", ""))
+
+    # Routing must be present so Fabrik dispatches to the save handler. These
+    # also exist as hidden inputs but we re-state them defensively in case the
+    # template ever drops them.
+    seen_keys = {k for k, _ in data}
+    for k, v in [("option", "com_fabrik"), ("task", "form.process"),
+                 ("formid", "3"), ("listid", "3"), ("Submit", "Submit")]:
+        if k not in seen_keys:
+            data.append((k, v))
+    return data
+
+
+def _to_sofi_iso(s: Optional[str]) -> str:
+    """Sofi DB stores dates as YYYY-MM-DD; that's what `date_entry` (no _cal
+    suffix) accepts on POST. The visible `*_cal` field is just a calendar
+    widget; Fabrik converts to ISO on submit."""
+    if not s:
+        return ""
+    try:
+        return datetime.fromisoformat(s).strftime("%Y-%m-%d")
+    except (TypeError, ValueError):
+        return s
+
+
+async def _push_one_booking_fast(page, b: dict, hidden: dict) -> dict:
+    """Send a booking via direct POST. ~2-3s per booking vs ~25s for the
+    render-and-submit path."""
+    data = _booking_form_data(b, hidden)
+
+    # Convert to dict but keep duplicate keys: Playwright's `form` arg accepts
+    # a dict (last value wins for dups) OR `multipart` for true multi-value.
+    # We use multipart so multi-value fields like `app_bookings___type[]`
+    # can repeat without losing data.
+    multipart = {}
+    for k, v in data:
+        # If Fabrik expected ARRAYS for [] keys, we'd repeat. For our payload
+        # each name appears once, so dict assignment is fine.
+        multipart[k] = v
+
+    try:
+        resp = await page.request.post(
+            f"{GESTION_BASE}/reservas/form/3/?format=html",
+            form=multipart,
+            max_redirects=0,  # we want to SEE the 303
+            timeout=30000,
+        )
+    except Exception as e:
+        return {"ok": False, "kind": b.get("kind"),
+                "service": b.get("service_name"),
+                "error": f"POST falló: {type(e).__name__}: {e}"}
+
+    booking_id: Optional[int] = None
+    location = resp.headers.get("location") or resp.headers.get("Location") or ""
+    # Sofi redirects post-save to /trips/details/1/{trip_id} or /reservas/list/3
+    # and sometimes leaves the new booking id in the Location.
+    m = _re_mod.search(r"/reservas/(?:details|form)/\d+/(\d+)", location)
+    if m:
+        booking_id = int(m.group(1))
+
+    # 303 = save OK redirect. 302 / 200 with a redirect-style location are
+    # also success. 4xx/5xx or status==200 with form HTML body are failures.
+    if resp.status in (302, 303):
+        return {
+            "ok": True,
+            "kind": b.get("kind"),
+            "service": b.get("service_name"),
+            "sofi_booking_id": booking_id,
+            "url": (f"{GESTION_BASE}/reservas/details/3/{booking_id}"
+                    if booking_id else None),
+        }
+
+    # Token-related rejections come back as 200 with a Joomla flash message
+    # in the body. Detect the most common ones so the caller can refresh
+    # the template and retry.
+    body_excerpt = ""
+    try:
+        body_excerpt = (await resp.text())[:600]
+    except Exception:
+        pass
+    err_msg = "Sofi rechazó la reserva"
+    if "token" in body_excerpt.lower() or "session has expired" in body_excerpt.lower():
+        err_msg = "csrf token invalid"
+
+    return {
+        "ok": False,
+        "kind": b.get("kind"),
+        "service": b.get("service_name"),
+        "error": f"{err_msg} (HTTP {resp.status})",
+        "details": [body_excerpt[:200]] if body_excerpt else [],
     }
