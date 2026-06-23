@@ -118,11 +118,11 @@ function RunningState({ elapsed, dryRun }) {
     <div className="text-center py-8 space-y-3">
       <p className="text-sm text-clay-700">
         {dryRun
-          ? "Abriendo Chromium y rellenando el formulario sin enviarlo…"
-          : "Enviando el itinerario a Sofi…"}
+          ? "Abriendo Chromium · rellenando cabecera + previsualizando reservas (sin enviar)…"
+          : "Enviando cabecera del trip + reservas a Sofi (esto puede tardar varios minutos)…"}
       </p>
       <p className="text-xs smallcaps tabular text-clay-500">
-        {elapsed}s · este proceso puede tardar 60-120s
+        {elapsed}s · {dryRun ? "60-120s aprox." : "puede tardar 3-6 min en itinerarios largos"}
       </p>
     </div>
   );
@@ -151,10 +151,14 @@ function DryRunDoneState({ result, onCancel, onConfirmReal }) {
   const fields = result?.filled_fields || [];
   const errored = fields.filter((f) => f.error).length;
   const screenshot = result?.screenshot_b64;
+  const bookings = result?.bookings_plan || [];
+  const bookingsSample = result?.bookings_sample_filled || [];
+  const bookingsScreenshot = result?.bookings_screenshot_b64;
 
   const launchReal = () => {
     if (!window.confirm(
-      "Esto va a CREAR un trip real en Sofi (gestion.viajadverdad.com).\n\n" +
+      "Esto va a CREAR un trip real en Sofi (gestion.viajadverdad.com)\n" +
+      `+ ${bookings.length} reservas asociadas.\n\n` +
       "¿Confirmas que los datos son correctos y quieres proceder?"
     )) return;
     onConfirmReal();
@@ -166,26 +170,50 @@ function DryRunDoneState({ result, onCancel, onConfirmReal }) {
         <p className="text-sm font-medium">
           {errored
             ? `Vista previa OK con ${errored} campo${errored === 1 ? "" : "s"} que falló · Sofi quedó en el formulario relleno (sin enviar).`
-            : `Vista previa OK · ${fields.length} campos rellenados · Sofi quedó en el formulario relleno (sin enviar).`}
+            : `Vista previa OK · ${fields.length} campos rellenados en cabecera + ${bookings.length} reservas planificadas.`}
         </p>
         <p className="text-xs text-clay-600 mt-1">
           Revisa los datos abajo. Si todo está correcto, pulsa <strong>Enviar de verdad</strong>.
         </p>
       </div>
 
-      <FilledFieldsTable fields={fields} />
+      <details className="border border-clay-300" open>
+        <summary className="px-4 py-2 text-xs smallcaps cursor-pointer hover:bg-clay-100 bg-clay-50">
+          Cabecera del trip · {fields.length} campos
+        </summary>
+        <FilledFieldsTable fields={fields} />
+      </details>
 
-      {screenshot && (
+      <BookingsPlanTable bookings={bookings} />
+
+      {bookingsSample.length > 0 && (
         <details className="border border-clay-300">
           <summary className="px-4 py-2 text-xs smallcaps cursor-pointer hover:bg-clay-100">
-            Ver screenshot del formulario (full-page)
+            Muestra de relleno de la primera reserva ({bookingsSample.length} campos)
           </summary>
-          <img
-            src={`data:image/png;base64,${screenshot}`}
-            alt="Sofi form preview"
-            className="w-full border-t border-clay-300"
-            data-testid="sofi-dryrun-screenshot"
-          />
+          <FilledFieldsTable fields={bookingsSample} />
+        </details>
+      )}
+
+      {(screenshot || bookingsScreenshot) && (
+        <details className="border border-clay-300">
+          <summary className="px-4 py-2 text-xs smallcaps cursor-pointer hover:bg-clay-100">
+            Ver screenshots de los formularios
+          </summary>
+          {screenshot && (
+            <div className="border-t border-clay-300">
+              <p className="px-4 py-2 text-xs text-clay-600 bg-clay-50">Cabecera del trip:</p>
+              <img src={`data:image/png;base64,${screenshot}`} alt="Sofi trip form preview"
+                   className="w-full" data-testid="sofi-dryrun-screenshot" />
+            </div>
+          )}
+          {bookingsScreenshot && (
+            <div className="border-t border-clay-300">
+              <p className="px-4 py-2 text-xs text-clay-600 bg-clay-50">Form de reserva (primera, no enviada):</p>
+              <img src={`data:image/png;base64,${bookingsScreenshot}`} alt="Sofi booking form preview"
+                   className="w-full" data-testid="sofi-dryrun-bookings-screenshot" />
+            </div>
+          )}
         </details>
       )}
 
@@ -197,9 +225,66 @@ function DryRunDoneState({ result, onCancel, onConfirmReal }) {
         <button onClick={launchReal}
                 data-testid="sofi-dryrun-confirm-real"
                 className="px-4 py-2 text-sm bg-pine-700 text-white hover:bg-pine-800 inline-flex items-center gap-2">
-          <Send size={14} /> Enviar de verdad
+          <Send size={14} /> Enviar de verdad ({1 + bookings.length} envíos)
         </button>
       </div>
+    </div>
+  );
+}
+
+function BookingsPlanTable({ bookings }) {
+  if (!bookings.length) {
+    return (
+      <div className="border border-clay-300 px-4 py-3 text-xs text-clay-600">
+        Sin reservas a crear (el itinerario no tiene servicios ni alojamientos).
+      </div>
+    );
+  }
+  const ICON = { service: "🎫", accommodation: "🏨", free_day: "☀️" };
+  const KIND_LABEL = { service: "Servicio", accommodation: "Alojamiento", free_day: "Free Day" };
+  return (
+    <div className="border border-clay-300" data-testid="sofi-bookings-plan">
+      <div className="px-4 py-2 bg-clay-100 border-b border-clay-300 smallcaps flex items-center justify-between">
+        <span>Reservas a crear ({bookings.length})</span>
+        <span className="text-clay-500 normal-case">
+          🎫 {bookings.filter((b) => b.kind === "service").length} ·
+          🏨 {bookings.filter((b) => b.kind === "accommodation").length} ·
+          ☀️ {bookings.filter((b) => b.kind === "free_day").length}
+        </span>
+      </div>
+      <table className="w-full text-xs">
+        <thead className="bg-clay-50 border-b border-clay-200">
+          <tr>
+            <th className="text-left px-3 py-1.5 w-6"></th>
+            <th className="text-left px-3 py-1.5">Fecha</th>
+            <th className="text-left px-3 py-1.5">Servicio</th>
+            <th className="text-left px-3 py-1.5">Ciudad</th>
+            <th className="text-left px-3 py-1.5">Hab.</th>
+            <th className="text-right px-3 py-1.5">Pax</th>
+            <th className="text-right px-3 py-1.5">Sin IVA</th>
+            <th className="text-right px-3 py-1.5">Con IVA</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-clay-200">
+          {bookings.map((b, i) => {
+            const dateRange = b.date_exit
+              ? `${b.date_entry || "?"} → ${b.date_exit}`
+              : (b.date_entry || "—");
+            return (
+              <tr key={i} className="hover:bg-clay-50">
+                <td className="px-3 py-1.5" title={KIND_LABEL[b.kind] || b.kind}>{ICON[b.kind] || "·"}</td>
+                <td className="px-3 py-1.5 tabular text-clay-700">{dateRange}</td>
+                <td className="px-3 py-1.5 break-all">{b.service_name}</td>
+                <td className="px-3 py-1.5 text-clay-700">{b.city || "—"}</td>
+                <td className="px-3 py-1.5 text-clay-700">{b.room || "—"}</td>
+                <td className="px-3 py-1.5 text-right tabular">{b.quantity}</td>
+                <td className="px-3 py-1.5 text-right tabular">{Number(b.invoice_excl || 0).toFixed(2)} €</td>
+                <td className="px-3 py-1.5 text-right tabular">{Number(b.invoice_incl || 0).toFixed(2)} €</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -207,6 +292,10 @@ function DryRunDoneState({ result, onCancel, onConfirmReal }) {
 function RealPushDoneState({ result, onClose }) {
   const tripId = result?.trip_id;
   const url = result?.url;
+  const bookingsResults = result?.bookings_results || [];
+  const bookingsOk = result?.bookings_ok ?? bookingsResults.filter((b) => b.ok).length;
+  const bookingsTotal = result?.bookings_total ?? bookingsResults.length;
+  const bookingsFailed = bookingsResults.filter((b) => !b.ok);
   return (
     <div className="space-y-4">
       <div className="border border-pine-300 bg-pine-50/40 px-4 py-4">
@@ -218,6 +307,14 @@ function RealPushDoneState({ result, onClose }) {
             Trip ID en Sofi: <span className="tabular font-mono">#{tripId}</span>
           </p>
         )}
+        {bookingsTotal > 0 && (
+          <p className="text-xs text-clay-700 mt-1">
+            Reservas creadas: <span className="tabular font-mono">{bookingsOk}/{bookingsTotal}</span>
+            {bookingsFailed.length > 0 && (
+              <span className="text-red-700"> · {bookingsFailed.length} con error</span>
+            )}
+          </p>
+        )}
         {url && (
           <a href={url} target="_blank" rel="noreferrer"
              data-testid="sofi-pushed-link"
@@ -227,10 +324,63 @@ function RealPushDoneState({ result, onClose }) {
         )}
       </div>
 
+      {bookingsFailed.length > 0 && (
+        <div className="border border-red-300 bg-red-50/40 px-4 py-3">
+          <p className="text-xs font-medium text-red-800 mb-2">
+            ⚠ {bookingsFailed.length} reserva{bookingsFailed.length === 1 ? "" : "s"} con error:
+          </p>
+          <ul className="text-xs text-red-700 space-y-1">
+            {bookingsFailed.map((b, i) => (
+              <li key={i}>
+                <strong>{b.service}</strong>: {b.error}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {bookingsResults.length > 0 && (
+        <details className="border border-clay-300">
+          <summary className="px-4 py-2 text-xs smallcaps cursor-pointer hover:bg-clay-100">
+            Ver {bookingsResults.length} reservas creadas
+          </summary>
+          <table className="w-full text-xs">
+            <thead className="bg-clay-50 border-y border-clay-200">
+              <tr>
+                <th className="text-left px-3 py-1.5">#</th>
+                <th className="text-left px-3 py-1.5">Servicio</th>
+                <th className="text-left px-3 py-1.5">Estado</th>
+                <th className="text-left px-3 py-1.5">Sofi ID</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-clay-200">
+              {bookingsResults.map((b, i) => (
+                <tr key={i}>
+                  <td className="px-3 py-1.5 tabular text-clay-500">{i + 1}</td>
+                  <td className="px-3 py-1.5">{b.service}</td>
+                  <td className="px-3 py-1.5">
+                    {b.ok ? <span className="text-pine-700">✓ OK</span>
+                          : <span className="text-red-700">✗ {b.error?.slice(0, 40) || "Error"}</span>}
+                  </td>
+                  <td className="px-3 py-1.5 tabular">
+                    {b.sofi_booking_id ? (
+                      <a href={b.url} target="_blank" rel="noreferrer"
+                         className="text-pine-700 hover:underline">
+                        #{b.sofi_booking_id}
+                      </a>
+                    ) : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      )}
+
       {result?.filled_fields?.length > 0 && (
         <details className="border border-clay-300">
           <summary className="px-4 py-2 text-xs smallcaps cursor-pointer hover:bg-clay-100">
-            Ver {result.filled_fields.length} campos enviados
+            Ver {result.filled_fields.length} campos de cabecera enviados
           </summary>
           <div className="border-t border-clay-300">
             <FilledFieldsTable fields={result.filled_fields} />

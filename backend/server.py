@@ -2538,21 +2538,24 @@ async def push_itinerary_to_sofi_status(
 
 
 async def _run_sofi_push_job_safely(job_id: str, itinerary_id: str, dry_run: bool):
-    """Hard wrapper: any exception or 6-min timeout lands as a clean error
-    state, never a stuck-on-running modal."""
+    """Hard wrapper: any exception or 10-min timeout lands as a clean error
+    state, never a stuck-on-running modal. Real pushes for a 14-day trip can
+    exceed 6min once we're rendering 30+ booking forms in the same browser
+    session, so the cap is generous."""
     try:
         await asyncio.wait_for(
             _run_sofi_push_job(job_id, itinerary_id, dry_run),
-            timeout=360,
+            timeout=600,
         )
     except asyncio.TimeoutError:
-        logger.error("sofi push job %s timed out (>360s)", job_id)
+        logger.error("sofi push job %s timed out (>600s)", job_id)
         await db.sofi_push_jobs.update_one(
             {"job_id": job_id},
             {"$set": {
                 "status": "error",
-                "error": ("Tiempo agotado (>6 min). Si acabas de redeployar, "
-                          "Chromium puede estar descargándose. Reintenta en 1-2 min."),
+                "error": ("Tiempo agotado (>10 min). Puede que un envío de "
+                          "muchas reservas haya excedido el límite. Reintenta "
+                          "o contacta soporte si el itinerario es muy grande."),
                 "finished_at": now_iso(),
             }},
         )
