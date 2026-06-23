@@ -217,15 +217,32 @@ export default function ItineraryBuilder() {
     // the partner's default markup+commission, use the ↻ Auto button next to
     // the partner selector (calls `applyPartnerDefaults()` below).
     if (k === "start_date" || k === "end_date") {
-      const n = daysBetween(k === "start_date" ? v : itn.start_date, k === "end_date" ? v : itn.end_date);
-      next.duration_days = n;
+      const newStart = k === "start_date" ? v : next.start_date;
+      const newEnd = k === "end_date" ? v : next.end_date;
+      const n = daysBetween(newStart, newEnd);
       const current = [...(next.days || [])];
-      if (n > current.length) {
-        for (let i = current.length; i < n; i++) {
-          current.push({ day_id: uid("day"), date: dateAdd(next.start_date, i), label: `Día ${i + 1}`, city: "", services: [] });
+      // GUARD: when only ONE of the two dates is set (typical right after a
+      // Travefy import that came without dates) `daysBetween` returns 0 and
+      // the old code happily truncated `current.length = 0`, deleting every
+      // service the agent had already added. We now NEVER auto-resize the
+      // days array unless BOTH dates are present and produce a positive n.
+      if (n > 0) {
+        next.duration_days = n;
+        if (n > current.length) {
+          for (let i = current.length; i < n; i++) {
+            current.push({ day_id: uid("day"), date: dateAdd(newStart, i), label: `Día ${i + 1}`, city: "", services: [] });
+          }
+        } else if (n < current.length) {
+          current.length = n;
         }
-      } else if (n < current.length) { current.length = n; }
-      if (k === "start_date") current.forEach((d, i) => { d.date = dateAdd(v, i); d.label = `Día ${i + 1}`; });
+        if (k === "start_date") current.forEach((d, i) => { d.date = dateAdd(v, i); d.label = `Día ${i + 1}`; });
+      } else if (k === "start_date" && newStart && current.length > 0) {
+        // Single-date case: user typed start_date on an itinerary whose end
+        // is still empty. Re-stamp the existing days' dates without resizing
+        // so the user's services and city assignments are preserved. The
+        // length will be reconciled later when end_date is filled in.
+        current.forEach((d, i) => { d.date = dateAdd(v, i); d.label = `Día ${i + 1}`; });
+      }
       next.days = current;
     }
     schedSave(next);
