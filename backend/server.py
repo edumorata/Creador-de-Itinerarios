@@ -1614,6 +1614,9 @@ async def export_itinerary(itinerary_id: str, user: Annotated[User, Depends(curr
             cell.fill = BANNER_FILL
 
     def day_row(row: int, last_col: int, label: str, date_str: str):
+        # Travefy renders each gray "Day N" row with EVERY column populated as
+        # an empty string (not null); some XLSX importers reject null cells in
+        # styled rows. Mirror that exactly.
         for col in range(1, last_col + 1):
             cell = ws.cell(row, col, "")
             cell.fill = DAY_FILL
@@ -1793,8 +1796,14 @@ async def export_itinerary(itinerary_id: str, user: Annotated[User, Depends(curr
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
-    safe_name = "".join(c for c in (itn.name or "itinerary") if c.isalnum() or c in "-_ ").strip() or "itinerary"
-    filename = f"trip_prices_{safe_name}.xlsx"
+    # Travefy-style filename: trip_prices_<8 chars random>.xlsx — the agency's
+    # Sofi importer parses this prefix, so we must replicate it bit-for-bit.
+    # We seed the random part with the itinerary id so re-exports of the same
+    # trip yield a stable filename.
+    import hashlib, base64 as _b64
+    h = hashlib.sha1(itinerary_id.encode("utf-8")).digest()
+    token = _b64.urlsafe_b64encode(h)[:8].decode("ascii").replace("=", "x")
+    filename = f"trip_prices_{token}.xlsx"
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
