@@ -76,7 +76,7 @@ export function SofiPushModal({ open, itineraryId, dryRun, onClose, onPushed, on
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
          data-testid="sofi-push-modal">
-      <div className="bg-paper border border-clay-300 max-w-3xl w-full max-h-[90vh] overflow-y-auto shadow-xl">
+      <div className="bg-white border border-clay-300 max-w-3xl w-full max-h-[90vh] overflow-y-auto shadow-xl">
         <Header dryRun={dryRun} phase={phase} onClose={onClose} />
 
         <div className="px-6 py-5 space-y-4">
