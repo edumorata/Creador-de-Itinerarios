@@ -89,9 +89,19 @@ export default function Dashboard() {
 
   const del = async (id) => {
     if (!window.confirm("¿Eliminar este itinerario?")) return;
-    await api.delete(`/itineraries/${id}`);
-    toast.success("Itinerario eliminado");
-    load();
+    try {
+      await api.delete(`/itineraries/${id}`);
+      toast.success("Itinerario eliminado");
+      // Optimistic UI: drop the row from local state immediately so the user
+      // sees the deletion even if the subsequent reload is slow. Then refresh
+      // the full list to pick up server-side state (totals, etc.).
+      setItems((prev) => prev.filter((it) => it.itinerary_id !== id));
+      load();
+    } catch (e) {
+      const detail = e?.response?.data?.detail || e?.message || "Error al eliminar";
+      toast.error(detail);
+      console.error("delete itinerary failed:", e);
+    }
   };
 
   const duplicate = async (id) => {
@@ -294,7 +304,12 @@ export default function Dashboard() {
                   <button onClick={() => exportXlsx(itn.itinerary_id, itn.name)} className="p-1.5 hover:bg-clay-200" title="Exportar Excel" data-testid={`export-${itn.itinerary_id}`}>
                     <FileDown size={14} />
                   </button>
-                  <button onClick={() => del(itn.itinerary_id)} className="p-1.5 hover:bg-clay-200 text-destructive" title="Eliminar" data-testid={`del-${itn.itinerary_id}`}>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); del(itn.itinerary_id); }}
+                    className="p-1.5 hover:bg-clay-200 text-destructive"
+                    title="Eliminar"
+                    data-testid={`del-${itn.itinerary_id}`}
+                  >
                     <Trash2 size={14} />
                   </button>
                 </div>
