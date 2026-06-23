@@ -364,13 +364,13 @@ async def _fill_and_submit(page, itn: dict, totals: dict, *, dry_run: bool) -> d
         await page.wait_for_timeout(5000)
 
     try:
-        await page.wait_for_load_state("load", timeout=10000)
+        await page.wait_for_load_state("domcontentloaded", timeout=5000)
     except Exception:
-        pass
-    try:
-        await page.wait_for_load_state("networkidle", timeout=45000)
-    except Exception:
-        pass
+        await page.wait_for_timeout(1000)
+    # NB: we previously waited for 'networkidle' here too (timeout 45s) but
+    # Fabrik keeps polling XHR endpoints in the background, so networkidle
+    # rarely fires inside that window — it just burned ~30-40s every time.
+    # The 303 we already captured above is the success signal.
 
     # On success Sofi redirects to /trips (the listing) — NOT to
     # /trips/details/1/{id}. So we fetch the listing filtered by
@@ -453,8 +453,11 @@ async def _safe_fill(page, selector: str, value: str, filled: list[dict], label:
             await el.fill(value or "", timeout=4000)
         except Exception:
             # Fallback for non-actionable inputs (size=0, readonly-via-css, etc.):
-            # write the value directly and dispatch the events Fabrik listens
-            # to (change + blur) so observers recalc downstream fields.
+            # write the value directly + a single 'change' event. We deliberately
+            # SKIP 'blur' here because Fabrik observes blur to fire a recalc XHR
+            # on every Calc field — multiplied by 16 fields × N bookings that
+            # easily added 1-2 minutes per push. The final blur on the last
+            # field of the form (when the user clicks Submit) is enough.
             await page.evaluate(
                 "({sel, val}) => {"
                 "  const el = document.querySelector(sel);"
@@ -462,7 +465,6 @@ async def _safe_fill(page, selector: str, value: str, filled: list[dict], label:
                 "  el.value = val;"
                 "  el.dispatchEvent(new Event('input', {bubbles: true}));"
                 "  el.dispatchEvent(new Event('change', {bubbles: true}));"
-                "  el.dispatchEvent(new Event('blur', {bubbles: true}));"
                 "  return true;"
                 "}",
                 {"sel": selector, "val": value or ""},
@@ -877,10 +879,14 @@ async def _push_one_booking(page, b: dict, *, dry_run: bool) -> dict:
         save_303_seen = True
     except Exception:
         await page.wait_for_timeout(4000)
+    # CRITICAL: wait for the post-303 navigation to settle BEFORE running any
+    # page.evaluate, otherwise we race the redirect and Playwright raises
+    # "Execution context was destroyed". 5s is enough for Sofi's redirect to
+    # land; we don't need full asset load (images, third-party widgets).
     try:
-        await page.wait_for_load_state("load", timeout=8000)
+        await page.wait_for_load_state("domcontentloaded", timeout=5000)
     except Exception:
-        pass
+        await page.wait_for_timeout(1000)
     try:
         await page.wait_for_load_state("networkidle", timeout=30000)
     except Exception:
@@ -888,43 +894,65 @@ async def _push_one_booking(page, b: dict, *, dry_run: bool) -> dict:
 
     landed = page.url
     booking_id: Optional[int] = None
-    if save_303_seen and b.get("trip_id"):
-        booking_id = await _lookup_booking_id(page, b["trip_id"], b.get("service_name") or "")
+    # OPTIMIZATION (option A): skip the post-submit lookup that opens a
+    # second list page just to read the auto-incremented booking id. The
+    # 303 redirect is enough to confirm Sofi accepted the booking; the
+    # individual booking ids are not actionable from the UI today.
+    # If we want the ids back later, re-enable _lookup_booking_id().
+    m = re.search(r"/reservas/(?:details|form)/\d+/(\d+)", landed)
+    if m:
+        booking_id = int(m.group(1))
     if booking_id is None:
-        m = re.search(r"/reservas/(?:details|form)/\d+/(\d+)", landed)
-        if m:
-            booking_id = int(m.group(1))
-    if booking_id is None:
-        rid = await page.evaluate(
-            "() => document.getElementById('app_bookings___id')?.value || null"
-        )
-        if rid and str(rid).isdigit():
-            booking_id = int(rid)
+        try:
+            rid = await page.evaluate(
+                "() => document.getElementById('app_bookings___id')?.value || null"
+            )
+            if rid and str(rid).isdigit():
+                booking_id = int(rid)
+        except Exception:
+            pass  # context destroyed mid-redirect; OK, we trust the 303
 
-    # Inline form errors
-    errors = await page.evaluate("""() => {
-        const out = [];
-        document.querySelectorAll('.fabrikError, .invalid-feedback, .has-error, .alert-error, .alert-danger').forEach(el => {
-            const t = (el.textContent || '').trim();
-            if (t) out.push(t.slice(0, 200));
-        });
-        return out;
-    }""")
-    if errors and not booking_id:
+    # Inline form errors. Wrap evaluate with retry: if the redirect was still
+    # in flight when we ran it, the JS context dies. Wait once more and retry.
+    async def _read_errors():
+        return await page.evaluate("""() => {
+            const out = [];
+            document.querySelectorAll('.fabrikError, .invalid-feedback, .has-error, .alert-error, .alert-danger').forEach(el => {
+                const t = (el.textContent || '').trim();
+                if (t) out.push(t.slice(0, 200));
+            });
+            return out;
+        }""")
+    try:
+        errors = await _read_errors()
+    except Exception:
+        try:
+            await page.wait_for_load_state("load", timeout=8000)
+        except Exception:
+            await page.wait_for_timeout(1500)
+        try:
+            errors = await _read_errors()
+        except Exception:
+            errors = []  # context still unstable; trust the 303 we saw
+    if errors:
         return {"ok": False, "kind": b.get("kind"),
                 "service": b.get("service_name"),
                 "error": "Sofi rechazó la reserva",
                 "details": errors[:5]}
 
-    if not booking_id:
+    # Without the post-submit lookup we now treat the 303 redirect as the
+    # source of truth: if it fired (save_303_seen) AND no inline errors are
+    # rendered, the booking was created successfully — even if we couldn't
+    # read its auto-incremented id from the URL.
+    if not save_303_seen and not booking_id:
         return {"ok": False, "kind": b.get("kind"),
                 "service": b.get("service_name"),
-                "error": f"Submit OK pero no pude leer el booking_id. URL: {landed}"}
+                "error": f"Submit ejecutado pero no se vio confirmación (URL: {landed})"}
 
     return {
         "ok": True,
         "kind": b.get("kind"),
         "service": b.get("service_name"),
-        "sofi_booking_id": booking_id,
-        "url": f"{GESTION_BASE}/reservas/details/3/{booking_id}",
+        "sofi_booking_id": booking_id,  # may be None — that's OK now
+        "url": (f"{GESTION_BASE}/reservas/details/3/{booking_id}" if booking_id else None),
     }
