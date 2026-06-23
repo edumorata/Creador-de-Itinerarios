@@ -346,6 +346,14 @@ class Itinerary(BaseModel):
     # Dashboard can collapse all versions of the same client trip under one row.
     version_group_id: Optional[str] = None
     version: int = 1
+    # Sofi (gestion.viajadverdad.com) push tracking. Set the moment the agent
+    # successfully sends the itinerary into Sofi (real push, not dry-run). The
+    # button in the builder hides itself when these are populated, surfacing
+    # a link to the existing Sofi trip instead — preventing accidental
+    # duplicate creates.
+    sofi_trip_id: Optional[int] = None
+    sofi_url: Optional[str] = None
+    sofi_pushed_at: Optional[str] = None
     created_by: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)

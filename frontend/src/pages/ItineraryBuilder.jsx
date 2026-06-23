@@ -14,7 +14,8 @@ import { DayBlock } from "./builder/DayBlock";
 import { OrientationModal } from "./builder/OrientationModal";
 import { FxConverter } from "./builder/FxConverter";
 import { PartnerSelector } from "./builder/PartnerSelector";
-import { RotateCw } from "lucide-react";
+import { SofiPushModal } from "./builder/SofiPushModal";
+import { RotateCw, ExternalLink, Eye, Send } from "lucide-react";
 
 export default function ItineraryBuilder() {
   const { id } = useParams();
@@ -26,6 +27,11 @@ export default function ItineraryBuilder() {
   const [facets, setFacets] = useState({ countries: [], cities: [], types: [] });
   const [activeDayId, setActiveDayId] = useState(null);
   const dragRef = useRef(null);
+
+  // Sofi push modal state. `dryRun` flag controls whether the modal opens in
+  // preview mode (fills the form, captures screenshot, no submit) or real-push
+  // mode. Closed by default.
+  const [sofiModal, setSofiModal] = useState({ open: false, dryRun: true });
 
   // FX rate for EUR↔USD conversion. Starts from the daily ECB feed, but if
   // the itinerary already has a `fx_rate` value saved on the doc, that value
@@ -459,9 +465,38 @@ export default function ItineraryBuilder() {
               </select>
             </div>
           </div>
-          <button onClick={exportXlsx} data-testid="export-xlsx" className="inline-flex items-center gap-2 px-4 py-2 border border-clay-300 hover:bg-clay-100 text-sm">
-            <FileDown size={14} /> Exportar Excel
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={exportXlsx} data-testid="export-xlsx" className="inline-flex items-center gap-2 px-4 py-2 border border-clay-300 hover:bg-clay-100 text-sm">
+              <FileDown size={14} /> Exportar Excel
+            </button>
+            {/* Sofi push: 3 mutually exclusive states.
+                - Already pushed → green pill linking to Sofi (no buttons, prevents duplicates).
+                - Not pushed yet → "Vista previa" (dry-run) + "Enviar a Sofi" (real). */}
+            {itn.sofi_trip_id ? (
+              <a
+                href={itn.sofi_url || `https://gestion.viajadverdad.com/trips/details/1/${itn.sofi_trip_id}`}
+                target="_blank" rel="noreferrer"
+                data-testid="sofi-already-pushed-link"
+                title={`Enviado a Sofi el ${itn.sofi_pushed_at?.slice(0, 10) || "(fecha no registrada)"}`}
+                className="inline-flex items-center gap-2 px-4 py-2 border border-pine-400 bg-pine-50 hover:bg-pine-100 text-sm text-pine-800"
+              >
+                <ExternalLink size={14} /> En Sofi #{itn.sofi_trip_id}
+              </a>
+            ) : (
+              <>
+                <button onClick={() => setSofiModal({ open: true, dryRun: true })}
+                        data-testid="sofi-dryrun-btn"
+                        className="inline-flex items-center gap-2 px-4 py-2 border border-clay-300 hover:bg-clay-100 text-sm">
+                  <Eye size={14} /> Vista previa Sofi
+                </button>
+                <button onClick={() => setSofiModal({ open: true, dryRun: false })}
+                        data-testid="sofi-push-btn"
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-pine-700 text-white hover:bg-pine-800 text-sm">
+                  <Send size={14} /> Enviar a Sofi
+                </button>
+              </>
+            )}
+          </div>
         </div>
 
         {/* Trip metadata */}
@@ -625,6 +660,21 @@ export default function ItineraryBuilder() {
           onApply={(price) => { if (orient.onApply) orient.onApply(price); setOrient(null); }}
         />
       )}
+
+      <SofiPushModal
+        key={`${sofiModal.open}-${sofiModal.dryRun}`}
+        open={sofiModal.open}
+        dryRun={sofiModal.dryRun}
+        itineraryId={id}
+        onClose={() => setSofiModal({ open: false, dryRun: true })}
+        onSwitchToReal={() => setSofiModal({ open: true, dryRun: false })}
+        onPushed={(res) => {
+          // Real push succeeded — refetch the itinerary so the badge swaps to
+          // "En Sofi #N" and the Vista previa / Enviar buttons disappear.
+          api.get(`/itineraries/${id}`).then(({ data }) => setItn(data)).catch(() => {});
+          toast.success(`Itinerario enviado a Sofi #${res.trip_id}`);
+        }}
+      />
     </div>
   );
 }

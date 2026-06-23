@@ -2388,6 +2388,198 @@ async def _build_itinerary_from_travefy_preview(payload: dict, user: User) -> It
     return itn
 
 
+# ---------------------------------------------------------------------------
+# Sofi push (gestion.viajadverdad.com)
+# ---------------------------------------------------------------------------
+# Two endpoints + a polling job pattern, mirroring Travefy import:
+#   POST /api/itineraries/{id}/push-to-sofi  (body: {dry_run: bool})
+#   GET  /api/itineraries/push-to-sofi/{job_id}
+# The actual Playwright work runs in the background. On a successful real
+# push we persist the new sofi_trip_id on the itinerary document so the
+# builder hides the button afterwards (preventing duplicate pushes).
+def _compute_pricing_totals(itn: dict) -> dict:
+    """Reproduces the frontend's totals math so Sofi gets the same numbers
+    the agent sees in the builder. Single source of truth for pricing.
+
+    Mirrors `ItineraryBuilder.totals` in JSX:
+      sub_excl       = Σ services excl + Σ accommodations excl
+      sub_incl       = Σ services incl + Σ accommodations incl
+      sub_with_markup = sub_incl × (1 + markup_pct/100)
+      commission_eur = sub_with_markup × commission_pct/100
+      pvp_pre_paypal = sub_with_markup + commission_eur
+      paypal_eur     = paypal_fee ? pvp_pre_paypal × 0.03 : 0
+      pvp            = pvp_pre_paypal + paypal_eur
+    """
+    sub_excl = 0.0
+    sub_incl = 0.0
+    for d in itn.get("days") or []:
+        for s in d.get("services") or []:
+            qty = float(s.get("quantity") or 0)
+            sub_excl += float(s.get("unit_price_tax_excl") or 0) * qty
+            sub_incl += float(s.get("unit_price_tax_incl") or s.get("unit_price") or 0) * qty
+    for a in itn.get("accommodations") or []:
+        sub_excl += float(a.get("price_tax_excl") or 0)
+        sub_incl += float(a.get("price_tax_incl") or a.get("price") or 0)
+    mk = float(itn.get("markup_pct") or 0) / 100.0
+    com = float(itn.get("commission_pct") or 0) / 100.0
+    sub_with_markup = sub_incl * (1.0 + mk)
+    commission_eur = sub_with_markup * com
+    pvp_pre_paypal = sub_with_markup + commission_eur
+    paypal_eur = pvp_pre_paypal * 0.03 if itn.get("paypal_fee") else 0.0
+    pvp = pvp_pre_paypal + paypal_eur
+    return {
+        "sub_excl": round(sub_excl, 2),
+        "sub_incl": round(sub_incl, 2),
+        "sub_with_markup": round(sub_with_markup, 2),
+        "markup_eur": round(sub_incl * mk, 2),
+        "commission_eur": round(commission_eur, 2),
+        "paypal_eur": round(paypal_eur, 2),
+        "pvp": round(pvp, 2),
+    }
+
+
+@api.post("/itineraries/{itinerary_id}/push-to-sofi")
+async def push_itinerary_to_sofi_endpoint(
+    itinerary_id: str,
+    user: Annotated[User, Depends(current_user)],
+    payload: dict = Body(default={}),
+):
+    """Start a background job that opens Sofi, fills the create-trip form,
+    and (if `dry_run=False`) submits it. Returns a job_id the client polls.
+
+    Body: { "dry_run": bool }  default false.
+    """
+    doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Itinerario no encontrado")
+    if not _can_access(doc, user):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este itinerario")
+
+    dry_run = bool(payload.get("dry_run") or False)
+    # When the trip already lives in Sofi, refuse to create a duplicate. The
+    # builder hides the button at this point but a stale tab could still POST.
+    if not dry_run and doc.get("sofi_trip_id"):
+        raise HTTPException(
+            status_code=409,
+            detail=(f"Este itinerario ya está en Sofi (#{doc['sofi_trip_id']}). "
+                    "Para evitar duplicados, edítalo directamente en Sofi."),
+        )
+
+    job_id = f"sofi_{uuid.uuid4().hex[:12]}"
+    await db.sofi_push_jobs.insert_one({
+        "job_id": job_id,
+        "itinerary_id": itinerary_id,
+        "dry_run": dry_run,
+        "status": "running",
+        "created_by": user.email,
+        "created_at": now_iso(),
+        "result": None,
+        "error": None,
+    })
+    _spawn_bg(_run_sofi_push_job_safely(job_id, itinerary_id, dry_run))
+    return {"job_id": job_id, "status": "running", "dry_run": dry_run}
+
+
+@api.get("/itineraries/push-to-sofi/{job_id}")
+async def push_itinerary_to_sofi_status(
+    job_id: str,
+    user: Annotated[User, Depends(current_user)],
+):
+    """Poll endpoint. Returns {status, result?, error?, dry_run}."""
+    job = await db.sofi_push_jobs.find_one({"job_id": job_id}, {"_id": 0})
+    if not job:
+        raise HTTPException(status_code=404, detail="Job no encontrado")
+    if job.get("created_by") and job["created_by"] != user.email and user.role != "admin":
+        raise HTTPException(status_code=403, detail="No tienes acceso a este job")
+    return {
+        "job_id": job_id,
+        "status": job.get("status"),
+        "dry_run": job.get("dry_run", False),
+        "result": job.get("result"),
+        "error": job.get("error"),
+        "itinerary_id": job.get("itinerary_id"),
+    }
+
+
+async def _run_sofi_push_job_safely(job_id: str, itinerary_id: str, dry_run: bool):
+    """Hard wrapper: any exception or 6-min timeout lands as a clean error
+    state, never a stuck-on-running modal."""
+    try:
+        await asyncio.wait_for(
+            _run_sofi_push_job(job_id, itinerary_id, dry_run),
+            timeout=360,
+        )
+    except asyncio.TimeoutError:
+        logger.error("sofi push job %s timed out (>360s)", job_id)
+        await db.sofi_push_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {
+                "status": "error",
+                "error": ("Tiempo agotado (>6 min). Si acabas de redeployar, "
+                          "Chromium puede estar descargándose. Reintenta en 1-2 min."),
+                "finished_at": now_iso(),
+            }},
+        )
+    except Exception as e:
+        logger.exception("sofi push job %s wrapper crashed", job_id)
+        await db.sofi_push_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {
+                "status": "error",
+                "error": f"Error inesperado: {type(e).__name__}: {e}",
+                "finished_at": now_iso(),
+            }},
+        )
+
+
+async def _run_sofi_push_job(job_id: str, itinerary_id: str, dry_run: bool):
+    from sofi import push_itinerary_to_sofi
+    doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+    if not doc:
+        await db.sofi_push_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {"status": "error", "error": "Itinerario no encontrado",
+                      "finished_at": now_iso()}},
+        )
+        return
+    totals = _compute_pricing_totals(doc)
+    out = await push_itinerary_to_sofi(doc, totals, dry_run=dry_run)
+
+    if not out.get("ok"):
+        await db.sofi_push_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {
+                "status": "error",
+                "error": out.get("error") or "Error desconocido",
+                "result": out,                # keep details + filled_fields for debugging
+                "finished_at": now_iso(),
+            }},
+        )
+        return
+
+    # Real push success → stamp the itinerary with the Sofi trip_id so the
+    # builder transitions to the read-only "ya en Sofi" pill.
+    if not dry_run and out.get("trip_id"):
+        await db.itineraries.update_one(
+            {"itinerary_id": itinerary_id},
+            {"$set": {
+                "sofi_trip_id": int(out["trip_id"]),
+                "sofi_url": out.get("url"),
+                "sofi_pushed_at": now_iso(),
+                "updated_at": now_iso(),
+            }},
+        )
+
+    await db.sofi_push_jobs.update_one(
+        {"job_id": job_id},
+        {"$set": {
+            "status": "done",
+            "result": out,
+            "finished_at": now_iso(),
+        }},
+    )
+
+
 # --- Rental car detector ---------------------------------------------------
 # Used by both the Travefy classifier (above) and the admin reclassify endpoint
 # below. Returns True when the experience is a vehicle rental, NOT a transfer
