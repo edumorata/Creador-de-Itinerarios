@@ -12,7 +12,7 @@ const TYPE_BADGE = {
   tren: "bg-clay-700 text-white",
   vuelo: "bg-[#3C5A78] text-white",
 };
-const TYPES = ["actividad", "entradas", "transfer", "tren", "vuelo"];
+const TYPES = ["actividad", "entradas", "transfer", "tren", "vuelo", "rental_car"];
 
 const EMPTY = { title: "", description: "", provider_id: "", country: "", city: "", type: "actividad", price_tax_excl: 0, price_tax_incl: 0, currency: "EUR", pax: 1 };
 

@@ -8,9 +8,12 @@ export const TYPE_BADGE = {
   transfer: "bg-clay-500 text-white",
   tren: "bg-clay-700 text-white",
   vuelo: "bg-[#3C5A78] text-white",
+  rental_car: "bg-[#5C7B3F] text-white",
 };
-export const TYPES = ["actividad", "entradas", "transfer", "tren", "vuelo"];
-// Types that scale with group size — for these, quantity = ceil(num_travelers / pax)
+export const TYPES = ["actividad", "entradas", "transfer", "tren", "vuelo", "rental_car"];
+// Types that scale with group size — for these, quantity = ceil(num_travelers / pax).
+// Rental cars are billed per car (capacity 4-5 pax), so they DON'T scale with
+// group size out of the box — agent decides quantity manually.
 export const SCALES_WITH_PAX = new Set(["actividad", "entradas", "transfer", "tren", "vuelo"]);
 // Visual fallback for any unexpected legacy type strings
 export const BADGE_FALLBACK = "bg-clay-400 text-white";

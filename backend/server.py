@@ -1716,6 +1716,16 @@ def _classify_travefy(name: str) -> ServiceType:
         return "vuelo"
     if any(k in n for k in ("train", "tren", "renfe", "trenitalia", "italo", "ave ")):
         return "tren"
+    # Rental cars: "Vehicle Rental", "Rental Car", "Car Rental", "Rent a Car",
+    # "Alquiler de coche/vehículo/auto". Excluded above by the transfer check
+    # so things like "Private Transfer ... Rental Car Office ..." stay transfers.
+    if any(k in n for k in (
+        "vehicle rental", "rental car", "car rental",
+        "rent a car", "rent-a-car",
+        "alquiler de coche", "alquiler de veh", "alquiler de auto",
+        "alquiler vehic",
+    )):
+        return "rental_car"
     if any(k in n for k in ("ticket", "entrada", "admission")) and "tour" not in n:
         return "entradas"
     return "actividad"
@@ -1731,7 +1741,7 @@ _LEGACY_TYPE_REMAP: dict[str, ServiceType] = {
     "otro": "entradas",
     # Anything that came in with the right enum value is passed through below.
 }
-_VALID_TYPES: set[str] = {"alojamiento", "actividad", "entradas", "transfer", "tren", "vuelo", "hotel"}
+_VALID_TYPES: set[str] = {"alojamiento", "actividad", "entradas", "transfer", "tren", "vuelo", "hotel", "rental_car"}
 
 
 def _normalize_service_type(t: Optional[str]) -> ServiceType:
@@ -2376,6 +2386,63 @@ async def _build_itinerary_from_travefy_preview(payload: dict, user: User) -> It
     itn.updated_at = now_iso()
     await db.itineraries.insert_one(itn.model_dump())
     return itn
+
+
+# --- Rental car detector ---------------------------------------------------
+# Used by both the Travefy classifier (above) and the admin reclassify endpoint
+# below. Returns True when the experience is a vehicle rental, NOT a transfer
+# to/from a rental office.
+def _is_rental_car_experience(title: str, provider: str = "") -> bool:
+    blob = f"{title or ''} {provider or ''}".lower()
+    if any(k in blob for k in ("transfer", "shuttle")):
+        return False
+    return any(k in blob for k in (
+        "vehicle rental", "rental car", "car rental",
+        "rent a car", "rent-a-car",
+        "alquiler de coche", "alquiler de veh", "alquiler de auto",
+        "alquiler vehic",
+    ))
+
+
+@api.post("/admin/experiences/reclassify-rental-cars")
+async def admin_reclassify_rental_cars(
+    user: Annotated[User, Depends(current_user)],
+    dry_run: bool = False,
+):
+    """Admin-only one-shot: scan the catalog and flip any experience that
+    looks like a vehicle rental (and isn't already classified) to type
+    'rental_car'. Pass `?dry_run=true` to preview without writing.
+
+    Excludes existing transfers ("Private Transfer ... Rental Car Office ...")
+    so we don't accidentally re-categorise them.
+    """
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Solo admin")
+    cursor = db.experiences.find({}, {"_id": 0, "experience_id": 1, "title": 1, "provider_name": 1, "type": 1})
+    updated: list[dict] = []
+    skipped: list[dict] = []
+    async for e in cursor:
+        if e.get("type") == "rental_car":
+            continue  # already done
+        if not _is_rental_car_experience(e.get("title", ""), e.get("provider_name", "")):
+            continue
+        if e.get("type") == "transfer":
+            # Heuristic shouldn't catch these (we exclude "transfer" in the
+            # detector) but double-check so we never silently flip a transfer.
+            skipped.append({"experience_id": e["experience_id"], "title": e["title"], "from_type": e.get("type")})
+            continue
+        updated.append({"experience_id": e["experience_id"], "title": e["title"], "from_type": e.get("type")})
+        if not dry_run:
+            await db.experiences.update_one(
+                {"experience_id": e["experience_id"]},
+                {"$set": {"type": "rental_car", "updated_at": now_iso()}},
+            )
+    return {
+        "dry_run": dry_run,
+        "reclassified": len(updated),
+        "skipped_transfers": len(skipped),
+        "samples": updated[:15],
+    }
 
 
 # ---------------------------------------------------------------------------

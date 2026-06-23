@@ -29,7 +29,7 @@ def now_iso() -> str:
 # ---------------------------------------------------------------------------
 ServiceType = Literal[
     "alojamiento", "actividad", "entradas", "transfer",
-    "tren", "vuelo", "hotel",
+    "tren", "vuelo", "hotel", "rental_car",
 ]
 RoomType = Literal[
     "single", "doble", "twin", "triple", "cuadruple", "suite", "family", "otro",
