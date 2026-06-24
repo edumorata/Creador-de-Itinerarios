@@ -586,6 +586,44 @@ Files touched (iter-18):
   (currently a free dict; testing agent flagged in iter-4/iter-5).
 - Unify 404/403 on `GET /api/itineraries/push-to-sofi/{job_id}` to avoid
   leaking job-id existence to other agents.
+
+### Iteration 19 (2026-06-24) — Sales agent ("Agente de ventas") gets the trip owner
+- **Bug from prod**: every trip pushed to Sofi was showing Eduardo as the
+  "Agente de ventas" even when Marina, Anita, etc. were the actual owners
+  of the itinerary. Cause: the trip header creation code never touched the
+  `app_trips___agent` field, so Joomla defaulted it to whoever was logged
+  in via `GESTION_VIAJADVERDAD_USER` (Eduardo's credentials).
+- **Fix** (`backend/sofi.py`):
+  1. Added `EMAIL_TO_SOFI_AGENT_ID` constant mapping each viajadverdad
+     agent email → Sofi user_id (extracted from the
+     `#app_trips___agent` dropdown options on the live trip form):
+     ```
+     eduardo → 53, marina → 39, beatriz → 40, anita → 56, raquel → 44,
+     rita → 45, hector → 60, janelle → 66, giorgia → 58, karin → 54
+     ```
+  2. In `push_itinerary_to_sofi`, before submitting the trip header, look
+     up `(itn.created_by or "").strip().lower()` against the map and call
+     `_safe_select("#app_trips___agent", [str(id)])` so the right agent
+     gets stamped on the trip.
+  3. Defensive fallback: if `created_by` is missing or not in the map,
+     log a warning + append a `filled` entry "sin mapeo para {email}" so
+     the operator sees something in the modal preview, but the push still
+     succeeds (Sofi falls back to the logged-in user).
+- **End-to-end verified**: dry-run with overridden
+  `created_by=marina@viajadverdad.com` produced
+  `filled = [..., {label: "Agente de ventas (marina@viajadverdad.com)",
+  selector: "#app_trips___agent", value: "39"}, ...]` ✅.
+- **Regression coverage** (`backend/tests/test_booking_form_data.py`):
+  3 new unit tests asserting (a) all 10 known agents are mapped, (b) no
+  duplicate Sofi user_ids, (c) keys are lower-cased so the lookup
+  matches. Total 18/18 pass in 50ms.
+
+Files touched (iter-19):
+- `backend/sofi.py` — `EMAIL_TO_SOFI_AGENT_ID` constant + 16 LOC inside
+  `push_itinerary_to_sofi` to stamp the agent FK.
+- `backend/tests/test_booking_form_data.py` — 3 new test cases.
+
+
 - Migrate Preview DB → Production DB (mongodump/mongorestore, coordinated
   with the owner).
 

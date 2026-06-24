@@ -65,6 +65,24 @@ SOURCE_TO_SOFI = {
     "other": "Direct",
 }
 
+# Viajadverdad agent email → Sofi user_id (extracted from the
+# `app_trips___agent[]` dropdown options on /trips/form/1/). When a user pushes
+# an itinerary to Sofi, the trip's "agente de ventas" must be set to the user
+# who OWNS the itinerary (Itinerary.created_by), NOT the credentials used to
+# log into Sofi — otherwise Eduardo appears as the seller of every trip.
+EMAIL_TO_SOFI_AGENT_ID: dict[str, int] = {
+    "eduardo@viajadverdad.com": 53,
+    "marina@viajadverdad.com": 39,
+    "beatriz@viajadverdad.com": 40,
+    "anita@viajadverdad.com": 56,
+    "raquel@viajadverdad.com": 44,
+    "rita@viajadverdad.com": 45,
+    "hector@viajadverdad.com": 60,
+    "janelle@viajadverdad.com": 66,
+    "giorgia@viajadverdad.com": 58,
+    "karin@viajadverdad.com": 54,
+}
+
 # Quick city→country lookup. We only need to surface this for the destination
 # multi-select; Sofi accepts no-match and we fall back to "Spain" (the
 # agency's home market) when nothing maps.
@@ -249,6 +267,28 @@ async def _fill_and_submit(page, itn: dict, totals: dict, *, dry_run: bool) -> d
     if src:
         await _safe_select(page, "#app_trips___source", [src], multiple=False,
                            filled=filled, label="Source")
+
+    # Sales agent = owner of the itinerary. Map our `created_by` email to the
+    # Sofi user_id and select that option. WITHOUT this, Sofi auto-fills the
+    # agent field with whoever is logged in (the GESTION_VIAJADVERDAD_USER
+    # credentials) — making every trip look like it was sold by that
+    # account.
+    owner_email = (itn.get("created_by") or "").strip().lower()
+    owner_sofi_id = EMAIL_TO_SOFI_AGENT_ID.get(owner_email)
+    if owner_sofi_id is not None:
+        await _safe_select(page, "#app_trips___agent", [str(owner_sofi_id)],
+                           multiple=False, filled=filled,
+                           label=f"Agente de ventas ({owner_email})")
+    elif owner_email:
+        # Itinerary has an owner email but we don't know its Sofi id yet.
+        # Log + record it in `filled` so the operator sees something is off
+        # without failing the whole push.
+        logger.warning("sofi push: no agent_id mapping for %r — falling back "
+                       "to logged-in user", owner_email)
+        filled.append({"label": "Agente de ventas",
+                       "selector": "#app_trips___agent",
+                       "value": "(no encontrado, Sofi pondrá al usuario logueado)",
+                       "error": f"sin mapeo para {owner_email}"})
 
     # --- Summary group ---
     if fx_rate:

@@ -238,3 +238,37 @@ def test_operator_id_empty_when_not_resolved():
     data = _to_multidict(_booking_form_data(b, HIDDEN_STUB, resolved_operator_id=None))
     assert data.get("app_bookings___operator[]") == [""]
     assert data.get("app_bookings___operator-auto-complete") == ["Civitatis"]
+
+
+
+# ---- Sales-agent mapping --------------------------------------------------
+
+from sofi import EMAIL_TO_SOFI_AGENT_ID  # noqa: E402
+
+
+def test_agent_mapping_covers_all_known_agents():
+    """All 10 viajadverdad agents must be in the EMAIL_TO_SOFI_AGENT_ID map.
+    A missing entry would silently fall back to the logged-in user (Eduardo)
+    on every Sofi push — exactly the bug we're fixing."""
+    expected_emails = {
+        "eduardo@viajadverdad.com", "marina@viajadverdad.com",
+        "beatriz@viajadverdad.com", "anita@viajadverdad.com",
+        "raquel@viajadverdad.com", "rita@viajadverdad.com",
+        "hector@viajadverdad.com", "janelle@viajadverdad.com",
+        "giorgia@viajadverdad.com", "karin@viajadverdad.com",
+    }
+    assert set(EMAIL_TO_SOFI_AGENT_ID) == expected_emails
+
+
+def test_agent_mapping_has_no_duplicate_ids():
+    """Two emails pointing at the same Sofi user_id would mis-attribute trips
+    for one of them."""
+    ids = list(EMAIL_TO_SOFI_AGENT_ID.values())
+    assert len(ids) == len(set(ids)), f"duplicate sofi_user_id in mapping: {ids}"
+
+
+def test_agent_mapping_keys_are_lowercase():
+    """The lookup in sofi.py normalises with `.strip().lower()`. If we ever
+    add a capitalised key the lookup will silently miss."""
+    for k in EMAIL_TO_SOFI_AGENT_ID:
+        assert k == k.lower(), f"non-lowercase key: {k!r}"
