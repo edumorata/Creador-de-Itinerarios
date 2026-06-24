@@ -532,6 +532,53 @@ Files touched (iter-17):
   pushed-itinerary fixture — 12 passed + 1 explicit skip).
 
 ## P0 backlog (next)
+
+### Iteration 18 (2026-06-24) — Operator (proveedor) FK resolution
+- **Issue spotted by owner**: bookings pushed via the new direct-POST flow
+  saved the typed provider name only in `operator-auto-complete` (display
+  label). The FK column `operator[]` stayed empty, so Sofi listed the
+  booking as "without provider".
+- **Solution (Option A — exact match)**:
+  1. Captured Fabrik's databasejoin autocomplete endpoint via Playwright
+     interception:
+     `POST /index.php?option=com_fabrik&task=pluginAjax&{csrf}=1&element_id=52&formid=3&plugin=databasejoin&method=autocomplete_options&package=fabrik`
+     with form body `value=<provider_name>`. Returns JSON
+     `[{value:<id>, text:"<id> - <short> - <legal>"}, …]`.
+  2. Added `_resolve_operator_id(page, csrf_token, provider_name, cache)`
+     in `backend/sofi.py`. Strategy: POST, parse JSON, find exact
+     case-insensitive match on the short_name segment. Result cached
+     per push job so the same provider in N bookings = 1 AJAX call.
+  3. Added `_extract_csrf_token(hidden)` — the Joomla token is the only
+     32-hex-char hidden input with value="1".
+  4. `_booking_form_data` now takes `resolved_operator_id` and stamps it
+     onto `app_bookings___operator[]` (the FK column). Misses fall back
+     to empty string + `_push_one_booking_fast` prepends a
+     `"[Proveedor: NAME]"` sentinel to the booking notes so the human
+     agent can fix it inside Sofi.
+- **Verified live**:
+  - `_resolve_operator_id("Renfe") → 236`
+  - `_resolve_operator_id("Iberia") → 134`
+  - `_resolve_operator_id("renfe"|"RENFE") → 236` (case-insensitive ✅)
+  - `_resolve_operator_id("Civitatis") → None` (not in Sofi → notes
+    sentinel added)
+  - Trip #2311 booking #47006: `operator = "236 - Renfe - Renfe Viajeros
+    SME SA"` (FK linked ✅).
+  - Trip #2311 booking #47007: operator empty, note =
+    `"[Proveedor: Civitatis] Note original"` ✅.
+- **Regression coverage**: 5 new unit tests in
+  `backend/tests/test_booking_form_data.py` (CSRF extraction, name
+  normalization, FK stamping when resolved, empty fallback). Total
+  15/15 pass in 50ms with no network.
+
+Files touched (iter-18):
+- `backend/sofi.py` — added `json` import, `_OPERATOR_ELEMENT_ID` const,
+  `_extract_csrf_token`, `_norm_provider`, `_resolve_operator_id`. Extended
+  `_booking_form_data(b, hidden, resolved_operator_id=None)` and
+  `_push_one_booking_fast(page, b, hidden, operator_cache)` to thread the
+  cache. Main push loop seeds `operator_cache: dict[str, int|None] = {}`.
+- `backend/tests/test_booking_form_data.py` — 5 new test cases.
+
+
 - (none — main Sofi integration goal is now complete)
 
 ## P1 backlog

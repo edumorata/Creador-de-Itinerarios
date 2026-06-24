@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import re
@@ -422,6 +423,9 @@ async def _fill_and_submit(page, itn: dict, totals: dict, *, dry_run: bool) -> d
     # 303 on success.
     bookings_results: list[dict] = []
     bookings_plan = list(_iter_bookings(itn, trip_id))
+    # Cache for provider→operator-id lookups so the same provider that
+    # appears in several bookings only triggers one AJAX call.
+    operator_cache: dict[str, Optional[int]] = {}
     if bookings_plan:
         try:
             template = await _fetch_booking_form_hidden(page)
@@ -442,14 +446,14 @@ async def _fill_and_submit(page, itn: dict, totals: dict, *, dry_run: bool) -> d
             }
         for b in bookings_plan:
             try:
-                r = await _push_one_booking_fast(page, b, template)
+                r = await _push_one_booking_fast(page, b, template, operator_cache)
                 # Joomla CSRF tokens are usually session-scoped (reusable
                 # across forms within the same session). If a submit ever
                 # rejects with "token invalid", refresh the template once
                 # and retry that booking.
                 if not r.get("ok") and "token" in (r.get("error") or "").lower():
                     template = await _fetch_booking_form_hidden(page)
-                    r = await _push_one_booking_fast(page, b, template)
+                    r = await _push_one_booking_fast(page, b, template, operator_cache)
             except Exception as e:
                 logger.exception("booking push crashed for service=%s", b.get("service_name"))
                 r = {"ok": False, "service": b.get("service_name"),
@@ -1001,6 +1005,101 @@ import re as _re_mod  # local alias to avoid shadowing top-level `re`
 _FABRIK_TYPE_VALUE = {0: "activity", 1: "accomodation", 2: "freeday"}
 
 
+# Fabrik element_id for the operator (proveedor) databasejoin field in
+# /reservas/form/3/ — captured from the form's HTML / JS init.
+_OPERATOR_ELEMENT_ID = "52"
+
+
+def _extract_csrf_token(hidden: dict) -> Optional[str]:
+    """Joomla embeds the per-session CSRF token as a 32-hex-char hidden
+    input with value "1" inside every form. We need it for any AJAX call
+    (e.g. the databasejoin autocomplete endpoint)."""
+    for k in hidden:
+        if len(k) == 32 and all(c in "0123456789abcdef" for c in k):
+            return k
+    return None
+
+
+def _norm_provider(name: str) -> str:
+    return (name or "").strip().lower()
+
+
+async def _resolve_operator_id(
+    page,
+    csrf_token: Optional[str],
+    provider_name: str,
+    cache: dict,
+) -> Optional[int]:
+    """Look up the Sofi `app_bookings.operator` foreign-key for a provider
+    by name. Strategy:
+
+      1. POST the typed name to Fabrik's databasejoin autocomplete endpoint.
+         Response is a JSON list of `{value, text}` where text is
+         "<id> - <short_name> - <legal_name>".
+      2. Find an EXACT match (case-insensitive trim) on the short_name
+         segment. If any candidate matches → return its id.
+      3. Otherwise return None — the caller will leave operator[] empty
+         and prepend "[Proveedor: <name>]" to the booking notes so the
+         agent can fix it manually in Sofi.
+
+    Cached per session (provider_name → id-or-None) so the same provider
+    appearing in multiple bookings only triggers one AJAX call.
+    """
+    if not provider_name or not csrf_token:
+        return None
+    key = _norm_provider(provider_name)
+    if key in cache:
+        return cache[key]
+
+    # Build the autocomplete URL — element_id 52 = operator field, formid 3
+    # = booking form. The CSRF token goes BOTH in the URL (as `{token}=1`)
+    # AND as a normal Joomla cookie (already in our session jar).
+    url = (
+        f"{GESTION_BASE}/index.php"
+        f"?option=com_fabrik&format=raw&view=plugin&task=pluginAjax"
+        f"&{csrf_token}=1"
+        f"&g=element&element_id={_OPERATOR_ELEMENT_ID}"
+        f"&formid=3&plugin=databasejoin&method=autocomplete_options"
+        f"&package=fabrik"
+    )
+    try:
+        resp = await page.request.post(
+            url,
+            form={"value": provider_name},
+            timeout=15000,
+        )
+        body = await resp.text()
+    except Exception as e:
+        logger.warning("operator autocomplete failed for %r: %s", provider_name, e)
+        cache[key] = None
+        return None
+
+    try:
+        rows = json.loads(body)
+    except Exception:
+        cache[key] = None
+        return None
+
+    # Exact-match on the short_name segment (the bit between the first
+    # " - " and the second " - "). Fall through to None if no exact hit.
+    target = key
+    for row in rows or []:
+        text = (row.get("text") or "").strip()
+        # "<id> - <short> - <legal>"  →  short
+        parts = [p.strip() for p in text.split(" - ", 2)]
+        short = parts[1] if len(parts) >= 2 else ""
+        if short.lower() == target:
+            try:
+                cache[key] = int(row.get("value"))
+            except (TypeError, ValueError):
+                cache[key] = None
+            return cache[key]
+
+    cache[key] = None
+    return None
+
+
+
 async def _fetch_booking_form_hidden(page) -> dict:
     """GET /reservas/form/3/ and parse every <input type="hidden"> from the
     response so we have the CSRF token + Fabrik routing fields. We use the
@@ -1044,10 +1143,16 @@ async def _fetch_booking_form_hidden(page) -> dict:
     return hidden
 
 
-def _booking_form_data(b: dict, hidden: dict) -> list[tuple[str, str]]:
+def _booking_form_data(b: dict, hidden: dict,
+                        resolved_operator_id: Optional[int] = None) -> list[tuple[str, str]]:
     """Build the multipart form body for a booking POST. Returns a list of
     (name, value) tuples (ordered) since Fabrik's multi-value fields use
     `name[]` and we may need to send the same name twice.
+
+    `resolved_operator_id` — if the caller resolved the provider name to a
+    Sofi operator FK (via Fabrik's autocomplete AJAX), pass it here so we
+    set `app_bookings___operator[]` to that integer instead of leaving it
+    empty.
 
     NOTE on defaults: when a human fills the form in the browser, Fabrik JS
     fills numeric fields with 0 and time fields with 00:00 on blur. Our
@@ -1164,7 +1269,14 @@ def _booking_form_data(b: dict, hidden: dict) -> list[tuple[str, str]]:
     # Notes + provider (always emit, even when empty — the browser does).
     data.append(("app_bookings___note", (b.get("notes") or "")[:255]))
     data.append(("app_bookings___operator-auto-complete", b.get("provider") or ""))
-    data.append(("app_bookings___operator[]", ""))
+    # `operator[]` is the FK to `app_operators.id`. When the caller resolved
+    # the typed name via Fabrik's autocomplete AJAX (see _resolve_operator_id),
+    # we stamp the resulting integer here so Sofi links the booking to the
+    # right provider. Otherwise we leave it empty and the caller has already
+    # prepended a "[Proveedor: NAME]" hint to the notes so the agent can fix
+    # it inside Sofi.
+    data.append(("app_bookings___operator[]",
+                 str(resolved_operator_id) if resolved_operator_id else ""))
 
     # Routing must be present so Fabrik dispatches to the save handler. These
     # also exist as hidden inputs but we re-state them defensively in case the
@@ -1204,19 +1316,36 @@ def _to_sofi_iso(s: Optional[str]) -> str:
         return s
 
 
-async def _push_one_booking_fast(page, b: dict, hidden: dict) -> dict:
+async def _push_one_booking_fast(page, b: dict, hidden: dict,
+                                  operator_cache: dict) -> dict:
     """Send a booking via direct POST. ~2-3s per booking vs ~25s for the
-    render-and-submit path."""
-    data = _booking_form_data(b, hidden)
+    render-and-submit path.
 
-    # Convert to dict but keep duplicate keys: Playwright's `form` arg accepts
-    # a dict (last value wins for dups) OR `multipart` for true multi-value.
-    # We use multipart so multi-value fields like `app_bookings___type[]`
-    # can repeat without losing data.
+    If the booking carries a `provider` name, we first hit Fabrik's
+    databasejoin autocomplete endpoint to resolve it to a `app_bookings.
+    operator` FK. Exact short-name matches are used as-is; misses are
+    surfaced in the booking notes so the agent can fix them inside Sofi.
+    """
+    # Resolve provider → operator-id BEFORE building the form data so the
+    # builder can stamp it onto operator[] and short-circuit the auto-
+    # complete display.
+    provider_name = (b.get("provider") or "").strip()
+    resolved_id: Optional[int] = None
+    if provider_name:
+        csrf = _extract_csrf_token(hidden)
+        resolved_id = await _resolve_operator_id(page, csrf, provider_name,
+                                                  operator_cache)
+        if resolved_id is None:
+            # Not found in Sofi → prepend a sentinel to the booking notes
+            # so the agent can search/create the provider manually.
+            existing_notes = (b.get("notes") or "").strip()
+            tag = f"[Proveedor: {provider_name}]"
+            b = {**b, "notes": (tag + " " + existing_notes).strip()}
+
+    data = _booking_form_data(b, hidden, resolved_operator_id=resolved_id)
+
     multipart = {}
     for k, v in data:
-        # If Fabrik expected ARRAYS for [] keys, we'd repeat. For our payload
-        # each name appears once, so dict assignment is fine.
         multipart[k] = v
 
     try:

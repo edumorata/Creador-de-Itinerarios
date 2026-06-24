@@ -185,3 +185,56 @@ def test_routing_fields_present():
     assert "option" in data
     assert "task" in data
     assert "formid" in data
+
+
+
+# ---- Operator (provider) resolution ---------------------------------------
+
+from sofi import _norm_provider, _extract_csrf_token  # noqa: E402
+
+
+def test_extract_csrf_token_finds_32hex_key():
+    """The Joomla CSRF token is the only 32-hex-character key in the form's
+    hidden inputs. _extract_csrf_token must return exactly that key."""
+    hidden = {
+        "Itemid": "112",
+        "option": "com_fabrik",
+        "abc1234567890abc1234567890abcdef": "1",
+        "fabrik_repeat_group[3]": "1",
+    }
+    assert _extract_csrf_token(hidden) == "abc1234567890abc1234567890abcdef"
+
+
+def test_extract_csrf_token_returns_none_when_no_token():
+    """Defensive: if the form template ever changes shape, we return None
+    and the caller skips the autocomplete (provider stays unresolved → note
+    fallback)."""
+    assert _extract_csrf_token({"option": "com_fabrik"}) is None
+
+
+def test_norm_provider_strips_and_lowers():
+    assert _norm_provider("  Renfe  ") == "renfe"
+    assert _norm_provider("CIVITATIS") == "civitatis"
+    assert _norm_provider("") == ""
+    assert _norm_provider(None) == ""
+
+
+def test_operator_id_stamped_when_resolved():
+    """When the caller passes a resolved_operator_id, _booking_form_data
+    must put it in `operator[]` instead of an empty string."""
+    b = dict(SAMPLE_BOOKING)
+    b["provider"] = "Renfe"
+    data = _to_multidict(_booking_form_data(b, HIDDEN_STUB, resolved_operator_id=236))
+    assert data.get("app_bookings___operator[]") == ["236"]
+    # Auto-complete label still goes through so the form display matches.
+    assert data.get("app_bookings___operator-auto-complete") == ["Renfe"]
+
+
+def test_operator_id_empty_when_not_resolved():
+    """Falling back to the empty string is what tells Sofi 'no operator yet'.
+    Sending '0' would FK-link to operator #0 which doesn't exist."""
+    b = dict(SAMPLE_BOOKING)
+    b["provider"] = "Civitatis"
+    data = _to_multidict(_booking_form_data(b, HIDDEN_STUB, resolved_operator_id=None))
+    assert data.get("app_bookings___operator[]") == [""]
+    assert data.get("app_bookings___operator-auto-complete") == ["Civitatis"]
