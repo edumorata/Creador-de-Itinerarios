@@ -1077,16 +1077,20 @@ def _booking_form_data(b: dict, hidden: dict) -> list[tuple[str, str]]:
     data.append(("app_bookings___ciudad", b.get("city") or ""))
     data.append(("app_bookings___quantity", str(b.get("quantity") or 1)))
     data.append(("app_bookings___number_of_children", "0"))
-    data.append(("app_bookings___date_entry", _to_sofi_iso(b.get("date_entry"))))
-    if b.get("date_exit"):
-        data.append(("app_bookings___date_exit", _to_sofi_iso(b["date_exit"])))
+    # Date fields: Fabrik's calendar element stores values as "YYYY-MM-DD HH:MM:SS"
+    # in the DB column. Sending just the date portion works because MariaDB
+    # coerces 'YYYY-MM-DD' → 'YYYY-MM-DD 00:00:00' for DATETIME columns; but
+    # the safest format is the full timestamp (matches what the browser POSTs).
+    data.append(("app_bookings___date_entry",
+                 _to_sofi_datetime(b.get("date_entry"))))
+    data.append(("app_bookings___date_exit",
+                 _to_sofi_datetime(b.get("date_exit")) if b.get("date_exit") else ""))
     # Time fields: MySQL rejects empty strings for TIME columns.
     data.append(("app_bookings___hour_entry[0]", "00"))
     data.append(("app_bookings___hour_entry[1]", "00"))
-    data.append(("app_bookings___hour_exit[0]", "00"))
-    data.append(("app_bookings___hour_exit[1]", "00"))
-    if b.get("room"):
-        data.append(("app_bookings___room", b["room"]))
+    # Room: always include, even empty, so the form processor doesn't trip on
+    # missing keys for the calc fields that read it.
+    data.append(("app_bookings___room", b.get("room") or ""))
 
     # Type radio (multi-value join group). We send only the chosen value.
     type_value = _FABRIK_TYPE_VALUE.get(int(b.get("type_radio") or 0), "activity")
@@ -1097,40 +1101,95 @@ def _booking_form_data(b: dict, hidden: dict) -> list[tuple[str, str]]:
     data.append(("app_bookings___status_reserva[]", "sin"))
     data.append(("app_bookings___status_facturacion[]", "sin"))
 
-    # Numeric defaults — Fabrik's JS fills these with 0 before submit in the
-    # browser flow; the direct POST has to do it explicitly or MySQL rejects.
-    data.append(("app_bookings___product", "0"))
-    data.append(("app_bookings___product_quantity", "0"))
-    data.append(("app_bookings___proveedor_mensual", "0"))
-    data.append(("app_bookings___paid", "0"))
-    data.append(("app_bookings___amount_paid", "0.00"))
+    # Numeric / select defaults — Fabrik's JS fills these with 0 before submit
+    # in the browser flow; the direct POST has to do it explicitly or MySQL
+    # rejects with "Incorrect integer value: '' for column ...".
+    # Field naming matters: Fabrik <select> elements that participate in a
+    # database-join group use name="…[]" even though only one value is
+    # selected. Sending the bare name without "[]" makes MySQL receive ''
+    # and crash.
+    data.append(("app_bookings___product[]", "0"))             # select
+    data.append(("app_bookings___producto_2[]", "0"))           # select
+    data.append(("app_bookings___product_quantity", "1"))
+    data.append(("app_bookings___product_quantity_product2", "1"))
+    data.append(("app_bookings___reembolsado", ""))             # nullable decimal
+    # YesNo radio groups (0/1) — Fabrik defaults to 0 visually via CSS but
+    # the POST needs an explicit value for the INT NOT NULL columns.
+    for radio in ("contactado", "flag", "factura_solicitada",
+                  "status_conciliado", "status_proforma_voucher", "status_pago"):
+        data.append((f"app_bookings___{radio}[]", "0"))
+    # Override factor: the form lets the agent multiply the price for currency
+    # conversion. We always send EUR + 1.0 (no override).
+    data.append(("app_bookings___override[]", "1"))
+    # Auto-filled timestamp — Fabrik captures this on submit; we set it to now
+    # so the field isn't NULL on insert.
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    data.append(("app_bookings___date_time", now_str))
+
+    # ---- app_notes (sub-group 47) ----
+    # The booking form embeds a "notes / reminders" repeat group. The browser
+    # always submits a placeholder row even when the user didn't add a note;
+    # if we don't, MariaDB rejects the parent INSERT with a 1064 syntax error
+    # because Fabrik builds an UPDATE …, () SQL fragment for the empty join.
+    # The user_id 53 in `from`/`to` is the agency's house account in Sofi.
+    # NOTE: `from[0][]` is already emitted as a hidden input by the form
+    # template — we do NOT re-append it here to avoid duplicate values.
+    data.append(("app_notes___id[0]", ""))
+    data.append(("app_notes___date_time[0]", now_str))
+    data.append(("app_notes___fecha_recordatorio[0]", ""))
+    data.append(("app_notes___note[0]", ""))
+    data.append(("app_notes___to[0][]", "53"))
+    data.append(("app_notes___reserva[0][]", "0"))
+    data.append(("app_notes___recordado[0][]", "0"))
+    data.append(("app_notes___solved[0][]", "0"))
+    data.append(("app_notes___enviar_correo[0][]", "0"))
+
+    # Fabrik's submit handler reads `hiddenElements` to decide which fields
+    # come from the JS state vs the form. It's a JSON list of element names.
+    # Captured directly from a real browser submit.
+    data.append((
+        "hiddenElements",
+        '["app_bookings___date_time","app_bookings___nights",'
+        '"app_bookings___id","app_bookings___trip_id",'
+        '"app_bookings___proveedor_mensual","app_bookings___contactado",'
+        '"app_bookings___status_concat","app_notes___date_time_0",'
+        '"app_notes___id_0","app_notes___reserva_0","app_notes___from_0"]'
+    ))
 
     # Pricing
     data.append(("app_bookings___price", f"{float(b.get('price_total') or 0):.2f}"))
     data.append(("app_bookings___invoice_tax_excl", f"{float(b.get('invoice_excl') or 0):.2f}"))
     data.append(("app_bookings___invoice_tax_incl", f"{float(b.get('invoice_incl') or 0):.2f}"))
 
-    # Notes + provider
-    if b.get("notes"):
-        data.append(("app_bookings___note", (b["notes"] or "")[:255]))
-    if b.get("provider"):
-        # Fabrik databasejoin autocomplete: writes the visible label here +
-        # the joined id in `operator[]`. Sending the typed name only puts the
-        # label in place; the agent can fix it inside Sofi if needed.
-        data.append(("app_bookings___operator-auto-complete", b["provider"]))
-        data.append(("app_bookings___operator[]", ""))
-    else:
-        data.append(("app_bookings___operator[]", ""))
+    # Notes + provider (always emit, even when empty — the browser does).
+    data.append(("app_bookings___note", (b.get("notes") or "")[:255]))
+    data.append(("app_bookings___operator-auto-complete", b.get("provider") or ""))
+    data.append(("app_bookings___operator[]", ""))
 
     # Routing must be present so Fabrik dispatches to the save handler. These
     # also exist as hidden inputs but we re-state them defensively in case the
-    # template ever drops them.
+    # template ever drops them. The Submit button is included with an empty
+    # value (matches what the browser POSTs — Fabrik just needs the key
+    # to know which form was submitted).
     seen_keys = {k for k, _ in data}
     for k, v in [("option", "com_fabrik"), ("task", "form.process"),
-                 ("formid", "3"), ("listid", "3"), ("Submit", "Submit")]:
+                 ("formid", "3"), ("listid", "3"), ("Submit", "")]:
         if k not in seen_keys:
             data.append((k, v))
     return data
+
+
+def _to_sofi_datetime(s: Optional[str]) -> str:
+    """Convert an ISO date/datetime string to the 'YYYY-MM-DD HH:MM:SS' format
+    Fabrik expects for DATETIME columns. Falls back to the input if parsing
+    fails."""
+    if not s:
+        return ""
+    try:
+        dt = datetime.fromisoformat(s)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return s
 
 
 def _to_sofi_iso(s: Optional[str]) -> str:

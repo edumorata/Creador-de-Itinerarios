@@ -1,0 +1,50 @@
+{
+  "summary": "Iteration 5 — backend regression for the new POST-direct Sofi booking-push (Opción B). The previous iteration (#4) ran against itn_708e44718bc6 as an UNPUSHED itinerary; since then the main agent has executed a real end-to-end push that created Sofi trip #2311 with 10 bookings (IDs 46995-47004) and stamped sofi_trip_id=2311 on the doc. The test file was updated accordingly: (a) itn_708e44718bc6 is now the 'already-pushed' subject for the 409 conflict assertion (no DB stamping needed); (b) the dry-run happy path now picks any other unpushed itinerary at module scope; (c) added a TestDryRunStrictBool class with three cases asserting that non-bool dry_run values (string 'no', string 'true', missing key) ALL coerce to False — verified indirectly via the 409 guard firing on PUSHED_ITN_ID (a non-False coercion would have returned 200 / running). Full suite result: 12 passed + 1 explicit skip (real push gated by SOFI_RUN_REAL_PUSH=1). Wall time 34.6s. Dry-run end-to-end produced filled_fields list + base64 screenshot >1KB and did NOT stamp sofi_trip_id on the unpushed itinerary. Also verified: GET /api/itineraries returns clean JSON list (19 docs, no MongoDB _id leakage). NO real push was executed during this iteration — production trip count unchanged.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/itineraries/push-to-sofi/{job_id}",
+        "issue": "Cross-owner job_id reads still return 403 instead of 404 — leaks job-id existence to other agents who guess a prefix. Reported in iter-4, still open. Low impact (job_ids are 12-hex-char random) but trivially fixable: return 404 uniformly for both 'no such job' and 'job belongs to someone else'."
+      },
+      {
+        "endpoint": "POST /api/itineraries/{id}/push-to-sofi",
+        "issue": "Body is still a free dict (`payload.get('dry_run')`). The isinstance(bool) guard works correctly (verified by TestDryRunStrictBool), but a Pydantic model `class SofiPushBody(BaseModel): dry_run: bool = False` would reject malformed payloads earlier with a 422 and ship a proper OpenAPI schema. Tracked from iter-4."
+      },
+      {
+        "endpoint": "sofi_push_jobs collection",
+        "issue": "Tests cannot directly verify the TTL index exists. Worth adding a startup assertion / migration log line so ops can confirm. Tracked from iter-4."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_sofi_push.py",
+    "/app/test_reports/pytest/sofi_push_results.xml"
+  ],
+  "action_items": [
+    "(non-blocking) Convert the push-to-sofi request body to a Pydantic model (`dry_run: bool = False`) so malformed payloads return 422 with a clear schema instead of being silently coerced to False.",
+    "(non-blocking) Unify 404/403 on GET status to return 404 for both 'unknown job' and 'job belongs to another user'.",
+    "(non-blocking) Surface a startup INFO log confirming the TTL index on sofi_push_jobs.created_at_dt was created."
+  ],
+  "critical_code_review_comments": [
+    "Iteration 5 confirms the booking-fill rewrite in /app/backend/sofi.py::_booking_form_data is sound — the dry-run end-to-end run filled every field server-side, produced a valid Playwright screenshot, and the surrounding endpoint contract (job lifecycle, 404/409 guards, dry_run strictness) is intact. No new defects.",
+    "/app/backend/server.py is still ~4866 lines. The router-extraction advice from iter-3 / iter-4 is unchanged: carve sofi push into routers/sofi.py + services/sofi_push.py before adding more integrations.",
+    "/app/backend/sofi.py is now the source of truth for the Fabrik POST payload. The hard-coded constants (the 6 YesNo radio defaults, the app_notes placeholder row, the hiddenElements JSON, Submit='' literal, 'YYYY-MM-DD HH:MM:SS' date format) deserve module-level named constants with a short comment linking back to the captured-browser HAR — otherwise the next agent that 'tidies up' the code will accidentally regress the 500/1064 SQL bug.",
+    "Recommend pinning a regression: add a unit-level test (not network-level) that asserts the dict returned by _booking_form_data() contains the 6 YesNo '0' integer defaults, the 10-field app_notes placeholder, Submit='', and the [] suffix on join-group selects. This catches the SQL 1064 / integer-empty bug class without ever touching Sofi."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sofi_push.py (rewritten for iter-5: 13 cases — 12 pass + 1 explicit skip)"
+  ],
+  "success_rate": {
+    "backend": "100% (12 passed, 1 skipped by design, 0 failed)",
+    "frontend": "n/a (backend-only request)"
+  },
+  "test_credentials": "Cookie session_token=3rrWWDXfC1ze9MEHqZzbC0eQK3nq29wClvsJPIMsQhc (eduardo@viajadverdad.com, admin) — supplied in the review request, used as-is.",
+  "seed_data_creation": "TestRegressionCriticalEndpoints::test_create_itinerary_returns_new_doc creates a fresh itinerary doc (traveler 'TEST AUTO PUSH 2026-06-23') and deletes it via pymongo at the end of the test. The 409 conflict test re-uses the real pushed itinerary itn_708e44718bc6 / trip #2311 as instructed by the review request — no DB stamping/unstamping involved, no production data touched. NO real Sofi push was executed.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "itn_708e44718bc6 is permanently linked to Sofi trip #2311 and is the canonical 'already-pushed' fixture for the 409 conflict test. DO NOT clean it. The dry-run tests now auto-pick any other unpushed itinerary from the DB via a module-scope fixture (currently itn_79e5151b88b0 et al — 18 unpushed docs available). Local pytest reads MONGO_URL/DB_NAME from /app/backend/.env and hits the same DB that the preview URL serves. Real-push test (test_real_push_creates_sofi_trip_and_stamps_doc) remains gated by SOFI_RUN_REAL_PUSH=1; running it will (1) create a real trip in gestion.viajadverdad.com, (2) permanently stamp the chosen unpushed itinerary, and (3) NOT clean up the Sofi-side row. The previous iter-4 minor items (Pydantic body, 404/403 unification, TTL index visibility) are still open and re-reported here; they are non-blocking.",
+  "rca of the issue": "No bugs found in iter-5. The booking POST 500/1064 bug fixed by the main agent in /app/backend/sofi.py::_booking_form_data is verified working via the live trip #2311. All 12 in-scope assertions pass; the only skip is the intentional production-side-effect guard."
+}
