@@ -482,3 +482,72 @@ Files touched:
 - `backend/tests/test_sofi_push.py` (new, by testing agent).
 
 
+
+
+### Iteration 17 (2026-06-24) — Sofi bookings direct POST (Opción B) end-to-end working
+- **Context**: iter-16's Opción A (Playwright UI for every booking) took ~5min
+  for 10 bookings — unacceptable for daily use. We pivoted to Opción B: keep
+  Playwright for login + trip-header (Fabrik's JS calc fields are too complex
+  to recreate), then POST each booking directly via `page.request.post()`
+  using the authenticated cookie jar.
+- **First Opción B attempt** failed with MySQL errors: `Incorrect integer value: ''
+  for column 'product'`, then `'producto_2'`, then `1064 SQL syntax error
+  near ''`. The previous agent left the fix in progress.
+- **Root cause** (captured by intercepting a real browser-driven submit):
+  1. Fabrik `<select>` elements that belong to a database-join group still
+     emit `name="…[]"`. Sending `app_bookings___product` (without `[]`) made
+     MySQL receive `''` for the INT NOT NULL column.
+  2. 6 YesNo radio columns (`contactado`, `flag`, `factura_solicitada`,
+     `status_conciliado`, `status_proforma_voucher`, `status_pago`) are
+     INT NOT NULL and need explicit `"0"` on POST — Fabrik's JS default
+     hadn't run.
+  3. The booking form embeds a sub-group `app_notes` (notes/reminders). The
+     browser always submits a 10-field placeholder row even when the user
+     hasn't added a note. Omitting it triggered the 1064 syntax error
+     on Fabrik's join INSERT.
+  4. `hiddenElements` JSON list (which fields come from JS state vs the form)
+     was missing.
+  5. `Submit` value must be empty (`""`), not the literal `"Submit"`.
+  6. `date_entry` / `date_exit` must be sent as full `YYYY-MM-DD HH:MM:SS`
+     DATETIMEs, not just dates.
+- **Fix** (`backend/sofi.py::_booking_form_data`): all six gaps closed.
+- **End-to-end verified**: Sofi trip #2311 created with 10 bookings
+  (IDs 46995-47004) linked, total time ~51 seconds (~5s/booking, includes
+  trip header creation).
+- **Regression suite**: `backend/tests/test_booking_form_data.py` — 10 unit
+  cases that lock in the captured-browser payload contract (join-group `[]`
+  suffix, YesNo defaults, app_notes placeholder, `hiddenElements`, Submit='',
+  datetime format). Runs in 40ms with no network.
+- **Sofi cleanup**: trips #2302, #2303, #2304, #2305, #2306, #2308, #2309,
+  #2310 are empty orphans from the previous debug attempts and need to be
+  manually deleted by the owner from Sofi's admin UI.
+
+Files touched (iter-17):
+- `backend/sofi.py` — `_booking_form_data` rewritten with `[]` suffix on
+  join-group selects, YesNo defaults, app_notes placeholder, hiddenElements
+  JSON, datetime format for dates. New helper `_to_sofi_datetime()`.
+- `backend/tests/test_booking_form_data.py` (new — 10 unit tests, no
+  network, run in 40ms).
+- `backend/tests/test_sofi_push.py` (updated by testing agent for the new
+  pushed-itinerary fixture — 12 passed + 1 explicit skip).
+
+## P0 backlog (next)
+- (none — main Sofi integration goal is now complete)
+
+## P1 backlog
+- Pydantic body model for `POST /api/itineraries/{id}/push-to-sofi`
+  (currently a free dict; testing agent flagged in iter-4/iter-5).
+- Unify 404/403 on `GET /api/itineraries/push-to-sofi/{job_id}` to avoid
+  leaking job-id existence to other agents.
+- Migrate Preview DB → Production DB (mongodump/mongorestore, coordinated
+  with the owner).
+
+## P2 backlog
+- Rebalance AI Trainer prompt (remove strict budget reliance, focus on
+  structural patterns) + admin endpoint to flag experiences with €0 /
+  abnormal prices.
+- Import "Not Sold" (No vendido) trips for comparative training.
+- Comparative analysis: Sold vs Not Sold trips → derive new system-prompt
+  rules.
+- `server.py` carve-out: routers/sofi.py + services/sofi_push.py before
+  adding more integrations (file is 4866 lines).
