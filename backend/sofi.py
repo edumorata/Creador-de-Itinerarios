@@ -1006,6 +1006,11 @@ async def _fetch_booking_form_hidden(page) -> dict:
     response so we have the CSRF token + Fabrik routing fields. We use the
     Playwright `page.request` API which reuses the browser's cookie jar
     (kept hot from the trip-header phase, so we're already logged in).
+
+    IMPORTANT: we ONLY look inside `<form id="form_3" ...>...</form>` because
+    Joomla also renders a logout form in the header (with `option=com_users`
+    + `task=user.logout` hidden inputs) and a search form, and including
+    those in our POST yielded a 404 + a silent failure (no booking saved).
     """
     resp = await page.request.get(
         f"{GESTION_BASE}/reservas/form/3/?format=html",
@@ -1014,24 +1019,26 @@ async def _fetch_booking_form_hidden(page) -> dict:
     if not resp.ok:
         raise RuntimeError(f"Form template GET status={resp.status}")
     html = await resp.text()
+    # Slice the document to JUST the booking form so we don't pick up header
+    # forms (logout, search, etc.).
+    m_open = _re_mod.search(r'<form\s[^>]*?id="form_3"[^>]*?>', html)
+    m_close = _re_mod.search(r'</form>', html[m_open.end():]) if m_open else None
+    if not (m_open and m_close):
+        raise RuntimeError("Could not isolate <form id=form_3> in template HTML")
+    form_html = html[m_open.end(): m_open.end() + m_close.start()]
+
     hidden: dict[str, str] = {}
-    # Capture every <input type="hidden" name=".." value=".."> verbatim. We
-    # accept value="..." anywhere in the tag (Fabrik inserts other attrs
-    # between name= and value=). For inputs with the same name we keep the
-    # FIRST occurrence — those fields are bookkeeping (csrf, formid…), not
-    # the data fields we'll override below.
     pattern = _re_mod.compile(
         r'<input\s[^>]*?type="hidden"[^>]*?>',
         _re_mod.IGNORECASE,
     )
-    for tag in pattern.findall(html):
+    for tag in pattern.findall(form_html):
         m_name = _re_mod.search(r'name="([^"]+)"', tag)
         m_val = _re_mod.search(r'value="([^"]*)"', tag)
         if not m_name:
             continue
         name = m_name.group(1)
         val = m_val.group(1) if m_val else ""
-        # Only set first occurrence (csrf+routing); duplicates would clobber.
         if name not in hidden:
             hidden[name] = val
     return hidden
@@ -1040,7 +1047,14 @@ async def _fetch_booking_form_hidden(page) -> dict:
 def _booking_form_data(b: dict, hidden: dict) -> list[tuple[str, str]]:
     """Build the multipart form body for a booking POST. Returns a list of
     (name, value) tuples (ordered) since Fabrik's multi-value fields use
-    `name[]` and we may need to send the same name twice."""
+    `name[]` and we may need to send the same name twice.
+
+    NOTE on defaults: when a human fills the form in the browser, Fabrik JS
+    fills numeric fields with 0 and time fields with 00:00 on blur. Our
+    direct POST skips that JS pass, so MySQL receives '' and rejects it
+    with "Incorrect integer/time value". We seed the defaults below for
+    every column we've seen reject NULL.
+    """
     data: list[tuple[str, str]] = []
 
     # Send every hidden field first — except duplicates of fields we override
@@ -1066,6 +1080,11 @@ def _booking_form_data(b: dict, hidden: dict) -> list[tuple[str, str]]:
     data.append(("app_bookings___date_entry", _to_sofi_iso(b.get("date_entry"))))
     if b.get("date_exit"):
         data.append(("app_bookings___date_exit", _to_sofi_iso(b["date_exit"])))
+    # Time fields: MySQL rejects empty strings for TIME columns.
+    data.append(("app_bookings___hour_entry[0]", "00"))
+    data.append(("app_bookings___hour_entry[1]", "00"))
+    data.append(("app_bookings___hour_exit[0]", "00"))
+    data.append(("app_bookings___hour_exit[1]", "00"))
     if b.get("room"):
         data.append(("app_bookings___room", b["room"]))
 
@@ -1077,6 +1096,14 @@ def _booking_form_data(b: dict, hidden: dict) -> list[tuple[str, str]]:
     data.append(("app_bookings___currency[]", "eur"))
     data.append(("app_bookings___status_reserva[]", "sin"))
     data.append(("app_bookings___status_facturacion[]", "sin"))
+
+    # Numeric defaults — Fabrik's JS fills these with 0 before submit in the
+    # browser flow; the direct POST has to do it explicitly or MySQL rejects.
+    data.append(("app_bookings___product", "0"))
+    data.append(("app_bookings___product_quantity", "0"))
+    data.append(("app_bookings___proveedor_mensual", "0"))
+    data.append(("app_bookings___paid", "0"))
+    data.append(("app_bookings___amount_paid", "0.00"))
 
     # Pricing
     data.append(("app_bookings___price", f"{float(b.get('price_total') or 0):.2f}"))
@@ -1091,6 +1118,8 @@ def _booking_form_data(b: dict, hidden: dict) -> list[tuple[str, str]]:
         # the joined id in `operator[]`. Sending the typed name only puts the
         # label in place; the agent can fix it inside Sofi if needed.
         data.append(("app_bookings___operator-auto-complete", b["provider"]))
+        data.append(("app_bookings___operator[]", ""))
+    else:
         data.append(("app_bookings___operator[]", ""))
 
     # Routing must be present so Fabrik dispatches to the save handler. These
@@ -1168,11 +1197,22 @@ async def _push_one_booking_fast(page, b: dict, hidden: dict) -> dict:
     # the template and retry.
     body_excerpt = ""
     try:
-        body_excerpt = (await resp.text())[:600]
+        body_excerpt = (await resp.text())[:2500]  # enough to catch the MySQL error title
     except Exception:
         pass
     err_msg = "Sofi rechazó la reserva"
-    if "token" in body_excerpt.lower() or "session has expired" in body_excerpt.lower():
+    # Try to surface the MySQL field name from the Joomla error page so the
+    # operator can see WHICH column was rejected (e.g. "Incorrect integer
+    # value: '' for column `gestion316_db`.`app_bookings`.`product`").
+    # Pattern is `db`.`table`.`column` — we want the LAST backtick segment.
+    m_col = _re_mod.search(r"for column `[^`]+`\.`[^`]+`\.`([^`]+)`", body_excerpt)
+    if not m_col:
+        # Older MySQL format omits the db; pattern then is `table`.`column`.
+        m_col = _re_mod.search(r"for column `app_bookings`\.`([^`]+)`", body_excerpt)
+    m_val = _re_mod.search(r"Incorrect (\w+) value", body_excerpt)
+    if m_col and m_val:
+        err_msg = f"MySQL rechazó: {m_val.group(1)} inválido para columna `{m_col.group(1)}`"
+    elif "token" in body_excerpt.lower() or "session has expired" in body_excerpt.lower():
         err_msg = "csrf token invalid"
 
     return {
