@@ -235,18 +235,27 @@ export default function PublicPayment() {
 
       {/* Welcome paragraph */}
       <Prose>
-        <p>
-          Here&apos;s the info regarding the next steps &amp; payment to fully confirm your trip.
-          On this page, you can see the invoice for the total of your trip. You can pay with a
-          credit/debit card using the PayPal platform (<em>you do not need a PayPal account to do so</em>), and{" "}
-          {hasDepositOption ? (
-            <>as we are <strong>+60 days before your arrival</strong>, you can pay just the deposit amount
-              (<strong>30% = {fmtEUR(depositAmount)}</strong> of the total {fmtEUR(total)}).</>
-          ) : (
-            <>the full amount of <strong>{fmtEUR(total)}</strong> is required to confirm the trip
-              (we are within 60 days of departure).</>
-          )}
-        </p>
+        {paid > 0 ? (
+          <p>
+            You&apos;ve already paid <strong>{fmtEUR(paid)}</strong> towards this trip — thank you!
+            The remaining <strong>{fmtEUR(remaining)}</strong> can be settled in one go, in
+            smaller instalments, or at the suggested monthly pace below. Whenever you&apos;d like
+            to pay the next instalment, just come back to this same link.
+          </p>
+        ) : (
+          <p>
+            Here&apos;s the info regarding the next steps &amp; payment to fully confirm your trip.
+            On this page, you can see the invoice for the total of your trip. You can pay with a
+            credit/debit card using the PayPal platform (<em>you do not need a PayPal account to do so</em>), and{" "}
+            {hasDepositOption ? (
+              <>as we are <strong>+60 days before your arrival</strong>, you can pay just the deposit amount
+                (<strong>30% = {fmtEUR(depositAmount)}</strong> of the total {fmtEUR(total)}).</>
+            ) : (
+              <>the full amount of <strong>{fmtEUR(total)}</strong> is required to confirm the trip
+                (we are within 60 days of departure).</>
+            )}
+          </p>
+        )}
       </Prose>
 
       {/* Trip details strip */}

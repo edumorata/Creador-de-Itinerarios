@@ -581,6 +581,88 @@ Files touched (iter-18):
 
 - (none — main Sofi integration goal is now complete)
 
+### Iteration 21 (2026-06-30) — Espíritu Travel branding + flexible payments + traveler-info form + email notifications
+- **Branding** of the public payment page (`/pay/:token`) refreshed to
+  match the official Espíritu Travel brand book (PDF + AI logos):
+  - Real logo (`/espiritu/logo-horizontal.png`) extracted from the .ai
+    files, plus 3 derived variants (isotipo, stacked, tag) in
+    `/app/frontend/public/espiritu/`.
+  - Color palette as CSS-defined Tailwind tokens
+    (`espiritu.{deep,sand,sand-deep,terra,terra-hover,olive,magenta}`).
+  - Typography: Kanit (italic-bold display) + Raleway (body) loaded from
+    Google Fonts.
+- **Welcome paragraph** trimmed:
+  - "Approve Proposal" sentence removed.
+  - 3 contextual branches based on state: initial+60d (deposit option),
+    initial+≤60d (full only), and post-payment (paid X / remaining Y).
+- **Flexible payments** — after the deposit is captured the client can
+  pay any custom amount between 10% of the total and the remaining
+  balance, any number of times:
+  - Backend `_compute_payment_options` returns `partial_bounds`
+    `{min_eur, max_eur}` and `monthly_suggested_eur`
+    `{amount_eur, months, days_to_trip}` after a captured payment.
+  - `Payment.kind` Literal now includes `partial`.
+  - `create-order` accepts `kind="partial"` with `amount_eur`,
+    re-validates against live bounds (defense-in-depth).
+  - Frontend `PartialPaymentCard` with editable input + chips
+    ("Monthly · €X" + "Half remaining · €Y"), CTA reflects entered amount
+    and is disabled outside [min, max].
+- **Public 403 bug fix** — backend was using
+  `request.headers["origin"]` which the K8s ingress rewrites to the
+  internal cluster hostname (`*.cluster-5.preview.emergentcf.cloud`,
+  returns 403 externally). Solutions:
+  - `create-link` and `create-order` now accept an explicit
+    `origin` field in the body and prefer it over the request header.
+  - The chosen origin is persisted on the Payment doc as
+    `client_origin` so the post-capture redirect bounces back to the
+    SAME host the client came from.
+  - Frontend sends `window.location.origin` on every call.
+- **Traveler-info form** on the public page (`POST
+  /api/payments/{token}/traveler-info`) — collects full names, passport
+  numbers, dates of birth (1..10 travelers), arrival/departure flight,
+  phone, client email, allergies/notes. Last-submit-wins. Surfaces in
+  the agent's `PaymentLinkModal` ("Datos del cliente" block) with
+  timestamp.
+- **Email notification** — when the client submits the form, the agent
+  who created the trip (`Itinerary.created_by`) receives an HTML+text
+  email via Resend. Implementation:
+  - `/app/backend/email_service.py` — thin async wrapper, fire-and-forget,
+    never raises (returns False if not configured).
+  - Resend domain `espiritutravel.com` is already verified — sender
+    `Espíritu Travel <noreply@espiritutravel.com>` reaches any recipient.
+  - Verified live via `testing_agent_v3_fork`: msg ids
+    `9077140a-…` and `ae76f524-…` reached eduardo@viajadverdad.com.
+
+### P0 remaining: none for this scope.
+
+### P1 backlog (next)
+- Auto-inject the submitted passport/flight info into Sofi when the
+  agent pushes the trip (currently the agent has to copy/paste).
+- Configure PayPal Webhook in PayPal Developer dashboard once production
+  URL is live (`PAYPAL_WEBHOOK_ID` env).
+- Migrate Preview DB → Production DB.
+
+Files touched in iter-21:
+- `backend/models.py` — `Payment.kind` adds `partial`, `Payment.client_origin`,
+  `TravelerInfo` + `TravelerInfoPerson`, `Itinerary.traveler_info`.
+- `backend/server.py` — `_compute_payment_options` rewrite, `create-link`
+  & `create-order` accept `origin`, `submit_traveler_info` endpoint with
+  Resend notification, `_redirect_to_payment_page` uses `client_origin`.
+- `backend/email_service.py` (new).
+- `backend/.env` — RESEND_API_KEY + RESEND_SENDER_EMAIL.
+- `backend/requirements.txt` — `resend==2.32.2`.
+- `frontend/public/index.html` — Google Fonts: Kanit + Raleway.
+- `frontend/tailwind.config.js` — `espiritu.*` color tokens + kanit/raleway.
+- `frontend/src/pages/PublicPayment.jsx` (new, then full rebrand + form +
+  PartialPaymentCard).
+- `frontend/src/pages/builder/PaymentLinkModal.jsx` — added
+  `TravelerInfoBlock` showing what the client submitted.
+- `frontend/src/pages/ItineraryBuilder.jsx` — header "Enlace de pago"
+  button next to "Compartir con".
+- `frontend/src/App.js` — public `/pay/:token` route.
+- `frontend/public/espiritu/` — 4 official PNG logos.
+- `backend/tests/test_flex_payments_and_traveler_info.py` (new, 12 cases).
+
 ### Iteration 20 (2026-06-30) — PayPal payment-link flow (end-to-end)
 - **Backend**: complete in iteration 19 (this fork extended it):
   - `POST /api/itineraries/{id}/payments/create-link` (auth, idempotent on
