@@ -42,8 +42,9 @@ export function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
 
   // Room CRUD on an accommodation. After any change re-derive:
   //  - accommodation aggregate: price = avg(rooms) × nights × num_rooms = Σ(rooms) × nights
-  //  - day matrix carrier:       qty = nights × num_rooms, unit = avg(rooms)
-  // so qty × unit always equals the total. Changing ANY parameter recomputes.
+  // The day timeline does NOT need to be touched — the read-only stay chips
+  // rendered by DayBlock pull live data from `accommodations[]` on every
+  // render.
   const updateRooms = (idx, newRooms) => {
     const accs = [...(itn.accommodations || [])];
     const acc = { ...accs[idx], rooms: newRooms };
@@ -58,29 +59,7 @@ export function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
     acc.price_tax_incl = Math.round(avgIncl * totalQty * 100) / 100;
     acc.price = acc.price_tax_incl;
     accs[idx] = acc;
-
-    const noteSummary = sumIncl
-      ? `${nights} noches × ${numRooms} hab${numRooms === 1 ? "" : "s"} × €${avgIncl.toFixed(2)}/hab/noche`
-      : "";
-    const newDays = (itn.days || []).map((d) => ({
-      ...d,
-      services: (d.services || []).map((s) => {
-        if (s.acc_id !== acc.acc_id) return s;
-        const isCarrier = (s.name || "").startsWith("Check-in") || (s.quantity || 0) > 0;
-        if (isCarrier) {
-          return {
-            ...s,
-            quantity: totalQty,
-            unit_price_tax_excl: avgExcl,
-            unit_price_tax_incl: avgIncl,
-            unit_price: avgIncl,
-            notes: noteSummary,
-          };
-        }
-        return s;
-      }),
-    }));
-    schedSave({ ...itn, accommodations: accs, days: newDays });
+    schedSave({ ...itn, accommodations: accs });
   };
 
   const addRoom = (idx) => {
@@ -129,17 +108,27 @@ export function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
   };
 
   // Spread Check-in/Mid/Check-out service rows across the days.
+  // LEGACY ONLY — kept so `delAndUnspread` can scrub carrier services that
+  // were created by the old auto-spread implementation. New writes never
+  // touch `days[].services[]` because the stay chips are now derived from
+  // `accommodations[]` at render time.
   const unspreadAccommodation = (acc_id) => (itn.days || []).map((d) => ({
     ...d,
     services: (d.services || []).filter((s) => s.acc_id !== acc_id),
   }));
 
+  // Generic patch on a single accommodation. No longer mutates the day
+  // matrix — the read-only chips in DayBlock are re-derived from
+  // `accommodations[]` on every render.
   const updWithSpread = (idx, patch, hotelRecord = null) => {
     const synced = { ...patch };
     if ("price_tax_incl" in synced) synced.price = synced.price_tax_incl;
     const list = [...(itn.accommodations || [])];
     const newAcc = { ...list[idx], ...synced };
     list[idx] = newAcc;
+    // Re-derive aggregate from rooms when we have all the inputs (date_from,
+    // date_to, rooms). Hotel-record fallback covers the "user just picked a
+    // hotel from the catalog" path.
     if (newAcc.name && newAcc.date_from && newAcc.date_to) {
       const nights = Math.max(1, Math.round((new Date(newAcc.date_to) - new Date(newAcc.date_from)) / 86400000));
       const rooms = newAcc.rooms || [];
@@ -166,43 +155,8 @@ export function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
         price_tax_excl: Math.round(avgExcl * totalQty * 100) / 100,
         price: Math.round(avgIncl * totalQty * 100) / 100,
       };
-      const dFrom = new Date(newAcc.date_from);
-      const dTo = new Date(newAcc.date_to);
-      const newDays = (itn.days || []).map((d) => {
-        const filtered = (d.services || []).filter((s) => s.acc_id !== newAcc.acc_id);
-        if (!d.date) return { ...d, services: filtered };
-        const dd = new Date(d.date);
-        if (isNaN(dd) || dd < dFrom || dd > dTo) return { ...d, services: filtered };
-        let label;
-        if (dd.getTime() === dFrom.getTime()) label = `Check-in · ${newAcc.name}`;
-        else if (dd.getTime() === dTo.getTime()) label = `Check-out · ${newAcc.name}`;
-        else label = `Alojamiento · ${newAcc.name}`;
-        const isPriceCarrier = dd.getTime() === dFrom.getTime();
-        return {
-          ...d,
-          services: [
-            ...filtered,
-            {
-              service_id: uid("svc"),
-              acc_id: newAcc.acc_id,
-              experience_id: hotelRecord?.hotel_id || null,
-              type: "alojamiento",
-              name: label,
-              provider_name: hotelRecord ? "Hotel · catálogo" : null,
-              quantity: isPriceCarrier ? totalQty : 0,
-              unit_price_tax_excl: isPriceCarrier ? avgExcl : 0,
-              unit_price_tax_incl: isPriceCarrier ? avgIncl : 0,
-              unit_price: isPriceCarrier ? avgIncl : 0,
-              currency: "EUR",
-              notes: isPriceCarrier ? `${nights} noches × ${numRooms} hab × €${avgIncl}/hab/noche` : "",
-            },
-          ],
-        };
-      });
-      schedSave({ ...itn, accommodations: list, days: newDays });
-    } else {
-      schedSave({ ...itn, accommodations: list });
     }
+    schedSave({ ...itn, accommodations: list });
   };
 
   const pickHotel = (idx, hotel) => {
@@ -228,43 +182,9 @@ export function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
       price_tax_incl: Math.round(avgIncl * totalQty * 100) / 100,
       price: Math.round(avgIncl * totalQty * 100) / 100,
     };
-    const newAcc = accs[idx];
-    const dFrom = new Date(newAcc.date_from);
-    const dTo = new Date(newAcc.date_to);
-    let newDays = itn.days || [];
-    if (newAcc.date_from && newAcc.date_to && !isNaN(dFrom) && !isNaN(dTo) && dTo >= dFrom) {
-      newDays = (itn.days || []).map((d) => {
-        const filtered = (d.services || []).filter((s) => s.acc_id !== newAcc.acc_id);
-        if (!d.date) return { ...d, services: filtered };
-        const dd = new Date(d.date);
-        if (isNaN(dd) || dd < dFrom || dd > dTo) return { ...d, services: filtered };
-        let label;
-        if (dd.getTime() === dFrom.getTime()) label = `Check-in · ${newAcc.name}`;
-        else if (dd.getTime() === dTo.getTime()) label = `Check-out · ${newAcc.name}`;
-        else label = `Alojamiento · ${newAcc.name}`;
-        const isPriceCarrier = dd.getTime() === dFrom.getTime();
-        return {
-          ...d,
-          services: [
-            ...filtered,
-            {
-              service_id: uid("svc"),
-              acc_id: newAcc.acc_id,
-              type: "alojamiento",
-              name: label,
-              provider_name: "Hotel · catálogo",
-              quantity: isPriceCarrier ? totalQty : 0,
-              unit_price_tax_excl: isPriceCarrier ? avgExcl : 0,
-              unit_price_tax_incl: isPriceCarrier ? avgIncl : 0,
-              unit_price: isPriceCarrier ? avgIncl : 0,
-              currency: hotel.currency || "EUR",
-              notes: isPriceCarrier ? `${nights} noches × ${numRooms} hab × €${avgIncl}/hab/noche` : "",
-            },
-          ],
-        };
-      });
-    }
-    schedSave({ ...itn, accommodations: accs, days: newDays });
+    // No day-matrix mutation — DayBlock's stay chips re-derive themselves
+    // from `accommodations[]` on the next render.
+    schedSave({ ...itn, accommodations: accs });
   };
 
   const delAndUnspread = (idx) => {
@@ -344,7 +264,10 @@ export function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
               const roomsTotalPax = rooms.reduce((s, r) => s + (r.pax || 0), 0);
               const usingRooms = rooms.length > 0;
               return (
-                <div key={a.acc_id} className="border-t border-clay-300">
+                <div key={a.acc_id}
+                     id={`acc-row-${a.acc_id}`}
+                     data-testid={`acc-row-${a.acc_id}`}
+                     className="border-t border-clay-300 transition-shadow">
                   <div className="grid grid-cols-[1fr_120px_120px_120px_90px_28px_28px] gap-2 px-3 py-2 items-center text-sm">
                     <HotelAutocomplete
                       value={a.name}

@@ -97,3 +97,64 @@ def test_grossup_matches_excel_export_formula():
         assert t["commission_eur"] == excel_com, (
             f"mismatch at com_pct={com_pct}: ui={t['commission_eur']} excel={excel_com}"
         )
+
+
+
+# ---- Double-count protection for accommodation carrier services ----------
+
+def test_acc_id_services_excluded_from_totals():
+    """Legacy itineraries embed 'carrier services' inside `days[].services[]`
+    with `acc_id` pointing to an entry in `accommodations[]`. Counting both
+    would double-bill the hotel. The fix: skip any service with `acc_id`
+    in the cost summation — accommodations carry the real cost."""
+    itn = {
+        "days": [{
+            "date": "2026-08-01",
+            "services": [
+                # carrier service from old auto-spread (should be SKIPPED)
+                {
+                    "acc_id": "acc_old",
+                    "name": "Check-in · Hotel Eden",
+                    "quantity": 4,  # 2 nights × 2 rooms
+                    "unit_price_tax_incl": 100.0,
+                    "unit_price_tax_excl": 82.64,
+                },
+                # legitimate service (should be COUNTED)
+                {
+                    "name": "Transfer aeropuerto",
+                    "quantity": 1,
+                    "unit_price_tax_incl": 50.0,
+                    "unit_price_tax_excl": 41.32,
+                },
+            ],
+        }],
+        "accommodations": [{
+            "acc_id": "acc_old",
+            "name": "Hotel Eden",
+            "price_tax_incl": 400.0,    # 4 × 100, the real source of truth
+            "price_tax_excl": 330.58,
+        }],
+        "markup_pct": 30,
+        "commission_pct": 0,
+        "paypal_fee": False,
+    }
+    t = _compute_pricing_totals(itn)
+    # 400 (hotel) + 50 (transfer) = 450 — NOT 450 + 400 = 850.
+    assert t["sub_incl"] == 450.0, f"got {t['sub_incl']}"
+    assert t["sub_excl"] == 371.90, f"got {t['sub_excl']}"
+
+
+def test_clean_itinerary_without_carriers_unchanged():
+    """Sanity: new itineraries that DON'T carry acc_id services must still
+    sum normally — the fix should be a no-op for them."""
+    itn = {
+        "days": [{"services": [{
+            "name": "Free walking tour",
+            "quantity": 2,
+            "unit_price_tax_incl": 30.0,
+        }]}],
+        "accommodations": [{"name": "Hotel X", "price_tax_incl": 200.0}],
+        "markup_pct": 30, "commission_pct": 0, "paypal_fee": False,
+    }
+    t = _compute_pricing_totals(itn)
+    assert t["sub_incl"] == 260.0  # 60 + 200

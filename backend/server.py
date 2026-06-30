@@ -2747,6 +2747,12 @@ def _compute_pricing_totals(itn: dict) -> dict:
     sub_incl = 0.0
     for d in itn.get("days") or []:
         for s in d.get("services") or []:
+            # Services tied to an accommodation (`acc_id` set) are derived
+            # read-only chips, NOT separate cost items. The accommodation
+            # itself contributes its price in the loop below, so counting
+            # the carrier service here would double-bill the hotel.
+            if s.get("acc_id"):
+                continue
             qty = float(s.get("quantity") or 0)
             sub_excl += float(s.get("unit_price_tax_excl") or 0) * qty
             sub_incl += float(s.get("unit_price_tax_incl") or s.get("unit_price") or 0) * qty

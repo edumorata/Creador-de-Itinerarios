@@ -185,6 +185,11 @@ export default function ItineraryBuilder() {
     if (!itn) return { sub_excl: 0, sub_incl: 0, sub_with_markup: 0, commission_eur: 0, markup_eur: 0, paypal_eur: 0, pvp: 0, iva: 0 };
     let excl = 0, incl = 0;
     (itn.days || []).forEach((d) => (d.services || []).forEach((s) => {
+      // Services tied to an accommodation (`acc_id` set) are derived
+      // read-only chips, NOT separate cost items. The accommodation
+      // itself contributes its price in the loop below, so counting
+      // the carrier service here would double-bill the hotel.
+      if (s.acc_id) return;
       excl += (s.unit_price_tax_excl || 0) * (s.quantity || 0);
       incl += (s.unit_price_tax_incl || s.unit_price || 0) * (s.quantity || 0);
     }));
@@ -329,6 +334,12 @@ export default function ItineraryBuilder() {
   //   qty = nights × num_rooms, unit_price = avg(rooms.price_per_night)
   // so qty × unit = total. See builder/AccommodationsBlock.jsx for the parallel
   // implementation triggered from the summary panel.
+  // Promote a free-text service row (e.g. "Hotel Eden · 200€/noche") to a
+  // proper Accommodation entry. The original service row is REMOVED from
+  // the day timeline because the stay will now appear automatically as a
+  // read-only chip on every overlapping day (DayBlock derives those chips
+  // from `accommodations[]`). This avoids the old double-counting where
+  // both the service AND the accommodation contributed to the total.
   const upsertAccommodationFromService = (dayId, service, dateFrom, dateTo) => {
     if (!service.name || !dateFrom || !dateTo) return;
     const dFrom = new Date(dateFrom);
@@ -365,51 +376,15 @@ export default function ItineraryBuilder() {
     const totalIncl = Math.round(avgIncl * totalQty * 100) / 100;
     const totalExcl = Math.round(avgExcl * totalQty * 100) / 100;
     const baseName = (service.name || "").replace(/^Check-in · |^Check-out · |^Alojamiento · /, "");
-    const noteSummary = sumIncl
-      ? `${nights} noches × ${numRooms} hab${numRooms === 1 ? "" : "s"} × €${avgIncl.toFixed(2)}/hab/noche`
-      : "";
 
-    const newDays = (itn.days || []).map((d) => {
-      const filtered = (d.services || []).filter((s) =>
-        s.acc_id !== accId || s.service_id === service.service_id
-      );
-      if (!d.date) return { ...d, services: filtered };
-      const dd = new Date(d.date);
-      if (isNaN(dd) || dd < dFrom || dd > dTo) {
-        return { ...d, services: filtered.filter((s) => s.acc_id !== accId) };
-      }
-      const isCheckIn = dd.getTime() === dFrom.getTime();
-      const isCheckOut = dd.getTime() === dTo.getTime();
-      const label = isCheckIn ? `Check-in · ${baseName}`
-                  : isCheckOut ? `Check-out · ${baseName}`
-                  : `Alojamiento · ${baseName}`;
-      const matrixIdx = filtered.findIndex((s) => s.service_id === service.service_id);
-      const carrier = {
-        acc_id: accId,
-        type: "alojamiento",
-        name: label,
-        quantity: isCheckIn ? totalQty : 0,
-        unit_price_tax_excl: isCheckIn ? avgExcl : 0,
-        unit_price_tax_incl: isCheckIn ? avgIncl : 0,
-        unit_price: isCheckIn ? avgIncl : 0,
-        currency: "EUR",
-        notes: isCheckIn ? noteSummary : "",
-      };
-      if (matrixIdx !== -1) {
-        const services = [...filtered];
-        services[matrixIdx] = { ...filtered[matrixIdx], ...carrier };
-        return { ...d, services };
-      }
-      return {
-        ...d,
-        services: [
-          ...filtered,
-          { ...carrier, service_id: uid("svc"),
-            experience_id: service.experience_id || null,
-            provider_name: service.provider_name || null },
-        ],
-      };
-    });
+    // Strip BOTH the source service and any stale carriers for this acc_id
+    // from EVERY day. The new chips will be re-derived from accommodations.
+    const newDays = (itn.days || []).map((d) => ({
+      ...d,
+      services: (d.services || []).filter((s) =>
+        s.service_id !== service.service_id && s.acc_id !== accId
+      ),
+    }));
 
     const accs = [...accsBefore];
     const existingIdx = accs.findIndex((a) => a.acc_id === accId);
