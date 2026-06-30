@@ -2455,11 +2455,18 @@ async def _run_travefy_preview_job(job_id: str, url: str):
         for d in structured.get("days") or []:
             city = _norm_city(d.get("city"))
             items_out = []
-            for a in d.get("activities") or []:
-                name = (a.get("name") or "").strip()
+
+            # Helper that runs an item (activity OR transfer) through the
+            # type classifier + experience matcher and appends a preview
+            # entry. Travefy splits flights / private transfers / trains
+            # into a separate `transfers` array that earlier import
+            # versions completely ignored — this caused internal flights
+            # like "Flight TP 874 LIS → FLR" to silently disappear from
+            # the imported itinerary.
+            async def emit_item(raw_name: str):
+                name = (raw_name or "").strip()
                 if not name or _is_free_day_marker(name):
-                    # Free Day / Departure / Welcome placeholder → leave the day empty.
-                    continue
+                    return
                 kind = _classify_travefy(name)
                 match = None
                 if kind in ("actividad", "transfer", "tren", "vuelo", "entradas"):
@@ -2482,6 +2489,13 @@ async def _run_travefy_preview_job(job_id: str, url: str):
                     "type": match["type"] if match else kind,
                     "match": match,
                 })
+
+            for a in d.get("activities") or []:
+                await emit_item(a.get("name"))
+            # Transfers carry the same shape as activities for our purposes;
+            # they may use "description" rather than "name" so we read both.
+            for t in d.get("transfers") or []:
+                await emit_item(t.get("description") or t.get("name"))
             for h in d.get("hotels") or []:
                 hname = (h.get("name") or "").strip()
                 if not hname:
