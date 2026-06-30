@@ -327,6 +327,31 @@ class Payment(BaseModel):
     # Free-text note the agent leaves alongside the payment (e.g. "Cliente
     # pagó por bizum en lugar de PayPal, marcar como pagado manualmente").
     notes: Optional[str] = None
+    # The browser origin captured at create-order time. Used by the return
+    # handler to bounce the client back to the same host they came from
+    # (preview vs prod vs custom domain), instead of relying on the static
+    # FRONTEND_PUBLIC_URL fallback.
+    client_origin: Optional[str] = None
+
+
+class TravelerInfoPerson(BaseModel):
+    """One row of the public traveler-info form. Optional fields so the
+    client can submit partial info if they don't have everything yet."""
+    full_name: str = ""
+    passport_number: str = ""
+    date_of_birth: str = ""  # ISO yyyy-mm-dd
+
+
+class TravelerInfo(BaseModel):
+    """Itinerary-level booking info submitted by the client through the
+    public payment page. Stored on Itinerary.traveler_info."""
+    people: List[TravelerInfoPerson] = Field(default_factory=list)
+    arrival_flight: str = ""
+    departure_flight: str = ""
+    phone: str = ""
+    notes: str = ""        # allergies, food restrictions, important context
+    submitted_at: Optional[str] = None
+    submitted_by_email: Optional[str] = None   # if the client provides one
 
 
 class Itinerary(BaseModel):
@@ -394,6 +419,10 @@ class Itinerary(BaseModel):
     # public URL (https://itinerarios.viajadverdad.com/pay/{token}).
     payment_token: Optional[str] = None
     payments: List["Payment"] = Field(default_factory=list)
+    # Traveler info submitted by the client through the public /pay/:token
+    # page (passports, flights, allergies). One per itinerary, last submit
+    # wins.
+    traveler_info: Optional[TravelerInfo] = None
     # Collaboration: emails of OTHER agents who have read+write access to this
     # itinerary in addition to `created_by`. Managed via dedicated endpoints
     # (POST/DELETE /itineraries/{id}/share), never via the generic upsert.

@@ -2,8 +2,9 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import {
-  CreditCard, ShieldCheck, Calendar, Users, Sun, CheckCircle2,
+  CreditCard, ShieldCheck, Sun, CheckCircle2,
   AlertCircle, Loader2, MapPin, Plane, FileText,
+  Users, Plus, Trash2, Send,
 } from "lucide-react";
 
 const API_BASE = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -24,30 +25,7 @@ const KIND_DESCRIPTOR = {
   full:    { tag: "Full payment", pct: "100%", helper: "Single full payment to confirm your trip." },
 };
 
-// What we need from the traveler before we can start booking. Kept in sync
-// with `_format_payment_instructions` on the backend.
-const INFO_REQUESTED = [
-  "Full names (as per passport)",
-  "Passport numbers",
-  "Dates of birth",
-  "Arrival / departure flight numbers",
-  "Phone number",
-  "Any allergies, food restrictions or important information",
-];
-
-// Small inline isotype evoking the brand's bird mark — a friendly geometric
-// silhouette in Terracota Cálido. Used in the header next to the wordmark
-// since we don't have the official SVG file yet.
-function BirdMark({ className = "w-9 h-9", color = "#e37e5e" }) {
-  return (
-    <svg viewBox="0 0 64 64" className={className} aria-hidden="true">
-      <path
-        fill={color}
-        d="M48 14c-5 0-9 3-11 7-2-1-5-2-8-2-9 0-16 7-16 16 0 8 6 14 14 15v2c0 1 1 2 2 2h2c1 0 2-1 2-2v-2c10-2 17-10 17-19 0-3-1-6-2-9 2-2 4-4 4-6 0-1-2-2-4-2zm-8 14a3 3 0 110 6 3 3 0 010-6z"
-      />
-    </svg>
-  );
-}
+const emptyPerson = () => ({ full_name: "", passport_number: "", date_of_birth: "" });
 
 export default function PublicPayment() {
   const { token } = useParams();
@@ -57,6 +35,18 @@ export default function PublicPayment() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [submittingKind, setSubmittingKind] = useState(null);
+
+  // Traveler-info form state
+  const [form, setForm] = useState({
+    people: [emptyPerson()],
+    arrival_flight: "",
+    departure_flight: "",
+    phone: "",
+    notes: "",
+    submitted_by_email: "",
+  });
+  const [formSaving, setFormSaving] = useState(false);
+  const [formSavedAt, setFormSavedAt] = useState(null);
 
   const successKind = search.get("success") ? search.get("kind") : null;
   const successAmount = search.get("amount");
@@ -68,6 +58,23 @@ export default function PublicPayment() {
     try {
       const { data: d } = await axios.get(`${API_BASE}/payments/${token}`);
       setData(d);
+      // Pre-populate the form from any previous submission, or size `people`
+      // to match num_travelers (default to 1 row).
+      const prev = d?.traveler_info;
+      if (prev) {
+        setForm({
+          people: prev.people?.length ? prev.people : [emptyPerson()],
+          arrival_flight: prev.arrival_flight || "",
+          departure_flight: prev.departure_flight || "",
+          phone: prev.phone || "",
+          notes: prev.notes || "",
+          submitted_by_email: prev.submitted_by_email || "",
+        });
+        setFormSavedAt(prev.submitted_at || null);
+      } else {
+        const count = Math.max(1, Math.min(10, d?.num_travelers || 1));
+        setForm((f) => ({ ...f, people: Array.from({ length: count }, emptyPerson) }));
+      }
     } catch (e) {
       setError(e?.response?.data?.detail || "We couldn't load this payment link. It may have expired.");
     } finally { setLoading(false); }
@@ -77,7 +84,14 @@ export default function PublicPayment() {
   const onPay = async (kind) => {
     setSubmittingKind(kind);
     try {
-      const { data: res } = await axios.post(`${API_BASE}/payments/${token}/create-order`, { kind });
+      // Send the browser origin so the post-payment redirect (and PayPal's
+      // return_url) bounces back to the EXACT host the client is on — the
+      // ingress can otherwise rewrite the Origin header to an internal
+      // cluster URL that returns 403.
+      const { data: res } = await axios.post(`${API_BASE}/payments/${token}/create-order`, {
+        kind,
+        origin: window.location.origin,
+      });
       if (res?.approval_url) { window.location.href = res.approval_url; return; }
       throw new Error("PayPal didn't return an approval URL");
     } catch (e) {
@@ -86,7 +100,20 @@ export default function PublicPayment() {
     }
   };
 
-  const showInitialBanner = useMemo(() => successKind || cancelled || apiError, [successKind, cancelled, apiError]);
+  const submitForm = async () => {
+    setFormSaving(true);
+    try {
+      const { data: res } = await axios.post(`${API_BASE}/payments/${token}/traveler-info`, form);
+      setFormSavedAt(res.submitted_at);
+    } catch (e) {
+      setError(e?.response?.data?.detail || "Could not save your details. Please try again.");
+    } finally { setFormSaving(false); }
+  };
+
+  const showInitialBanner = useMemo(
+    () => successKind || cancelled || apiError,
+    [successKind, cancelled, apiError]
+  );
   const firstName = useMemo(() => {
     const t = (data?.main_traveler || "").trim();
     return t ? t.split(/\s+/)[0] : "there";
@@ -130,6 +157,23 @@ export default function PublicPayment() {
   const paid = data?.paid_eur || 0;
   const remaining = data?.remaining_eur || 0;
 
+  // Form helpers
+  const setPerson = (idx, field, value) => {
+    setForm((f) => ({
+      ...f,
+      people: f.people.map((p, i) => (i === idx ? { ...p, [field]: value } : p)),
+    }));
+    setFormSavedAt(null);
+  };
+  const addPerson = () =>
+    setForm((f) => (f.people.length >= 10 ? f : { ...f, people: [...f.people, emptyPerson()] }));
+  const removePerson = (idx) =>
+    setForm((f) => (f.people.length <= 1 ? f : { ...f, people: f.people.filter((_, i) => i !== idx) }));
+  const setField = (field, value) => {
+    setForm((f) => ({ ...f, [field]: value }));
+    setFormSavedAt(null);
+  };
+
   return (
     <Shell>
       {/* Return-from-PayPal banners */}
@@ -164,7 +208,7 @@ export default function PublicPayment() {
         </div>
       )}
 
-      {/* HERO — personal greeting + trip name */}
+      {/* HERO */}
       <section className="mb-14">
         <div className="font-raleway text-xs tracking-[0.25em] uppercase text-espiritu-deep/60 mb-3">
           Trip confirmation
@@ -181,7 +225,7 @@ export default function PublicPayment() {
         )}
       </section>
 
-      {/* Welcome paragraph — verbatim from the agent's email template */}
+      {/* Welcome paragraph */}
       <Prose>
         <p>
           Here&apos;s the info regarding the next steps &amp; payment to fully confirm your trip;
@@ -271,7 +315,6 @@ export default function PublicPayment() {
           </div>
         )}
 
-        {/* Secure-checkout trust line */}
         <div className="mt-5 font-raleway text-xs text-espiritu-deep/60 inline-flex items-center gap-2">
           <ShieldCheck size={14}/> Secure checkout via PayPal — credit/debit cards accepted, no PayPal account required.
         </div>
@@ -301,24 +344,120 @@ export default function PublicPayment() {
         </Prose>
       </section>
 
-      {/* Info we need from the traveler */}
-      <section className="mt-14">
-        <SectionTitle icon={<FileText size={14}/>}>What we&apos;ll need from you</SectionTitle>
+      {/* Traveler info form */}
+      <section className="mt-16 mb-10">
+        <SectionTitle icon={<FileText size={14}/>}>Your booking details</SectionTitle>
         <Prose>
           <p>
-            To confirm your services, we&apos;ll need the following information from each traveler so
-            we can start booking everything on your itinerary:
+            To confirm your services we&apos;ll need the following information from each traveler.
+            You can save partial info now and complete it later from the same link.
           </p>
         </Prose>
-        <ul className="mt-5 grid gap-2 sm:grid-cols-2">
-          {INFO_REQUESTED.map((line) => (
-            <li key={line}
-                className="bg-white border border-espiritu-sand-deep px-4 py-3 font-raleway text-sm text-espiritu-deep flex items-start gap-2.5">
-              <span className="inline-block w-1.5 h-1.5 mt-2 bg-espiritu-terra shrink-0" />
-              <span>{line}</span>
-            </li>
-          ))}
-        </ul>
+
+        <div className="mt-6 bg-white border border-espiritu-sand-deep">
+          {/* Travelers list */}
+          <div className="px-5 py-4 border-b border-espiritu-sand-deep flex items-center justify-between">
+            <div className="font-raleway text-[11px] uppercase tracking-[0.25em] text-espiritu-deep/70 inline-flex items-center gap-2">
+              <Users size={13} className="text-espiritu-terra"/> Travelers ({form.people.length})
+            </div>
+            <button
+              onClick={addPerson}
+              data-testid="add-traveler"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-espiritu-sand-deep hover:bg-espiritu-sand text-espiritu-deep font-raleway text-xs">
+              <Plus size={12}/> Add traveler
+            </button>
+          </div>
+
+          <div className="divide-y divide-espiritu-sand-deep">
+            {form.people.map((p, i) => (
+              <div key={i} className="px-5 py-4 grid gap-3 md:grid-cols-[1.5fr_1fr_1fr_auto] items-end"
+                   data-testid={`traveler-row-${i}`}>
+                <Field label={`Traveler ${i + 1} · Full name (as per passport)`}>
+                  <input value={p.full_name} onChange={(e) => setPerson(i, "full_name", e.target.value)}
+                         data-testid={`traveler-name-${i}`}
+                         className="brand-input" placeholder="e.g. Amy Jennings"/>
+                </Field>
+                <Field label="Passport number">
+                  <input value={p.passport_number} onChange={(e) => setPerson(i, "passport_number", e.target.value)}
+                         data-testid={`traveler-passport-${i}`}
+                         className="brand-input" placeholder="AB1234567"/>
+                </Field>
+                <Field label="Date of birth">
+                  <input type="date" value={p.date_of_birth} onChange={(e) => setPerson(i, "date_of_birth", e.target.value)}
+                         data-testid={`traveler-dob-${i}`}
+                         className="brand-input tabular"/>
+                </Field>
+                <div>
+                  {form.people.length > 1 && (
+                    <button onClick={() => removePerson(i)}
+                            data-testid={`remove-traveler-${i}`}
+                            title="Remove traveler"
+                            className="p-2 text-espiritu-deep/60 hover:text-espiritu-magenta">
+                      <Trash2 size={15}/>
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Trip-level fields */}
+          <div className="px-5 py-4 border-t border-espiritu-sand-deep grid gap-3 md:grid-cols-2">
+            <Field label="Arrival flight number">
+              <input value={form.arrival_flight} onChange={(e) => setField("arrival_flight", e.target.value)}
+                     data-testid="arrival-flight"
+                     className="brand-input" placeholder="e.g. IB6234 — landing in Madrid"/>
+            </Field>
+            <Field label="Departure flight number">
+              <input value={form.departure_flight} onChange={(e) => setField("departure_flight", e.target.value)}
+                     data-testid="departure-flight"
+                     className="brand-input" placeholder="e.g. IB6172 — from Barcelona"/>
+            </Field>
+            <Field label="Phone number">
+              <input value={form.phone} onChange={(e) => setField("phone", e.target.value)}
+                     data-testid="phone"
+                     className="brand-input" placeholder="+34 600 000 000"/>
+            </Field>
+            <Field label="Your email (so we can keep in touch)">
+              <input value={form.submitted_by_email} onChange={(e) => setField("submitted_by_email", e.target.value)}
+                     data-testid="email"
+                     type="email" className="brand-input" placeholder="you@example.com"/>
+            </Field>
+            <div className="md:col-span-2">
+              <Field label="Allergies, food restrictions or anything else we should consider">
+                <textarea value={form.notes} onChange={(e) => setField("notes", e.target.value)}
+                          data-testid="notes" rows={4}
+                          className="brand-input resize-y"
+                          placeholder="e.g. lactose intolerant, vegetarian, mobility considerations…"/>
+              </Field>
+            </div>
+          </div>
+
+          {/* Submit footer */}
+          <div className="px-5 py-4 border-t border-espiritu-sand-deep flex items-center justify-between flex-wrap gap-3">
+            <div className="font-raleway text-xs text-espiritu-deep/70">
+              {formSavedAt ? (
+                <span className="inline-flex items-center gap-1.5 text-espiritu-olive">
+                  <CheckCircle2 size={13}/> Saved {fmtDate(formSavedAt)} — you can update any field and submit again.
+                </span>
+              ) : (
+                <span>Save your details whenever you&apos;re ready. You can come back later to update them.</span>
+              )}
+            </div>
+            <button
+              onClick={submitForm}
+              disabled={formSaving}
+              data-testid="submit-traveler-info"
+              className="inline-flex items-center justify-center gap-2 bg-espiritu-deep hover:bg-black disabled:opacity-60 text-white px-5 py-3 font-kanit font-bold tracking-wider uppercase text-sm">
+              {formSaving ? (
+                <><Loader2 size={14} className="animate-spin"/> Saving…</>
+              ) : (
+                <><Send size={14}/> Send my details</>
+              )}
+            </button>
+          </div>
+        </div>
+
         <div className="mt-7 font-kanit italic text-espiritu-deep/80 text-lg">
           Let me know if you have any questions :)
         </div>
@@ -332,19 +471,29 @@ export default function PublicPayment() {
 function Shell({ children }) {
   return (
     <div className="min-h-screen bg-espiritu-sand text-espiritu-deep">
+      <style>{`
+        .brand-input {
+          width: 100%;
+          background: #ffffff;
+          border: 1px solid #ead9b8;
+          color: #121b28;
+          font-family: Raleway, system-ui, sans-serif;
+          font-size: 14px;
+          padding: 10px 12px;
+          outline: none;
+          transition: border-color 120ms ease;
+        }
+        .brand-input:focus { border-color: #e37e5e; }
+        .brand-input::placeholder { color: #121b2870; }
+      `}</style>
       <header className="border-b border-espiritu-sand-deep bg-espiritu-sand">
         <div className="max-w-3xl mx-auto px-6 py-5 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <BirdMark className="w-7 h-7" />
-            <div className="leading-none">
-              <div className="font-kanit italic font-extrabold text-espiritu-deep text-xl tracking-tight">
-                espíritu <span className="font-light not-italic">travel</span>
-              </div>
-              <div className="font-raleway text-[10px] tracking-[0.3em] uppercase text-espiritu-deep/60 mt-1">
-                Feel part of the world
-              </div>
-            </div>
-          </div>
+          <img
+            src="/espiritu/logo-horizontal.png"
+            alt="Espíritu Travel"
+            className="h-10 sm:h-12 w-auto"
+            data-testid="brand-logo"
+          />
           <div className="font-raleway text-[10px] tracking-[0.25em] uppercase text-espiritu-deep/60 inline-flex items-center gap-1.5">
             <ShieldCheck size={12}/> Secure payment
           </div>
@@ -397,5 +546,14 @@ function Total({ label, value, accent, testid }) {
       <div className="font-raleway text-[10px] uppercase tracking-[0.25em] text-espiritu-deep/60">{label}</div>
       <div className={`font-kanit font-extrabold tabular text-2xl mt-1 ${accentCls}`} data-testid={testid}>{value}</div>
     </div>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <label className="block">
+      <span className="font-raleway text-[10px] uppercase tracking-[0.22em] text-espiritu-deep/60 block mb-1.5">{label}</span>
+      {children}
+    </label>
   );
 }

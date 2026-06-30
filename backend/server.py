@@ -1821,6 +1821,7 @@ async def create_payment_link(
         "instructions": instructions,
         "options": options,
         "payments": doc.get("payments") or [],
+        "traveler_info": doc.get("traveler_info"),
     }
 
 
@@ -1840,13 +1841,63 @@ async def get_payment_landing(token: str):
         "end_date": doc.get("end_date"),
         "duration_days": doc.get("duration_days"),
         "num_travelers": doc.get("num_travelers"),
+        "num_adults": doc.get("num_adults"),
+        "num_children": doc.get("num_children"),
         "currency": "EUR",
+        "traveler_info": doc.get("traveler_info"),
         **options,
     }
 
 
+class TravelerInfoPerson(BaseModel):
+    full_name: str = ""
+    passport_number: str = ""
+    date_of_birth: str = ""
+
+
+class TravelerInfoBody(BaseModel):
+    """Public — what the client submits from the /pay/:token form. All
+    fields are optional so partial submissions work; the client can update
+    later by re-submitting."""
+    people: List[TravelerInfoPerson] = []
+    arrival_flight: str = ""
+    departure_flight: str = ""
+    phone: str = ""
+    notes: str = ""
+    submitted_by_email: str = ""
+
+
+@api.post("/payments/{token}/traveler-info")
+async def submit_traveler_info(token: str, payload: TravelerInfoBody):
+    """Public — store the booking info the client filled in (passports,
+    flights, allergies). Last submit wins. Stamps `submitted_at`."""
+    doc = await db.itineraries.find_one({"payment_token": token}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Enlace de pago no válido")
+    traveler_info = {
+        "people": [p.model_dump() for p in payload.people],
+        "arrival_flight": payload.arrival_flight.strip(),
+        "departure_flight": payload.departure_flight.strip(),
+        "phone": payload.phone.strip(),
+        "notes": payload.notes.strip(),
+        "submitted_at": now_iso(),
+        "submitted_by_email": (payload.submitted_by_email or "").strip(),
+    }
+    await db.itineraries.update_one(
+        {"payment_token": token},
+        {"$set": {"traveler_info": traveler_info, "updated_at": now_iso()}},
+    )
+    return {"ok": True, "submitted_at": traveler_info["submitted_at"]}
+
+
 class CreatePayPalOrderBody(BaseModel):
     kind: Literal["deposit", "balance", "full"]
+    # Browser's window.location.origin sent by the public page so the
+    # return / cancel URLs (and the post-capture redirect) bounce back to
+    # the EXACT host the client is on. Falls back to the request's Origin
+    # header (which the ingress can rewrite to an internal cluster URL,
+    # producing 403s post-payment), then to FRONTEND_PUBLIC_URL.
+    origin: Optional[str] = None
 
 
 @api.post("/payments/{token}/create-order")
@@ -1874,9 +1925,9 @@ async def create_payment_order(
         )
 
     payment_id = new_id("pmt")
-    origin = request.headers.get("origin") or _frontend_base_url()
-    return_url = f"{origin.rstrip('/')}/api/payments/{token}/return?payment_id={payment_id}"
-    cancel_url = f"{origin.rstrip('/')}/pay/{token}?cancelled=1"
+    origin = (payload.origin or request.headers.get("origin") or _frontend_base_url()).rstrip("/")
+    return_url = f"{origin}/api/payments/{token}/return?payment_id={payment_id}"
+    cancel_url = f"{origin}/pay/{token}?cancelled=1"
     description = f"{doc.get('name', 'Viaje')} · {chosen['label']}"
     try:
         order = await _paypal_create_order(
@@ -1901,6 +1952,10 @@ async def create_payment_order(
         "paid_at": None,
         "paid_amount": None,
         "paid_currency": None,
+        # Persist the browser origin so the return handler can redirect the
+        # client back to the SAME host they came from — solves the preview/
+        # cluster URL mismatch (#403 after PayPal capture).
+        "client_origin": origin,
     }
     await db.itineraries.update_one(
         {"payment_token": token},
@@ -1925,7 +1980,7 @@ async def payment_return_handler(token: str, payment_id: str, request: Request):
         return _redirect_to_payment_page(token, "?error=invalid")
     payment = next((p for p in (doc.get("payments") or []) if p.get("payment_id") == payment_id), None)
     if not payment or not payment.get("paypal_order_id"):
-        return _redirect_to_payment_page(token, "?error=not_found")
+        return _redirect_to_payment_page(token, "?error=not_found", client_origin=(payment or {}).get("client_origin"))
 
     order_id = payment["paypal_order_id"]
     try:
@@ -1936,7 +1991,7 @@ async def payment_return_handler(token: str, payment_id: str, request: Request):
             capture = await _paypal_get_order(order_id)
         except Exception:
             logger.warning("paypal capture failed and re-poll failed: %s", e.response.text[:200])
-            return _redirect_to_payment_page(token, "?error=capture_failed")
+            return _redirect_to_payment_page(token, "?error=capture_failed", client_origin=payment.get("client_origin"))
 
     paypal_status = (capture.get("status") or "").upper()
     capture_id = None
@@ -1975,15 +2030,17 @@ async def payment_return_handler(token: str, payment_id: str, request: Request):
             "kind": payment.get("kind") or "",
             "amount": f"{paid_amount:.2f}" if paid_amount is not None else "",
         })
-        return _redirect_to_payment_page(token, qs)
-    return _redirect_to_payment_page(token, "?error=not_completed")
+        return _redirect_to_payment_page(token, qs, client_origin=payment.get("client_origin"))
+    return _redirect_to_payment_page(token, "?error=not_completed",
+                                     client_origin=payment.get("client_origin"))
 
 
-def _redirect_to_payment_page(token: str, qs: str = ""):
-    """302 the client back to the public landing page with a status hint
-    so the React app can show a success/failure toast."""
+def _redirect_to_payment_page(token: str, qs: str = "", client_origin: Optional[str] = None):
+    """302 the client back to the public landing page. Prefer the origin
+    that was captured when the order was created (so preview tests stay on
+    preview); fall back to FRONTEND_PUBLIC_URL for production."""
     from fastapi.responses import RedirectResponse
-    base = _frontend_base_url().rstrip("/")
+    base = (client_origin or _frontend_base_url()).rstrip("/")
     return RedirectResponse(url=f"{base}/pay/{token}{qs}", status_code=303)
 
 

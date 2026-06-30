@@ -176,6 +176,9 @@ export function PaymentLinkModal({ open, itineraryId, onClose }) {
                 </div>
               </div>
 
+              {/* Datos del cliente (formulario rellenado en el enlace público) */}
+              <TravelerInfoBlock info={data?.traveler_info} />
+
               {/* Payment history */}
               <div>
                 <div className="smallcaps mb-2">Histórico de pagos ({payments.length})</div>
@@ -243,4 +246,79 @@ Para confirmar las reservas necesito los siguientes datos:
 ${dataLines}
 
 ¡Avísame si tienes cualquier duda!`;
+}
+
+/** Render the booking info the client submitted from the public page.
+ *  Hidden when nothing has been submitted yet. */
+function TravelerInfoBlock({ info }) {
+  if (!info) {
+    return (
+      <div>
+        <div className="smallcaps mb-2">Datos del cliente</div>
+        <div className="text-xs text-clay-500 italic px-3 py-3 border border-dashed border-clay-300">
+          El cliente todavía no ha rellenado el formulario. Aparecerá aquí cuando lo envíe desde el enlace.
+        </div>
+      </div>
+    );
+  }
+  const people = info.people || [];
+  const fmtTs = (iso) => {
+    if (!iso) return "";
+    try { return new Date(iso).toLocaleString("es-ES", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); }
+    catch { return iso; }
+  };
+  return (
+    <div data-testid="agent-traveler-info">
+      <div className="smallcaps mb-2 flex items-center justify-between">
+        <span>Datos del cliente</span>
+        {info.submitted_at && (
+          <span className="text-[10px] text-clay-500 normal-case tracking-normal">
+            Enviado · {fmtTs(info.submitted_at)}
+          </span>
+        )}
+      </div>
+      <div className="border border-clay-300 divide-y divide-clay-200">
+        {people.length > 0 && (
+          <div className="px-3 py-2">
+            <div className="text-[10px] uppercase tracking-widest text-clay-700 mb-1">
+              Viajeros ({people.length})
+            </div>
+            <div className="grid gap-1.5">
+              {people.map((p, i) => (
+                <div key={i} className="grid grid-cols-[1.6fr_1fr_1fr] gap-2 text-sm">
+                  <div className="truncate">{p.full_name || <em className="text-clay-500">sin nombre</em>}</div>
+                  <div className="font-mono text-xs text-clay-700">{p.passport_number || "—"}</div>
+                  <div className="tabular text-xs text-clay-700">{p.date_of_birth || "—"}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        <div className="px-3 py-2 grid grid-cols-2 gap-2 text-sm">
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-clay-700">Vuelo llegada</div>
+            <div>{info.arrival_flight || <span className="text-clay-500">—</span>}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-clay-700">Vuelo salida</div>
+            <div>{info.departure_flight || <span className="text-clay-500">—</span>}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-clay-700">Teléfono</div>
+            <div>{info.phone || <span className="text-clay-500">—</span>}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-clay-700">Email</div>
+            <div className="truncate">{info.submitted_by_email || <span className="text-clay-500">—</span>}</div>
+          </div>
+        </div>
+        {info.notes && (
+          <div className="px-3 py-2 text-sm">
+            <div className="text-[10px] uppercase tracking-widest text-clay-700 mb-0.5">Alergias / Notas</div>
+            <div className="whitespace-pre-wrap">{info.notes}</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
