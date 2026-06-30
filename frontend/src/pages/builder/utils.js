@@ -24,8 +24,11 @@ export const ROOM_PAX_DEFAULT = { single: 1, doble: 2, twin: 2, triple: 3, cuadr
 // Partner labels used by the cost summary + selector.
 // `commission_pct` is the partner's cut; `markup_pct` is the agency's own
 // margin on top of cost. Travel-agent tiers are pre-negotiated rates.
+// `hidden: true` keeps the option out of the dropdown for NEW itineraries
+// while preserving the label + defaults so legacy itineraries that still
+// carry that partner value render correctly.
 export const PARTNER_OPTIONS = [
-  { value: "kimkim",             label: "KimKim",             hint: "+15% sobre coste · markup 33%",  markup_pct: 33,   commission_pct: 15 },
+  { value: "kimkim",             label: "KimKim",             hint: "+15% sobre coste · markup 33%",  markup_pct: 33,   commission_pct: 15,   hidden: true },
   { value: "zicasso",            label: "Zicasso",            hint: "10.5% deductivo · markup 30%",   markup_pct: 30,   commission_pct: 10.5 },
   { value: "responsible_travel", label: "Responsible Travel", hint: "7% deductivo · markup 30%",      markup_pct: 30,   commission_pct: 7 },
   { value: "baboo",              label: "Baboo",              hint: "15% deductivo · markup 30%",     markup_pct: 30,   commission_pct: 15 },

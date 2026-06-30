@@ -185,10 +185,20 @@ export default function ItineraryBuilder() {
       incl += a.price_tax_incl || a.price || 0;
     });
     const mk = (itn.markup_pct || 0) / 100;
-    const com = (itn.commission_pct || 0) / 100;
+    const com_pct = (itn.commission_pct || 0);
     const markup_eur = incl * mk;
     const sub_with_markup = incl + markup_eur;
-    const commission_eur = sub_with_markup * com;
+    // Gross-up: the partner deducts com_pct from the FINAL sale price, so to
+    // net `sub_with_markup` on our side we sell at:
+    //   pvp_pre_paypal = sub_with_markup / (1 - com_pct/100)
+    // which is equivalent to:
+    //   commission_eur = sub_with_markup × com_pct / (100 − com_pct)
+    //   pvp_pre_paypal = sub_with_markup + commission_eur
+    // The older naive `sub_with_markup × com_pct/100` formula made the
+    // agency net less than the desired markup on every Zicasso / RT / Baboo
+    // trip because the partner cut was applied to the final price, not the
+    // markup.
+    const commission_eur = com_pct ? (sub_with_markup * com_pct / (100 - com_pct)) : 0;
     const pvp_pre_paypal = sub_with_markup + commission_eur;
     // PayPal processing fee: +3% on the otherwise final PVP, paid by the
     // client to cover PayPal's cut. Toggleable per itinerary.
@@ -483,12 +493,17 @@ export default function ItineraryBuilder() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {/* "Exportar Excel" + "Vista previa Sofi" are hidden for now — the
+                team works directly off Sofi's UI. Keep the handlers/imports
+                wired so we can re-enable them with a single line if needed.
             <button onClick={exportXlsx} data-testid="export-xlsx" className="inline-flex items-center gap-2 px-4 py-2 border border-clay-300 hover:bg-clay-100 text-sm">
               <FileDown size={14} /> Exportar Excel
             </button>
+            */}
             {/* Sofi push: 3 mutually exclusive states.
                 - Already pushed → green pill linking to Sofi (no buttons, prevents duplicates).
-                - Not pushed yet → "Vista previa" (dry-run) + "Enviar a Sofi" (real). */}
+                - Not pushed yet → "Enviar a Sofi" (real). "Vista previa" hidden per
+                  request — only the real push is exposed. */}
             {itn.sofi_trip_id ? (
               <a
                 href={itn.sofi_url || `https://gestion.viajadverdad.com/trips/details/1/${itn.sofi_trip_id}`}
@@ -500,18 +515,11 @@ export default function ItineraryBuilder() {
                 <ExternalLink size={14} /> En Sofi #{itn.sofi_trip_id}
               </a>
             ) : (
-              <>
-                <button onClick={() => setSofiModal({ open: true, dryRun: true })}
-                        data-testid="sofi-dryrun-btn"
-                        className="inline-flex items-center gap-2 px-4 py-2 border border-clay-300 hover:bg-clay-100 text-sm">
-                  <Eye size={14} /> Vista previa Sofi
-                </button>
-                <button onClick={() => setSofiModal({ open: true, dryRun: false })}
-                        data-testid="sofi-push-btn"
-                        className="inline-flex items-center gap-2 px-4 py-2 bg-pine text-white hover:bg-pine-hover text-sm">
-                  <Send size={14} /> Enviar a Sofi
-                </button>
-              </>
+              <button onClick={() => setSofiModal({ open: true, dryRun: false })}
+                      data-testid="sofi-push-btn"
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-pine text-white hover:bg-pine-hover text-sm">
+                <Send size={14} /> Enviar a Sofi
+              </button>
             )}
           </div>
         </div>

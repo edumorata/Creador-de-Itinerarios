@@ -2619,10 +2619,17 @@ def _compute_pricing_totals(itn: dict) -> dict:
       sub_excl       = Σ services excl + Σ accommodations excl
       sub_incl       = Σ services incl + Σ accommodations incl
       sub_with_markup = sub_incl × (1 + markup_pct/100)
-      commission_eur = sub_with_markup × commission_pct/100
+      commission_eur = sub_with_markup × commission_pct / (100 − commission_pct)   # gross-up
       pvp_pre_paypal = sub_with_markup + commission_eur
       paypal_eur     = paypal_fee ? pvp_pre_paypal × 0.03 : 0
       pvp            = pvp_pre_paypal + paypal_eur
+
+    The gross-up shape (`/ (100 − c)`) is what guarantees that AFTER the
+    partner deducts their %, we still net exactly `sub_with_markup`. With
+    the older naive formula (`sub_with_markup × c/100`) the agency lost a
+    fraction of the desired markup on every Zicasso / Responsible Travel /
+    Baboo trip because their commission is applied to the final price, not
+    to the markup.
     """
     sub_excl = 0.0
     sub_incl = 0.0
@@ -2635,9 +2642,12 @@ def _compute_pricing_totals(itn: dict) -> dict:
         sub_excl += float(a.get("price_tax_excl") or 0)
         sub_incl += float(a.get("price_tax_incl") or a.get("price") or 0)
     mk = float(itn.get("markup_pct") or 0) / 100.0
-    com = float(itn.get("commission_pct") or 0) / 100.0
+    com_pct = float(itn.get("commission_pct") or 0)
     sub_with_markup = sub_incl * (1.0 + mk)
-    commission_eur = sub_with_markup * com
+    # Gross-up: partner takes com_pct of the FINAL sale price, so to net
+    # `sub_with_markup` on our side we have to raise the sale by exactly
+    # the inverse factor.
+    commission_eur = sub_with_markup * com_pct / max(1e-9, (100.0 - com_pct)) if com_pct else 0.0
     pvp_pre_paypal = sub_with_markup + commission_eur
     paypal_eur = pvp_pre_paypal * 0.03 if itn.get("paypal_fee") else 0.0
     pvp = pvp_pre_paypal + paypal_eur

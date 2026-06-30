@@ -302,9 +302,11 @@ export default function Dashboard() {
                   <button onClick={() => duplicate(itn.itinerary_id)} className="p-1.5 hover:bg-clay-200" title="Duplicar como nueva versión" data-testid={`dup-${itn.itinerary_id}`}>
                     <Copy size={14} />
                   </button>
+                  {/* Excel export hidden — the team works directly off Sofi.
                   <button onClick={() => exportXlsx(itn.itinerary_id, itn.name)} className="p-1.5 hover:bg-clay-200" title="Exportar Excel" data-testid={`export-${itn.itinerary_id}`}>
                     <FileDown size={14} />
                   </button>
+                  */}
                   <button
                     onClick={(e) => { e.stopPropagation(); del(itn.itinerary_id); }}
                     className="p-1.5 hover:bg-clay-200 text-destructive"
