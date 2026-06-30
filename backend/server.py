@@ -1774,11 +1774,20 @@ Let me know if you have any questions :)
 """
 
 
+class CreatePaymentLinkBody(BaseModel):
+    # Frontend sends its window.location.origin so the public URL is the
+    # browser-visible host, not the internal cluster URL that some ingress
+    # configurations leak via the Origin header. Optional — falls back to
+    # the request's Origin header, then to FRONTEND_PUBLIC_URL.
+    origin: Optional[str] = None
+
+
 @api.post("/itineraries/{itinerary_id}/payments/create-link")
 async def create_payment_link(
     itinerary_id: str,
     user: Annotated[User, Depends(current_user)],
     request: Request,
+    body: Optional[CreatePaymentLinkBody] = None,
 ):
     """Idempotent: returns the same `payment_token` if one already exists on
     the itinerary (so the agent can resend the link if the client lost it).
@@ -1796,7 +1805,12 @@ async def create_payment_link(
             {"itinerary_id": itinerary_id},
             {"$set": {"payment_token": token, "updated_at": now_iso()}},
         )
-    origin = request.headers.get("origin") or _frontend_base_url()
+    # Resolve the public host in this priority order:
+    #   1. Explicit `origin` sent by the frontend (window.location.origin) —
+    #      most reliable in preview/cluster setups.
+    #   2. Origin header from the request — works in vanilla setups.
+    #   3. FRONTEND_PUBLIC_URL env (production fallback).
+    origin = (body.origin if body else None) or request.headers.get("origin") or _frontend_base_url()
     payment_url = f"{origin.rstrip('/')}/pay/{token}"
     totals = _compute_pricing_totals(doc)
     options = _compute_payment_options(doc, totals)

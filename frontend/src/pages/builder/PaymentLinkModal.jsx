@@ -41,7 +41,13 @@ export function PaymentLinkModal({ open, itineraryId, onClose }) {
   const load = async () => {
     setLoading(true);
     try {
-      const { data: d } = await api.post(`/itineraries/${itineraryId}/payments/create-link`);
+      // Send the browser's visible origin so the public URL points at the
+      // host the agent is actually on (avoids preview/cluster Origin-header
+      // weirdness where the ingress rewrites Origin to an internal hostname).
+      const { data: d } = await api.post(
+        `/itineraries/${itineraryId}/payments/create-link`,
+        { origin: window.location.origin },
+      );
       setData(d);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "No se pudo generar el enlace");
@@ -50,7 +56,7 @@ export function PaymentLinkModal({ open, itineraryId, onClose }) {
     }
   };
 
-  useEffect(() => { if (open) load(); }, [open]);  // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (open) load(); }, [open]);
 
   if (!open) return null;
   const options = data?.options || {};
