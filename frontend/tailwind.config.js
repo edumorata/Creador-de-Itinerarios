@@ -10,6 +10,8 @@ module.exports = {
             fontFamily: {
                 serif: ['"Cormorant Garamond"', 'serif'],
                 sans: ['Manrope', 'system-ui', 'sans-serif'],
+                kanit: ['Kanit', 'system-ui', 'sans-serif'],
+                raleway: ['Raleway', 'system-ui', 'sans-serif'],
             },
             borderRadius: {
                 lg: 'var(--radius)',
@@ -76,6 +78,17 @@ module.exports = {
                     DEFAULT: '#3A5A40',
                     hover: '#2C4430',
                     soft: '#A8BDA8',
+                },
+                // Espíritu Travel brand palette (April 2025 guidelines).
+                // Used exclusively on customer-facing pages (e.g. /pay/:token).
+                espiritu: {
+                    deep: '#121b28',     // Azul Profundo — dark text, dark surfaces
+                    sand: '#f4ebd7',     // Arena Clara  — primary light background
+                    'sand-deep': '#ead9b8', // hover/border step on the sand background
+                    terra: '#e37e5e',    // Terracota Cálido — CTAs, accents
+                    'terra-hover': '#c96749',
+                    olive: '#8a9771',    // Verde Oliva Suave — secondary accent / success
+                    magenta: '#c94277',  // Magenta Vibrante — used very sparingly
                 },
             },
             keyframes: {
