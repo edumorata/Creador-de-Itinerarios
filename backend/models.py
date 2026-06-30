@@ -310,6 +310,12 @@ class Itinerary(BaseModel):
     end_date: Optional[str] = None
     duration_days: int = 0
     num_travelers: int = 1
+    # Breakdown for accurate quoting + Sofi push. `num_adults` defaults to
+    # `num_travelers` for legacy itineraries that pre-date this field; the
+    # builder writes the explicit value on next save.
+    num_adults: Optional[int] = None
+    num_children: int = 0
+    children_ages: List[int] = Field(default_factory=list)
     travelers: List[Traveler] = Field(default_factory=list)
     days: List[ItineraryDay] = Field(default_factory=list)
     accommodations: List[Accommodation] = Field(default_factory=list)
@@ -354,6 +360,10 @@ class Itinerary(BaseModel):
     sofi_trip_id: Optional[int] = None
     sofi_url: Optional[str] = None
     sofi_pushed_at: Optional[str] = None
+    # Collaboration: emails of OTHER agents who have read+write access to this
+    # itinerary in addition to `created_by`. Managed via dedicated endpoints
+    # (POST/DELETE /itineraries/{id}/share), never via the generic upsert.
+    shared_with: List[str] = Field(default_factory=list)
     created_by: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
@@ -366,6 +376,9 @@ class ItineraryUpsert(BaseModel):
     end_date: Optional[str] = None
     duration_days: Optional[int] = None
     num_travelers: Optional[int] = None
+    num_adults: Optional[int] = None
+    num_children: Optional[int] = None
+    children_ages: Optional[List[int]] = None
     travelers: Optional[List[Traveler]] = None
     days: Optional[List[ItineraryDay]] = None
     accommodations: Optional[List[Accommodation]] = None

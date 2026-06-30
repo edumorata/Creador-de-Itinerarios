@@ -1368,8 +1368,9 @@ async def list_itineraries(
     agent: Optional[str] = None,
     traveler: Optional[str] = None,
 ):
-    """Agents see only their own itineraries.
-    Admins see everything and can filter by agent (created_by email) or traveler name.
+    """Agents see their OWN itineraries + any itinerary EXPLICITLY shared with
+    them (via /itineraries/{id}/share). Admins see everything by default; they
+    can narrow down via the `agent` query parameter exposed in the UI filter.
     """
     flt: dict = {}
     if user.role == "admin":
@@ -1378,9 +1379,18 @@ async def list_itineraries(
         if traveler:
             flt["main_traveler"] = {"$regex": traveler, "$options": "i"}
     else:
-        flt["created_by"] = user.email
+        # OR: owner or in shared_with. Mongo cannot mix $or with other
+        # top-level conditions easily, so we merge the traveler filter
+        # into both branches.
+        ownership = [
+            {"created_by": user.email},
+            {"shared_with": user.email},
+        ]
         if traveler:
-            flt["main_traveler"] = {"$regex": traveler, "$options": "i"}
+            traveler_clause = {"main_traveler": {"$regex": traveler, "$options": "i"}}
+            flt["$and"] = [{"$or": ownership}, traveler_clause]
+        else:
+            flt["$or"] = ownership
     items = await db.itineraries.find(flt, {"_id": 0}).sort("updated_at", -1).to_list(500)
     return items
 
@@ -1467,9 +1477,17 @@ async def duplicate_itinerary(
 
 
 def _can_access(itn_doc: dict, user: User) -> bool:
+    """Read+write authorisation gate.
+
+    Returns True if the user is admin, the creator, or has been explicitly
+    shared into the itinerary via `shared_with`. Sharing carries full
+    read+write so colleagues can collaborate live.
+    """
     if user.role == "admin":
         return True
-    return itn_doc.get("created_by") == user.email
+    if itn_doc.get("created_by") == user.email:
+        return True
+    return user.email in (itn_doc.get("shared_with") or [])
 
 
 @api.get("/itineraries/{itinerary_id}", response_model=Itinerary)
@@ -1509,6 +1527,100 @@ async def delete_itinerary(itinerary_id: str, user: Annotated[User, Depends(curr
         raise HTTPException(status_code=403, detail="No tienes acceso a este itinerario")
     await db.itineraries.delete_one({"itinerary_id": itinerary_id})
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Share itinerary with another agent
+# ---------------------------------------------------------------------------
+class ShareItineraryBody(BaseModel):
+    email: EmailStr
+
+
+@api.get("/agents/list")
+async def list_share_targets(user: Annotated[User, Depends(current_user)]):
+    """Lookup list for the "Compartir con" picker. Returns every allowed
+    agent EXCEPT the requesting user, since you cannot share an itinerary
+    with yourself. The user record (display name, role) is included when
+    the agent has already logged in once; otherwise we fall back to the
+    local-part of the email."""
+    allowed = await db.allowed_emails.find({}, {"_id": 0, "email": 1, "role": 1}).to_list(200)
+    # Enrich with display names from `users` collection where available.
+    user_docs = await db.users.find(
+        {"email": {"$in": [a["email"] for a in allowed]}},
+        {"_id": 0, "email": 1, "name": 1},
+    ).to_list(200)
+    name_by_email = {u["email"]: u.get("name") for u in user_docs}
+    out = []
+    for a in allowed:
+        email = a["email"]
+        if email == user.email:
+            continue
+        display = name_by_email.get(email)
+        if not display:
+            local = email.split("@")[0]
+            display = local[:1].upper() + local[1:]
+        out.append({"email": email, "name": display, "role": a.get("role", "agent")})
+    out.sort(key=lambda x: x["name"].lower())
+    return {"agents": out}
+
+
+@api.post("/itineraries/{itinerary_id}/share")
+async def share_itinerary(
+    itinerary_id: str,
+    payload: ShareItineraryBody,
+    user: Annotated[User, Depends(current_user)],
+):
+    """Grant another allowed agent read+write access to the itinerary. The
+    target email MUST be in `allowed_emails` so we never leak access to a
+    random outside address. Idempotent: re-sharing with the same agent is a
+    no-op."""
+    doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Itinerario no encontrado")
+    if not _can_access(doc, user):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este itinerario")
+    target = payload.email.lower().strip()
+    if target == (doc.get("created_by") or "").lower():
+        raise HTTPException(status_code=400, detail="El propietario ya tiene acceso")
+    if target == user.email.lower():
+        raise HTTPException(status_code=400, detail="No puedes compartir contigo mismo")
+    # Whitelist check — only allow sharing with agents already in the system.
+    is_allowed = await db.allowed_emails.find_one({"email": target}, {"_id": 0, "email": 1})
+    if not is_allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{target} no está en la lista de agentes autorizados",
+        )
+    await db.itineraries.update_one(
+        {"itinerary_id": itinerary_id},
+        {"$addToSet": {"shared_with": target}, "$set": {"updated_at": now_iso()}},
+    )
+    doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+    return {"ok": True, "shared_with": doc.get("shared_with") or []}
+
+
+@api.delete("/itineraries/{itinerary_id}/share/{email}")
+async def unshare_itinerary(
+    itinerary_id: str,
+    email: str,
+    user: Annotated[User, Depends(current_user)],
+):
+    """Revoke a previously-granted share. The owner (created_by) can always
+    revoke; a shared collaborator can also remove themselves from the list."""
+    doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Itinerario no encontrado")
+    target = email.lower().strip()
+    is_owner = (doc.get("created_by") or "").lower() == user.email.lower()
+    is_self_revoke = target == user.email.lower()
+    if not (is_owner or is_self_revoke or user.role == "admin"):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este itinerario")
+    await db.itineraries.update_one(
+        {"itinerary_id": itinerary_id},
+        {"$pull": {"shared_with": target}, "$set": {"updated_at": now_iso()}},
+    )
+    doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+    return {"ok": True, "shared_with": doc.get("shared_with") or []}
 
 
 # ---------------------------------------------------------------------------

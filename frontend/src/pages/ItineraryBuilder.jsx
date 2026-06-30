@@ -15,7 +15,8 @@ import { OrientationModal } from "./builder/OrientationModal";
 import { FxConverter } from "./builder/FxConverter";
 import { PartnerSelector } from "./builder/PartnerSelector";
 import { SofiPushModal } from "./builder/SofiPushModal";
-import { RotateCw, ExternalLink, Eye, Send } from "lucide-react";
+import { ShareItineraryModal } from "./builder/ShareItineraryModal";
+import { RotateCw, ExternalLink, Eye, Send, Users, Moon } from "lucide-react";
 
 export default function ItineraryBuilder() {
   const { id } = useParams();
@@ -32,6 +33,9 @@ export default function ItineraryBuilder() {
   // preview mode (fills the form, captures screenshot, no submit) or real-push
   // mode. Closed by default.
   const [sofiModal, setSofiModal] = useState({ open: false, dryRun: true });
+  // Share-with-agent modal state. Owner of the itinerary + any current
+  // collaborator can open it to manage the `shared_with` list.
+  const [shareModalOpen, setShareModalOpen] = useState(false);
 
   // FX rate for EUR↔USD conversion. Starts from the daily ECB feed, but if
   // the itinerary already has a `fx_rate` value saved on the doc, that value
@@ -143,6 +147,8 @@ export default function ItineraryBuilder() {
             name: cur.name, main_traveler: cur.main_traveler,
             start_date: cur.start_date, end_date: cur.end_date,
             duration_days: cur.duration_days, num_travelers: cur.num_travelers,
+            num_adults: cur.num_adults, num_children: cur.num_children,
+            children_ages: cur.children_ages,
             travelers: cur.travelers, days: cur.days, accommodations: cur.accommodations,
             markup_pct: cur.markup_pct, commission_pct: cur.commission_pct,
             partner: cur.partner, paypal_fee: cur.paypal_fee, currency: cur.currency, status: cur.status,
@@ -164,6 +170,8 @@ export default function ItineraryBuilder() {
           name: next.name, main_traveler: next.main_traveler,
           start_date: next.start_date, end_date: next.end_date,
           duration_days: next.duration_days, num_travelers: next.num_travelers,
+          num_adults: next.num_adults, num_children: next.num_children,
+          children_ages: next.children_ages,
           travelers: next.travelers, days: next.days, accommodations: next.accommodations,
           markup_pct: next.markup_pct, commission_pct: next.commission_pct,
           partner: next.partner, paypal_fee: next.paypal_fee, currency: next.currency, status: next.status,
@@ -465,15 +473,15 @@ export default function ItineraryBuilder() {
   };
 
   return (
-    <div className="grid grid-cols-[1fr_380px] min-h-screen">
-      {/* Center: timeline */}
-      <div className="px-8 py-6 border-r border-clay-300">
+    <div className="min-h-screen">
+      {/* Full-width header — name, status, action buttons, trip metadata, notes */}
+      <div className="px-8 pt-6 pb-2">
         <button onClick={() => navigate("/dashboard")} className="inline-flex items-center gap-2 text-xs smallcaps hover:text-terracotta" data-testid="back-dashboard">
           <ArrowLeft size={14} /> Itinerarios
         </button>
 
         <div className="mt-3 flex items-start justify-between gap-4">
-          <div className="flex-1">
+          <div className="flex-1 min-w-0">
             <input
               data-testid="itn-name-input"
               className="font-serif text-4xl leading-none bg-transparent border-b border-clay-200 outline-none w-full px-1 py-1 hover:border-clay-400 focus:border-terracotta transition-colors"
@@ -482,7 +490,7 @@ export default function ItineraryBuilder() {
               onChange={(e) => setField("name", e.target.value)}
               onBlur={flushSave}
             />
-            <div className="smallcaps mt-2 flex items-center gap-3">
+            <div className="smallcaps mt-2 flex items-center gap-3 flex-wrap">
               <span data-testid="save-state">{saving ? "Guardando…" : "Guardado"}</span>
               <span>·</span>
               <select data-testid="itn-status" value={itn.status} onChange={(e) => setField("status", e.target.value)} className="bg-transparent border border-clay-300 px-2 py-0.5 text-[10px] uppercase tracking-widest">
@@ -490,9 +498,28 @@ export default function ItineraryBuilder() {
                 <option value="sold">Vendido</option>
                 <option value="not_sold">No vendido</option>
               </select>
+              {(itn.shared_with || []).length > 0 && (
+                <>
+                  <span>·</span>
+                  <span className="inline-flex items-center gap-1 normal-case tracking-normal text-clay-700"
+                        data-testid="shared-with-summary"
+                        title={(itn.shared_with || []).join(", ")}>
+                    <Users size={12} />
+                    Compartido con {(itn.shared_with || []).map((e) => {
+                      const local = e.split("@")[0];
+                      return local.charAt(0).toUpperCase() + local.slice(1);
+                    }).join(", ")}
+                  </span>
+                </>
+              )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
+            <button onClick={() => setShareModalOpen(true)}
+                    data-testid="share-btn"
+                    className="inline-flex items-center gap-2 px-4 py-2 border border-clay-300 hover:bg-clay-100 text-sm">
+              <Users size={14} /> Compartir con
+            </button>
             {/* "Exportar Excel" + "Vista previa Sofi" are hidden for now — the
                 team works directly off Sofi's UI. Keep the handlers/imports
                 wired so we can re-enable them with a single line if needed.
@@ -500,10 +527,6 @@ export default function ItineraryBuilder() {
               <FileDown size={14} /> Exportar Excel
             </button>
             */}
-            {/* Sofi push: 3 mutually exclusive states.
-                - Already pushed → green pill linking to Sofi (no buttons, prevents duplicates).
-                - Not pushed yet → "Enviar a Sofi" (real). "Vista previa" hidden per
-                  request — only the real push is exposed. */}
             {itn.sofi_trip_id ? (
               <a
                 href={itn.sofi_url || `https://gestion.viajadverdad.com/trips/details/1/${itn.sofi_trip_id}`}
@@ -524,29 +547,95 @@ export default function ItineraryBuilder() {
           </div>
         </div>
 
-        {/* Trip metadata */}
-        <div className="mt-6 grid grid-cols-5 gap-0 border border-clay-300">
-          <Field label="Viajero principal">
-            <input data-testid="main-traveler" className="w-full bg-transparent outline-none text-sm" value={itn.main_traveler || ""} onChange={(e) => setField("main_traveler", e.target.value)} placeholder="Nombre Apellido" />
-          </Field>
-          <Field label="Fuente">
-            <PartnerSelector itn={itn} setField={setField} />
-          </Field>
-          <Field label="Inicio">
-            <input data-testid="start-date" type="date" className="w-full bg-transparent outline-none text-sm tabular" value={itn.start_date || ""} onChange={(e) => setField("start_date", e.target.value)} />
-          </Field>
-          <Field label="Fin">
-            <input data-testid="end-date" type="date" className="w-full bg-transparent outline-none text-sm tabular" value={itn.end_date || ""} onChange={(e) => setField("end_date", e.target.value)} />
-          </Field>
-          <Field label="Pax">
-            <input data-testid="num-travelers" type="number" min={1} className="w-full bg-transparent outline-none text-sm tabular" value={itn.num_travelers || 1} onChange={(e) => setField("num_travelers", parseInt(e.target.value || "1", 10))} />
-          </Field>
+        {/* Trip metadata — Row 1: who/when (5 cols) · Row 2: pax breakdown */}
+        <div className="mt-6 border border-clay-300">
+          <div className="grid grid-cols-5 gap-0">
+            <Field label="Viajero principal">
+              <input data-testid="main-traveler" className="w-full bg-transparent outline-none text-sm" value={itn.main_traveler || ""} onChange={(e) => setField("main_traveler", e.target.value)} placeholder="Nombre Apellido" />
+            </Field>
+            <Field label="Fuente">
+              <PartnerSelector itn={itn} setField={setField} />
+            </Field>
+            <Field label="Inicio">
+              <input data-testid="start-date" type="date" className="w-full bg-transparent outline-none text-sm tabular" value={itn.start_date || ""} onChange={(e) => setField("start_date", e.target.value)} />
+            </Field>
+            <Field label="Fin">
+              <input data-testid="end-date" type="date" className="w-full bg-transparent outline-none text-sm tabular" value={itn.end_date || ""} onChange={(e) => setField("end_date", e.target.value)} />
+            </Field>
+            <Field label="Noches">
+              <div className="flex items-center gap-1.5 text-sm tabular" data-testid="nights-readout">
+                <Moon size={13} className="text-clay-500" />
+                <span>{itn.start_date && itn.end_date ? Math.max(0, daysBetween(itn.start_date, itn.end_date) - 1) : "—"}</span>
+              </div>
+            </Field>
+          </div>
+          {/* Row 2: PAX breakdown — adults / children / ages */}
+          {(() => {
+            const adults = itn.num_adults ?? itn.num_travelers ?? 2;
+            const children = itn.num_children ?? 0;
+            const ages = itn.children_ages || [];
+            const totalPax = adults + children;
+            const setAdults = (v) => {
+              const a = Math.max(1, parseInt(v || "0", 10) || 0);
+              schedSave({ ...itn, num_adults: a, num_travelers: a + children });
+            };
+            const setChildren = (v) => {
+              const c = Math.max(0, parseInt(v || "0", 10) || 0);
+              const nextAges = c <= ages.length
+                ? ages.slice(0, c)
+                : [...ages, ...Array(c - ages.length).fill(0)];
+              schedSave({ ...itn, num_children: c, children_ages: nextAges, num_travelers: adults + c });
+            };
+            const setAge = (idx, v) => {
+              const next = [...ages];
+              next[idx] = Math.max(0, Math.min(17, parseInt(v || "0", 10) || 0));
+              schedSave({ ...itn, children_ages: next });
+            };
+            return (
+              <div className="grid grid-cols-[1fr_1fr_2fr_1fr] gap-0 border-t border-clay-300">
+                <Field label="Adultos">
+                  <input data-testid="num-adults" type="number" min={1} max={20}
+                         className="w-full bg-transparent outline-none text-sm tabular"
+                         value={adults}
+                         onChange={(e) => setAdults(e.target.value)} />
+                </Field>
+                <Field label="Niños">
+                  <input data-testid="num-children" type="number" min={0} max={10}
+                         className="w-full bg-transparent outline-none text-sm tabular"
+                         value={children}
+                         onChange={(e) => setChildren(e.target.value)} />
+                </Field>
+                <Field label={children > 0 ? "Edades niños" : "Edades niños (sin niños)"}>
+                  {children > 0 ? (
+                    <div className="flex items-center gap-2 flex-wrap" data-testid="children-ages-row">
+                      {Array.from({ length: children }).map((_, i) => (
+                        <div key={i} className="flex items-center gap-1">
+                          <span className="text-[10px] uppercase tracking-wider text-clay-500">#{i + 1}</span>
+                          <input
+                            data-testid={`child-age-${i}`}
+                            type="number" min={0} max={17}
+                            value={ages[i] ?? 0}
+                            onChange={(e) => setAge(i, e.target.value)}
+                            className="w-12 bg-transparent border border-clay-300 px-1 py-0.5 text-sm tabular text-center"
+                          />
+                          <span className="text-[10px] text-clay-500">a.</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <span className="text-xs text-clay-500 italic">—</span>
+                  )}
+                </Field>
+                <Field label="Pax (total)">
+                  <div className="text-sm tabular font-medium" data-testid="pax-total">{totalPax}</div>
+                </Field>
+              </div>
+            );
+          })()}
         </div>
 
-        {/* Notes — free-form reminders, client preferences, hand-off context.
-            Saved on debounce like the rest of the fields. Sits at the top of
-            the page so the next agent sees it the moment they open the trip. */}
-        <div className="mt-6 border border-clay-300">
+        {/* Notes — full width */}
+        <div className="mt-4 border border-clay-300">
           <div className="px-4 py-2 bg-clay-100 border-b border-clay-300 smallcaps">
             Notas internas
           </div>
@@ -555,122 +644,128 @@ export default function ItineraryBuilder() {
             value={itn.notes || ""}
             onChange={(e) => setField("notes", e.target.value)}
             placeholder="Recordatorios, preferencias del cliente, condiciones especiales, contexto para otros agentes…"
-            rows={3}
-            className="w-full bg-white outline-none text-sm px-4 py-3 resize-y min-h-[72px] focus:bg-amber-50/30"
+            rows={2}
+            className="w-full bg-white outline-none text-sm px-4 py-3 resize-y min-h-[60px] focus:bg-amber-50/30"
           />
         </div>
-
-        {/* Default room configuration */}
-        <div className="mt-6">
-          <RoomConfigEditor
-            config={itn.room_config || []}
-            numTravelers={itn.num_travelers}
-            onChange={(next) => schedSave({ ...itn, room_config: next })}
-          />
-        </div>
-
-        {/* Days */}
-        <div className="mt-8 space-y-6">
-          {(itn.days || []).map((day, idx) => (
-            <DayBlock
-              key={day.day_id}
-              day={day}
-              idx={idx}
-              active={activeDayId === day.day_id}
-              numTravelers={itn.num_travelers}
-              accommodations={itn.accommodations || []}
-              cityFacets={facets.cities}
-              markup={itn.markup_pct || 0}
-              onActivate={() => setActiveDayId(day.day_id)}
-              onUpdateDay={(patch) => updateDay(day.day_id, patch)}
-              onAddBlank={() => addServiceToDay(day.day_id)}
-              onRemoveDay={() => removeDay(day.day_id)}
-              onUpdateService={(sid, patch) => updateService(day.day_id, sid, patch)}
-              onRemoveService={(sid) => removeService(day.day_id, sid)}
-              onDragStart={onDragStart}
-              onDropService={onDropService}
-              onOrient={openOrient}
-              onAccommodate={(svc, dFrom, dTo) => upsertAccommodationFromService(day.day_id, svc, dFrom, dTo)}
-            />
-          ))}
-          <button onClick={addDay} data-testid="add-day-btn" className="w-full border border-dashed border-clay-300 py-3 text-sm text-clay-700 hover:border-terracotta hover:text-terracotta transition-colors">
-            <Plus size={14} className="inline mr-2"/> Añadir día
-          </button>
-        </div>
-
-        <AccommodationsBlock itn={itn} schedSave={schedSave} markup={itn.markup_pct || 0} onOrient={openOrient} />
       </div>
 
-      {/* Right: search + cost summary */}
-      <aside className="bg-clay-50/60">
-        <div className="sticky top-0 max-h-screen overflow-auto flex flex-col">
-          <div className="border-b border-clay-300 p-5 bg-white">
-            <div className="smallcaps">Coste</div>
-            <div className="grid-borders mt-3">
-              <Row label="Subtotal con IVA">{fmtEUR(totals.sub_incl)}</Row>
-              <Row label={(
-                <div className="flex items-center gap-2">
-                  <span>Markup</span>
-                  <input data-testid="markup-input" type="number" step="0.5" min="0"
-                    value={itn.markup_pct ?? 0}
-                    onChange={(e) => setField("markup_pct", parseFloat(e.target.value || "0"))}
-                    className="w-16 bg-transparent border border-clay-300 px-1 py-0.5 text-sm tabular text-right" />
-                  <span className="text-xs text-clay-700">%</span>
-                </div>
-              )}>+ {fmtEUR(totals.markup_eur)}</Row>
-              <Row label="Subtotal con markup">{fmtEUR(totals.sub_with_markup)}</Row>
-              {(itn.commission_pct ?? 0) > 0 && (
+      {/* Below header: 2-col grid (left = room config + days + accommodations, right = costs panel) */}
+      <div className="grid grid-cols-[1fr_380px]">
+        <div className="px-8 pt-2 pb-6 border-r border-clay-300">
+          {/* Default room configuration */}
+          <div className="mt-2">
+            <RoomConfigEditor
+              config={itn.room_config || []}
+              numTravelers={itn.num_travelers}
+              onChange={(next) => schedSave({ ...itn, room_config: next })}
+            />
+          </div>
+
+          {/* Days */}
+          <div className="mt-8 space-y-6">
+            {(itn.days || []).map((day, idx) => (
+              <DayBlock
+                key={day.day_id}
+                day={day}
+                idx={idx}
+                active={activeDayId === day.day_id}
+                numTravelers={itn.num_travelers}
+                accommodations={itn.accommodations || []}
+                cityFacets={facets.cities}
+                markup={itn.markup_pct || 0}
+                onActivate={() => setActiveDayId(day.day_id)}
+                onUpdateDay={(patch) => updateDay(day.day_id, patch)}
+                onAddBlank={() => addServiceToDay(day.day_id)}
+                onRemoveDay={() => removeDay(day.day_id)}
+                onUpdateService={(sid, patch) => updateService(day.day_id, sid, patch)}
+                onRemoveService={(sid) => removeService(day.day_id, sid)}
+                onDragStart={onDragStart}
+                onDropService={onDropService}
+                onOrient={openOrient}
+                onAccommodate={(svc, dFrom, dTo) => upsertAccommodationFromService(day.day_id, svc, dFrom, dTo)}
+              />
+            ))}
+            <button onClick={addDay} data-testid="add-day-btn" className="w-full border border-dashed border-clay-300 py-3 text-sm text-clay-700 hover:border-terracotta hover:text-terracotta transition-colors">
+              <Plus size={14} className="inline mr-2"/> Añadir día
+            </button>
+          </div>
+
+          <AccommodationsBlock itn={itn} schedSave={schedSave} markup={itn.markup_pct || 0} onOrient={openOrient} />
+        </div>
+
+        {/* Right: cost summary — starts BELOW the header so the trip metadata
+            has the full width on top */}
+        <aside className="bg-clay-50/60">
+          <div className="sticky top-2 max-h-screen overflow-auto flex flex-col">
+            <div className="border-b border-clay-300 p-5 bg-white">
+              <div className="smallcaps">Coste</div>
+              <div className="grid-borders mt-3">
+                <Row label="Subtotal con IVA">{fmtEUR(totals.sub_incl)}</Row>
                 <Row label={(
                   <div className="flex items-center gap-2">
-                    <span>Comisión <span className="text-clay-500 normal-case">({PARTNER_LABELS[itn.partner] || itn.partner})</span></span>
-                    <input
-                      data-testid="commission-input"
-                      type="number" step="0.5" min="0"
-                      value={itn.commission_pct ?? 0}
-                      onChange={(e) => setField("commission_pct", parseFloat(e.target.value || "0"))}
-                      className="w-16 bg-transparent border border-clay-300 px-1 py-0.5 text-sm tabular text-right"
-                    />
+                    <span>Markup</span>
+                    <input data-testid="markup-input" type="number" step="0.5" min="0"
+                      value={itn.markup_pct ?? 0}
+                      onChange={(e) => setField("markup_pct", parseFloat(e.target.value || "0"))}
+                      className="w-16 bg-transparent border border-clay-300 px-1 py-0.5 text-sm tabular text-right" />
                     <span className="text-xs text-clay-700">%</span>
-                    <button
-                      data-testid="auto-partner-defaults"
-                      onClick={applyPartnerDefaults}
-                      className="p-0.5 hover:bg-clay-200 text-clay-600 hover:text-terracotta inline-flex items-center gap-0.5"
-                      title={`Auto: markup ${PARTNER_DEFAULTS[itn.partner]?.markup_pct}% · comisión ${PARTNER_DEFAULTS[itn.partner]?.commission_pct}%`}
-                    >
-                      <RotateCw size={11}/>
-                      <span className="text-[9px] uppercase tracking-wider">Auto</span>
-                    </button>
                   </div>
-                )}>+ {fmtEUR(totals.commission_eur)}</Row>
-              )}
-              {/* PayPal Fee toggle — adds 3% on top of the otherwise final PVP */}
-              <div className="flex items-center justify-between py-2 px-3 text-sm">
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    data-testid="paypal-fee-toggle"
-                    checked={!!itn.paypal_fee}
-                    onChange={(e) => setField("paypal_fee", e.target.checked)}
-                    className="cursor-pointer"
-                  />
-                  <span>PayPal Fee <span className="text-clay-500">(+{PAYPAL_FEE_PCT}%)</span></span>
-                </label>
-                <span className="tabular text-clay-700">{itn.paypal_fee ? `+ ${fmtEUR(totals.paypal_eur)}` : "—"}</span>
+                )}>+ {fmtEUR(totals.markup_eur)}</Row>
+                <Row label="Subtotal con markup">{fmtEUR(totals.sub_with_markup)}</Row>
+                {(itn.commission_pct ?? 0) > 0 && (
+                  <Row label={(
+                    <div className="flex items-center gap-2">
+                      <span>Comisión <span className="text-clay-500 normal-case">({PARTNER_LABELS[itn.partner] || itn.partner})</span></span>
+                      <input
+                        data-testid="commission-input"
+                        type="number" step="0.5" min="0"
+                        value={itn.commission_pct ?? 0}
+                        onChange={(e) => setField("commission_pct", parseFloat(e.target.value || "0"))}
+                        className="w-16 bg-transparent border border-clay-300 px-1 py-0.5 text-sm tabular text-right"
+                      />
+                      <span className="text-xs text-clay-700">%</span>
+                      <button
+                        data-testid="auto-partner-defaults"
+                        onClick={applyPartnerDefaults}
+                        className="p-0.5 hover:bg-clay-200 text-clay-600 hover:text-terracotta inline-flex items-center gap-0.5"
+                        title={`Auto: markup ${PARTNER_DEFAULTS[itn.partner]?.markup_pct}% · comisión ${PARTNER_DEFAULTS[itn.partner]?.commission_pct}%`}
+                      >
+                        <RotateCw size={11}/>
+                        <span className="text-[9px] uppercase tracking-wider">Auto</span>
+                      </button>
+                    </div>
+                  )}>+ {fmtEUR(totals.commission_eur)}</Row>
+                )}
+                {/* PayPal Fee toggle — adds 3% on top of the otherwise final PVP */}
+                <div className="flex items-center justify-between py-2 px-3 text-sm">
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      data-testid="paypal-fee-toggle"
+                      checked={!!itn.paypal_fee}
+                      onChange={(e) => setField("paypal_fee", e.target.checked)}
+                      className="cursor-pointer"
+                    />
+                    <span>PayPal Fee <span className="text-clay-500">(+{PAYPAL_FEE_PCT}%)</span></span>
+                  </label>
+                  <span className="tabular text-clay-700">{itn.paypal_fee ? `+ ${fmtEUR(totals.paypal_eur)}` : "—"}</span>
+                </div>
+                <div className="flex items-center justify-between py-3 bg-clay-900 text-white px-3 mt-2" data-testid="final-price">
+                  <div className="smallcaps text-white/70">PVP final</div>
+                  <div className="font-serif text-2xl tabular">{fmtEUR(totals.pvp)}</div>
+                </div>
+                <FxConverter
+                  fx={fx}
+                  setFx={setFx}
+                  totals={totals}
+                  onPersist={(rate) => setField("fx_rate", rate)}
+                />
               </div>
-              <div className="flex items-center justify-between py-3 bg-clay-900 text-white px-3 mt-2" data-testid="final-price">
-                <div className="smallcaps text-white/70">PVP final</div>
-                <div className="font-serif text-2xl tabular">{fmtEUR(totals.pvp)}</div>
-              </div>
-              <FxConverter
-                fx={fx}
-                setFx={setFx}
-                totals={totals}
-                onPersist={(rate) => setField("fx_rate", rate)}
-              />
             </div>
           </div>
-        </div>
-      </aside>
+        </aside>
+      </div>
 
       {orient && (
         <OrientationModal
@@ -699,6 +794,15 @@ export default function ItineraryBuilder() {
           api.get(`/itineraries/${id}`).then(({ data }) => setItn(data)).catch(() => {});
           toast.success(`Itinerario enviado a Sofi #${res.trip_id}`);
         }}
+      />
+
+      <ShareItineraryModal
+        open={shareModalOpen}
+        itineraryId={id}
+        ownerEmail={itn.created_by}
+        sharedWith={itn.shared_with || []}
+        onClose={() => setShareModalOpen(false)}
+        onChange={(nextShared) => setItn((prev) => prev ? { ...prev, shared_with: nextShared } : prev)}
       />
     </div>
   );

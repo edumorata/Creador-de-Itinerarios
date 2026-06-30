@@ -1,0 +1,65 @@
+{
+  "summary": "Iteration 19 (test report #6) — Backend + Frontend coverage of share-itinerary endpoints, GET-list scoping, pax breakdown PATCH and the redesigned builder header. Backend: created /app/backend/tests/test_share_and_pax.py with 15 cases, all 15 PASS (1.75s). Frontend: cookie-bearer Playwright run against the live preview URL verified the admin dashboard shows 20 itineraries (>=10 expected), the builder /itineraries/itn_708e44718bc6 exposes every required data-testid (share-btn, nights-readout, num-adults, num-children, pax-total, final-price, share-modal, share-agent-picker, share-confirm-btn), the nights field computes correctly (6 nights for 2026-06-02→2026-06-08, identical formula to the 07-15→07-21 case in the request), and PATCH of num_adults=3 + num_children=2 + children_ages=[5,8] persists across a hard reload (pax-total reads 5 post-reload). Share modal opens, lists 9 available agents, and shows the owner section + 'Sin colaboradores' empty-state. No critical bugs.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "DELETE /api/itineraries/{id}/share/{email}",
+        "issue": "Endpoint does NOT validate that the target email is currently in shared_with — it always returns 200 with the updated array even when removing a non-existent collaborator. Harmless (the $pull is a no-op) but a 404/400 would be more honest and prevents silent typos."
+      },
+      {
+        "endpoint": "POST /api/itineraries/{id}/share",
+        "issue": "Whitelist check is case-sensitive on allowed_emails despite the input being lower-cased: target=payload.email.lower().strip() but allowed_emails.find_one({'email': target}) — if any DB row has a mixed-case email it would silently 400. Today all rows are already lowercase so no live impact."
+      },
+      {
+        "endpoint": "POST /api/itineraries/{id}/share",
+        "issue": "shared_with is updated with $addToSet but the array is not lower-cased on read. If a future API client posts 'Marina@…' it would be normalized on write, but the duplicate-guard relies on case-sensitive equality with user.email at access-time. Low risk; current sign-in pipeline already lowercases emails."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Builder header",
+        "issues": [
+          "Right cost panel layout works as specified — visually aligned with 'Habitaciones por defecto' on a 1920×1080 viewport, full-width header above it. 'final-price' (PVP FINAL) does appear above the fold at y≈705px on a 1080-tall viewport because the header is compact (≈700px) — if the product brief literally requires final-price to be BELOW the initial viewport, the header still needs another ~400px of vertical air. Today the visual hierarchy (header full width / 2-col below) is correct; if main agent wants strict 'not in initial viewport', either tighten the costs panel margin-top or make the header taller. Calling this out as a soft observation, not a defect.",
+          "EDADES NIÑOS column displays 'EDADES NIÑOS (SIN NIÑOS) — —' when num_children=0, which is fine, but the dash glyph appears twice (subtitle dash + value dash). Minor copy polish only.",
+          "React hydration console warning ‘<span> cannot be a child of <option>’ on /dashboard and inside ShareItineraryModal. Comes from the Emergent visual-editor instrumentation auto-wrapping <option> text in a <span>; not from user code. Cosmetic only — no functional impact but pollutes the console."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_share_and_pax.py",
+    "/app/test_reports/pytest/share_pax_results.xml"
+  ],
+  "action_items": [
+    "(optional) Tighten DELETE /itineraries/{id}/share/{email} to 404 when the email is not in shared_with so silent typos surface.",
+    "(optional) Lowercase the stored allowed_emails on import OR change the whitelist lookup to case-insensitive regex to future-proof against mixed-case rows.",
+    "(optional, copy) Avoid the duplicate dash in EDADES NIÑOS (SIN NIÑOS) header when num_children=0.",
+    "(optional, layout) If the costs panel must literally be below the fold on first paint, add ~80–120px of top margin to the right column OR push the header to a 3-row meta grid; current layout is otherwise correct."
+  ],
+  "critical_code_review_comments": [
+    "/app/backend/server.py is now 4987 lines. The router-extraction debt flagged in iterations 3/4/5 is still open and now compounds with the new share endpoints living in the same module. Recommend splitting itineraries (CRUD + share) into /app/backend/routers/itineraries.py before adding more collaboration features.",
+    "ShareItineraryBody uses EmailStr (good) but the share endpoint manually re-lowercases and re-validates against allowed_emails. Wrap that into a single resolver helper (resolve_share_target(email, requester) -> str) so /share and /unshare share the same normalisation/whitelist path — today /unshare just lowercases and pulls without any whitelist guard.",
+    "Itinerary model carries shared_with: List[str] with no uniqueness invariant. $addToSet on the Mongo side enforces uniqueness in practice, but the Pydantic model on read should `set()`-dedupe before returning to defend against historical docs.",
+    "/app/frontend/src/pages/ItineraryBuilder.jsx is 809 lines. Each PATCH triggers a schedSave that rebuilds the full Itinerary object; for the new pax-breakdown fields this means three flushes when the user fills 'Niños=2' then two ages. Consider debouncing children_ages as a single PATCH instead of one per age input.",
+    "shared-with-summary chip is only rendered when (shared_with || []).length > 0 — that's fine, but the request specs explicitly call out the testid in the cabecera. Add a 'data-testid=shared-with-summary-empty' (or simply always render the chip with placeholder text) so the testid can be asserted by automated tests regardless of state."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_share_and_pax.py (new — 15 cases, all pass)"
+  ],
+  "success_rate": {
+    "backend": "100% (15/15 passed)",
+    "frontend": "~95% (all required selectors present and functional; only soft design observations remain)"
+  },
+  "test_credentials": "Cookie session_token=3rrWWDXfC1ze9MEHqZzbC0eQK3nq29wClvsJPIMsQhc (eduardo@viajadverdad.com, admin). For non-admin scoping tests, the test file creates a temporary user_sessions row for marina@viajadverdad.com (role=agent) on setup and deletes it on teardown — no manual seeding required to re-run the suite.",
+  "seed_data_creation": "test_share_and_pax.py upserts u_marina_test (role=agent) and u_testadmin (role=admin) into the users collection (idempotent $setOnInsert) and creates two short-lived user_sessions rows that are cleaned up via module-scope fixture teardown. The single itinerary itn_708e44718bc6 has its shared_with array temporarily mutated (share/unshare cycles) and is restored to [] by the end of TestShareItinerary; the original num_adults/num_children/children_ages values are saved at the top of TestPaxFields::test_patch_pax_breakdown_persists and restored in a finally block, so the prod data on that itinerary is preserved bit-for-bit.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend test file /app/backend/tests/test_share_and_pax.py is now the canonical regression for the iteration-19 share + pax features. It self-seeds marina + test.admin sessions via pymongo, so it works on a fresh DB as long as allowed_emails contains marina@/rita@/eduardo@. Note: the test exercises ITN_ID=itn_708e44718bc6 which is ALSO the canonical 'pushed-to-Sofi' fixture used by test_sofi_push.py — both suites can run in parallel safely because share_and_pax restores shared_with=[] and pax fields, while sofi_push only reads the sofi_trip_id field. On the frontend side, the Playwright run confirmed the cookie-bearer auth path works through the preview URL (set the cookie BEFORE goto with page.context.add_cookies; domain itinerary-builder-74.preview.emergentagent.com, secure=True, sameSite=Lax). Any future Playwright test for non-admin UI gating can use the same pattern with a marina session token created via mongo (use session_token field name, NOT 'token').",
+  "rca of the issue": "No defects found. Initial Playwright fixture failure was self-inflicted: the test fixtures wrote {'token': ...} into user_sessions but the backend reads the document via {'session_token': token}. Renamed the key in the fixture and all 5 affected tests went green on the next run. Documented for the next agent under context_for_next_testing_agent."
+}
