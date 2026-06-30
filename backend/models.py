@@ -301,6 +301,34 @@ class Traveler(BaseModel):
     last_name: str = ""
 
 
+class Payment(BaseModel):
+    """One row in `Itinerary.payments[]`. Each row tracks ONE PayPal Order
+    (deposit, balance, or full) through its lifecycle."""
+    payment_id: str = Field(default_factory=lambda: new_id("pmt"))
+    # "deposit" → 30% of total when >60 days to trip; "balance" → remaining
+    # 70% after deposit; "full" → 100% (always allowed, mandatory when
+    # ≤60 days).
+    kind: Literal["deposit", "balance", "full"]
+    amount_eur: float
+    paypal_order_id: Optional[str] = None
+    paypal_capture_id: Optional[str] = None
+    # State machine: pending → created (Order created, awaiting approval)
+    #              → approved (buyer hit Approve) → captured (settled)
+    # Or terminal failures: denied / refunded / cancelled.
+    status: Literal["pending", "created", "approved", "captured",
+                    "denied", "refunded", "cancelled"] = "pending"
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    paid_at: Optional[str] = None
+    # The actual amount PayPal captured (in case of partial captures or
+    # currency conversion). For our use case this should match amount_eur
+    # but we record it verbatim from the webhook payload for the audit log.
+    paid_amount: Optional[float] = None
+    paid_currency: Optional[str] = None
+    # Free-text note the agent leaves alongside the payment (e.g. "Cliente
+    # pagó por bizum en lugar de PayPal, marcar como pagado manualmente").
+    notes: Optional[str] = None
+
+
 class Itinerary(BaseModel):
     model_config = ConfigDict(extra="ignore")
     itinerary_id: str = Field(default_factory=lambda: new_id("itn"))
@@ -360,6 +388,12 @@ class Itinerary(BaseModel):
     sofi_trip_id: Optional[int] = None
     sofi_url: Optional[str] = None
     sofi_pushed_at: Optional[str] = None
+    # Client-side payment link. Generated lazily the first time the agent
+    # clicks "Generar link de pago"; reused thereafter so the same URL
+    # always works for the client. The token is what's embedded in the
+    # public URL (https://itinerarios.viajadverdad.com/pay/{token}).
+    payment_token: Optional[str] = None
+    payments: List["Payment"] = Field(default_factory=list)
     # Collaboration: emails of OTHER agents who have read+write access to this
     # itinerary in addition to `created_by`. Managed via dedicated endpoints
     # (POST/DELETE /itineraries/{id}/share), never via the generic upsert.

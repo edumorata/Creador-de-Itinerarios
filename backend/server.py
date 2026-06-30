@@ -1624,6 +1624,452 @@ async def unshare_itinerary(
 
 
 # ---------------------------------------------------------------------------
+# Client payment links (PayPal Sandbox / Live)
+# ---------------------------------------------------------------------------
+# Rules per agency policy:
+#   • If >60 days until trip start → client may pay a 30% deposit to confirm,
+#     and must pay the remaining 70% no later than 45 days before the trip.
+#   • If ≤60 days until trip start → only the full 100% is allowed (the trip
+#     must be paid in full to confirm).
+# Implementation:
+#   • Agent clicks "Generar link de pago" → backend lazily generates a
+#     URL-safe `payment_token` and persists it on the itinerary.
+#   • Client opens https://<frontend>/pay/{token} (NO authentication).
+#   • Client picks an amount → backend POSTs to PayPal /v2/checkout/orders →
+#     redirects to PayPal's hosted approve page.
+#   • After approval, PayPal redirects to /api/payments/{token}/return,
+#     which CAPTURES the order and marks the row as `captured`.
+#   • PayPal also fires PAYMENT.CAPTURE.COMPLETED to /api/paypal/webhook for
+#     async confirmation; both code paths are idempotent.
+import secrets
+from paypal import (
+    approval_url as _paypal_approval_url,
+    capture_order as _paypal_capture_order,
+    create_order as _paypal_create_order,
+    get_order as _paypal_get_order,
+    verify_webhook as _paypal_verify_webhook,
+)
+
+
+def _days_to_trip(start_date: Optional[str]) -> Optional[int]:
+    """Days from today (UTC) to the trip start. None if no date."""
+    if not start_date:
+        return None
+    try:
+        sd = datetime.fromisoformat(start_date).date()
+    except (TypeError, ValueError):
+        return None
+    today = datetime.now(timezone.utc).date()
+    return (sd - today).days
+
+
+def _compute_payment_options(itn: dict, totals: dict) -> dict:
+    """Return what the client can pay RIGHT NOW given the trip dates and
+    the existing payments. Pure function — does no DB writes."""
+    total_eur = float(totals.get("pvp") or 0)
+    days = _days_to_trip(itn.get("start_date"))
+    payments = itn.get("payments") or []
+    captured = [p for p in payments if p.get("status") == "captured"]
+    paid_eur = sum(float(p.get("paid_amount") or p.get("amount_eur") or 0) for p in captured)
+    has_deposit = any(p.get("kind") == "deposit" and p.get("status") == "captured" for p in captured)
+    has_full = any(p.get("kind") == "full" and p.get("status") == "captured" for p in captured)
+    has_balance = any(p.get("kind") == "balance" and p.get("status") == "captured" for p in captured)
+
+    options = []
+    deposit_amount = round(total_eur * 0.30, 2)
+    balance_amount = round(total_eur - paid_eur, 2)
+    full_amount = round(total_eur, 2)
+
+    fully_paid = has_full or (has_deposit and has_balance) or (paid_eur >= total_eur - 0.01)
+
+    if fully_paid:
+        return {
+            "total_eur": total_eur, "paid_eur": round(paid_eur, 2),
+            "remaining_eur": 0.0, "days_to_trip": days,
+            "fully_paid": True, "options": [],
+        }
+
+    # >60 days → deposit option is available (only if NO deposit captured yet)
+    if days is not None and days > 60 and not has_deposit and not has_full:
+        options.append({
+            "kind": "deposit",
+            "amount_eur": deposit_amount,
+            "label": "Pagar reserva (30%)",
+            "description": "Confirma el viaje. El resto se paga antes de 45 días del inicio del viaje.",
+        })
+    # Balance option — only if a deposit was already captured
+    if has_deposit and not has_balance and balance_amount > 0.01:
+        options.append({
+            "kind": "balance",
+            "amount_eur": balance_amount,
+            "label": "Pagar saldo restante",
+            "description": f"Saldo pendiente del viaje ({balance_amount:.2f}€).",
+        })
+    # Full option is ALWAYS available unless something is already captured
+    if not has_deposit and not has_full and not has_balance:
+        options.append({
+            "kind": "full",
+            "amount_eur": full_amount,
+            "label": "Pagar viaje completo (100%)",
+            "description": (
+                "Pago total del viaje. Obligatorio cuando faltan 60 días o menos para la salida."
+                if days is not None and days <= 60
+                else "Pago total del viaje en un solo plazo."
+            ),
+        })
+
+    return {
+        "total_eur": total_eur,
+        "paid_eur": round(paid_eur, 2),
+        "remaining_eur": round(max(0.0, total_eur - paid_eur), 2),
+        "days_to_trip": days,
+        "fully_paid": False,
+        "options": options,
+    }
+
+
+def _frontend_base_url() -> str:
+    """Where the public /pay/:token page lives. Built from the request's
+    Origin header at runtime; we keep a fallback to the production domain
+    so emails generated server-side never point at preview URLs."""
+    return os.environ.get("FRONTEND_PUBLIC_URL") or "https://itinerarios.viajadverdad.com"
+
+
+def _format_payment_instructions(itn: dict, payment_url: str, options: dict) -> str:
+    """The English email/WhatsApp template the agency sends to clients,
+    pre-filled with the trip name and amounts so the agent can paste it
+    straight into Gmail or WhatsApp."""
+    traveler = (itn.get("main_traveler") or "").strip() or "there"
+    first_name = traveler.split()[0] if traveler else "there"
+    total = options.get("total_eur") or 0.0
+    has_deposit_option = any(o["kind"] == "deposit" for o in options.get("options") or [])
+    deposit = round(total * 0.30, 2)
+    intro_amount = (
+        f"as we are +60 days before your arrival, you can pay just the deposit amount "
+        f"(30% = €{deposit:.2f} of the total €{total:.2f})"
+        if has_deposit_option
+        else f"the full amount of €{total:.2f} is required to confirm the trip "
+             f"(we are within 60 days of departure)"
+    )
+    return f"""Hi {first_name},
+
+Here's the info regarding the next steps & payment to fully confirm your trip; first, you will need to click on the button "Approve Proposal" you will see in the top right corner to confirm the latest version of the itinerary with all details.
+
+Here in this link, you will see the invoice for the total of your trip. You can pay with a credit/debit card using the PayPal platform (you do not need a PayPal account to do so), and {intro_amount}.
+
+{payment_url}
+
+Once the booking is confirmed, our Operations Team will start booking all your services, and around 15 days before your arrival you will receive your travel documents with all the detailed information about your trip (exact directions, meeting points, schedules, guides contacts...), so you will have the detailed information needed about everything you have booked to be followed in those travel documents that are sent online via a mobile App. These travel documents will also include suggestions of places to visit and restaurants for each city you will visit.
+
+To confirm your services, I would also need the following information from all of you so we can start booking all your services:
+
+- Full names (as per passport)
+- Passport Numbers
+- Dates of birth
+- Arrival/departure flight numbers
+- Phone Number
+- Any allergies/food restrictions or important information we should consider
+
+Let me know if you have any questions :)
+"""
+
+
+@api.post("/itineraries/{itinerary_id}/payments/create-link")
+async def create_payment_link(
+    itinerary_id: str,
+    user: Annotated[User, Depends(current_user)],
+    request: Request,
+):
+    """Idempotent: returns the same `payment_token` if one already exists on
+    the itinerary (so the agent can resend the link if the client lost it).
+    The payment options + instruction text are recomputed each call so they
+    always reflect the LATEST trip total and the LATEST days-to-trip."""
+    doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Itinerario no encontrado")
+    if not _can_access(doc, user):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este itinerario")
+    token = doc.get("payment_token")
+    if not token:
+        token = secrets.token_urlsafe(20)
+        await db.itineraries.update_one(
+            {"itinerary_id": itinerary_id},
+            {"$set": {"payment_token": token, "updated_at": now_iso()}},
+        )
+    origin = request.headers.get("origin") or _frontend_base_url()
+    payment_url = f"{origin.rstrip('/')}/pay/{token}"
+    totals = _compute_pricing_totals(doc)
+    options = _compute_payment_options(doc, totals)
+    instructions = _format_payment_instructions(doc, payment_url, options)
+    return {
+        "payment_token": token,
+        "payment_url": payment_url,
+        "instructions": instructions,
+        "options": options,
+        "payments": doc.get("payments") or [],
+    }
+
+
+@api.get("/payments/{token}")
+async def get_payment_landing(token: str):
+    """Public — what the client sees at /pay/:token. No auth, no PII beyond
+    the trip name + dates + amounts (no internal IDs leaked)."""
+    doc = await db.itineraries.find_one({"payment_token": token}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Enlace de pago no válido")
+    totals = _compute_pricing_totals(doc)
+    options = _compute_payment_options(doc, totals)
+    return {
+        "trip_name": doc.get("name"),
+        "main_traveler": doc.get("main_traveler"),
+        "start_date": doc.get("start_date"),
+        "end_date": doc.get("end_date"),
+        "duration_days": doc.get("duration_days"),
+        "num_travelers": doc.get("num_travelers"),
+        "currency": "EUR",
+        **options,
+    }
+
+
+class CreatePayPalOrderBody(BaseModel):
+    kind: Literal["deposit", "balance", "full"]
+
+
+@api.post("/payments/{token}/create-order")
+async def create_payment_order(
+    token: str,
+    payload: CreatePayPalOrderBody,
+    request: Request,
+):
+    """Public — the client picked one of the available payment options;
+    create a PayPal Order and hand back the approve URL the client must
+    visit to finish payment."""
+    doc = await db.itineraries.find_one({"payment_token": token}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Enlace de pago no válido")
+    totals = _compute_pricing_totals(doc)
+    options = _compute_payment_options(doc, totals)
+    # Resolve the chosen option to a concrete amount and reject if it's not
+    # currently allowed (prevents a malicious client from POSTing
+    # `kind=deposit` for a <60-day trip).
+    chosen = next((o for o in options["options"] if o["kind"] == payload.kind), None)
+    if not chosen:
+        raise HTTPException(
+            status_code=400,
+            detail="Esta opción de pago no está disponible para este viaje en este momento",
+        )
+
+    payment_id = new_id("pmt")
+    origin = request.headers.get("origin") or _frontend_base_url()
+    return_url = f"{origin.rstrip('/')}/api/payments/{token}/return?payment_id={payment_id}"
+    cancel_url = f"{origin.rstrip('/')}/pay/{token}?cancelled=1"
+    description = f"{doc.get('name', 'Viaje')} · {chosen['label']}"
+    try:
+        order = await _paypal_create_order(
+            amount_eur=chosen["amount_eur"],
+            return_url=return_url,
+            cancel_url=cancel_url,
+            reference=payment_id,
+            description=description,
+        )
+    except httpx.HTTPStatusError as e:
+        logger.warning("paypal create_order failed: %s", e.response.text[:300])
+        raise HTTPException(status_code=502, detail="No se pudo crear la orden en PayPal")
+
+    payment = {
+        "payment_id": payment_id,
+        "kind": payload.kind,
+        "amount_eur": chosen["amount_eur"],
+        "paypal_order_id": order["id"],
+        "paypal_capture_id": None,
+        "status": "created",
+        "created_at": now_iso(),
+        "paid_at": None,
+        "paid_amount": None,
+        "paid_currency": None,
+    }
+    await db.itineraries.update_one(
+        {"payment_token": token},
+        {"$push": {"payments": payment}, "$set": {"updated_at": now_iso()}},
+    )
+    return {
+        "payment_id": payment_id,
+        "paypal_order_id": order["id"],
+        "approval_url": _paypal_approval_url(order),
+    }
+
+
+@api.get("/payments/{token}/return")
+async def payment_return_handler(token: str, payment_id: str, request: Request):
+    """PayPal redirects here after the client clicks "Approve" on the hosted
+    payment page. We capture the order synchronously (don't trust the
+    redirect — actually call /capture) and then bounce back to the public
+    /pay/{token} page with a success or error flag. Idempotent: capturing
+    an already-captured order returns the same record."""
+    doc = await db.itineraries.find_one({"payment_token": token}, {"_id": 0})
+    if not doc:
+        return _redirect_to_payment_page(token, "?error=invalid")
+    payment = next((p for p in (doc.get("payments") or []) if p.get("payment_id") == payment_id), None)
+    if not payment or not payment.get("paypal_order_id"):
+        return _redirect_to_payment_page(token, "?error=not_found")
+
+    order_id = payment["paypal_order_id"]
+    try:
+        capture = await _paypal_capture_order(order_id)
+    except httpx.HTTPStatusError as e:
+        # Common case: order already captured (422 with details). Re-poll.
+        try:
+            capture = await _paypal_get_order(order_id)
+        except Exception:
+            logger.warning("paypal capture failed and re-poll failed: %s", e.response.text[:200])
+            return _redirect_to_payment_page(token, "?error=capture_failed")
+
+    paypal_status = (capture.get("status") or "").upper()
+    capture_id = None
+    paid_amount = None
+    paid_currency = None
+    pus = capture.get("purchase_units") or []
+    if pus:
+        captures_list = (pus[0].get("payments") or {}).get("captures") or []
+        if captures_list:
+            cap0 = captures_list[0]
+            capture_id = cap0.get("id")
+            amt = cap0.get("amount") or {}
+            paid_amount = float(amt.get("value") or 0) if amt.get("value") else None
+            paid_currency = amt.get("currency_code")
+            if (cap0.get("status") or "").upper() == "COMPLETED":
+                paypal_status = "COMPLETED"
+
+    new_status = ("captured" if paypal_status == "COMPLETED"
+                  else "approved" if paypal_status == "APPROVED"
+                  else "created")
+    await db.itineraries.update_one(
+        {"payment_token": token, "payments.payment_id": payment_id},
+        {"$set": {
+            "payments.$.status": new_status,
+            "payments.$.paypal_capture_id": capture_id,
+            "payments.$.paid_at": now_iso() if new_status == "captured" else None,
+            "payments.$.paid_amount": paid_amount,
+            "payments.$.paid_currency": paid_currency,
+            "updated_at": now_iso(),
+        }},
+    )
+    return _redirect_to_payment_page(token, "?success=1" if new_status == "captured" else "?error=not_completed")
+
+
+def _redirect_to_payment_page(token: str, qs: str = ""):
+    """302 the client back to the public landing page with a status hint
+    so the React app can show a success/failure toast."""
+    from fastapi.responses import RedirectResponse
+    base = _frontend_base_url().rstrip("/")
+    return RedirectResponse(url=f"{base}/pay/{token}{qs}", status_code=303)
+
+
+@api.post("/paypal/webhook")
+async def paypal_webhook(request: Request):
+    """Async confirmation channel. We verify the signature via PayPal's
+    /v1/notifications/verify-webhook-signature endpoint, then mirror the
+    event into the local payment row. Idempotent — duplicate webhook
+    deliveries for the same capture_id are no-ops."""
+    body_bytes = await request.body()
+    try:
+        body_text = body_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return {"ok": False, "reason": "bad-encoding"}
+    # Lowercase headers for case-insensitive lookup
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    ok = await _paypal_verify_webhook(headers, body_text)
+    if not ok:
+        # If PAYPAL_WEBHOOK_ID isn't configured yet (pre-deploy), we
+        # accept the event but mark it as unverified in the audit log
+        # for the operator. Production should ALWAYS have the id set.
+        if not os.environ.get("PAYPAL_WEBHOOK_ID"):
+            logger.warning("paypal webhook unverified (PAYPAL_WEBHOOK_ID not set)")
+        else:
+            return {"ok": False, "reason": "signature"}
+    import json
+    try:
+        event = json.loads(body_text)
+    except Exception:
+        return {"ok": False, "reason": "bad-json"}
+
+    event_type = event.get("event_type") or ""
+    resource = event.get("resource") or {}
+    # The order_id we stored points back to the right itinerary; the
+    # capture event's resource has the parent order id in
+    # supplementary_data.related_ids.order_id (or the resource is itself
+    # an order for ORDER.* events).
+    related = (resource.get("supplementary_data") or {}).get("related_ids") or {}
+    order_id = related.get("order_id") or resource.get("id")
+    capture_id = resource.get("id") if event_type.startswith("PAYMENT.CAPTURE") else None
+    amount = resource.get("amount") or {}
+    paid_amount = float(amount.get("value") or 0) if amount.get("value") else None
+    paid_currency = amount.get("currency_code")
+
+    new_status = None
+    if event_type == "PAYMENT.CAPTURE.COMPLETED":
+        new_status = "captured"
+    elif event_type == "PAYMENT.CAPTURE.DENIED":
+        new_status = "denied"
+    elif event_type == "PAYMENT.CAPTURE.REFUNDED":
+        new_status = "refunded"
+    elif event_type == "PAYMENT.CAPTURE.PENDING":
+        new_status = "approved"
+
+    if new_status and order_id:
+        update = {"payments.$.status": new_status, "updated_at": now_iso()}
+        if new_status == "captured":
+            update["payments.$.paid_at"] = now_iso()
+            update["payments.$.paypal_capture_id"] = capture_id
+            if paid_amount is not None:
+                update["payments.$.paid_amount"] = paid_amount
+            if paid_currency:
+                update["payments.$.paid_currency"] = paid_currency
+        await db.itineraries.update_one(
+            {"payments.paypal_order_id": order_id},
+            {"$set": update},
+        )
+    return {"ok": True}
+
+
+class MarkPaymentBody(BaseModel):
+    status: Literal["captured", "cancelled"]
+    notes: Optional[str] = None
+    paid_amount: Optional[float] = None
+
+
+@api.post("/itineraries/{itinerary_id}/payments/{payment_id}/mark")
+async def mark_payment_manually(
+    itinerary_id: str,
+    payment_id: str,
+    body: MarkPaymentBody,
+    user: Annotated[User, Depends(current_user)],
+):
+    """Escape hatch for the agent: mark a payment as captured/cancelled
+    manually when the client paid through a non-PayPal channel (bizum, bank
+    transfer, etc.) or to cancel an abandoned order."""
+    doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Itinerario no encontrado")
+    if not _can_access(doc, user):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este itinerario")
+    update = {
+        "payments.$.status": body.status,
+        "payments.$.notes": body.notes,
+        "updated_at": now_iso(),
+    }
+    if body.status == "captured":
+        update["payments.$.paid_at"] = now_iso()
+        if body.paid_amount is not None:
+            update["payments.$.paid_amount"] = body.paid_amount
+    await db.itineraries.update_one(
+        {"itinerary_id": itinerary_id, "payments.payment_id": payment_id},
+        {"$set": update},
+    )
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # Excel export (Sofi format)
 # ---------------------------------------------------------------------------
 # The exported workbook MUST follow the Sofi "plantillasoficotizaciones" template
