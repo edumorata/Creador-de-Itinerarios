@@ -94,7 +94,10 @@ export function DayBlock({ day, idx, active, numTravelers, accommodations, cityF
   const editableServices = (day.services || []).filter((s) => !s.acc_id);
 
   return (
-    <div className={`border ${active ? "border-terracotta" : "border-clay-300"} bg-white transition-colors`} data-testid={`day-${idx}`} onClick={onActivate}>
+    <div className={`border ${active ? "border-terracotta" : "border-clay-300"} bg-white transition-colors`}
+         data-testid={`day-${idx}`}
+         data-day-id={day.day_id}
+         onClick={onActivate}>
       <div className="px-4 py-3 bg-clay-100 flex items-center justify-between border-b border-clay-300"
         onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
         onDrop={(e) => { e.preventDefault(); onDropService(day.day_id, -1); setDragOverIdx(null); }}

@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { AlertTriangle, Bed, Plus, Search, Trash2, X } from "lucide-react";
+import { AlertTriangle, Bed, CalendarCheck, Plus, Search, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { ROOM_PAX_DEFAULT, ROOM_TYPES, fmtEUR, nightsBetween, uid } from "./utils";
 import { HotelAutocomplete } from "./HotelAutocomplete";
@@ -298,7 +298,7 @@ export function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
                     <button onClick={() => delAndUnspread(idx)} className="text-clay-500 hover:text-destructive p-1"><Trash2 size={14}/></button>
                   </div>
                   <div className="pl-4 pr-3 pb-3 -mt-1">
-                    <div className="text-[10px] uppercase tracking-[0.2em] text-clay-700 mb-1 flex items-center gap-2">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-clay-700 mb-1 flex items-center gap-2 flex-wrap">
                       Habitaciones
                       <span className="font-semibold text-clay-900" data-testid={`rooms-summary-${idx}`}>
                         {rooms.length} · {roomsTotalPax} pax · {nights || 0} noches
@@ -308,6 +308,68 @@ export function AccommodationsBlock({ itn, schedSave, markup, onOrient }) {
                           (viaje de {itn.num_travelers} pax)
                         </span>
                       )}
+                      {/* "Aplicar estancia" button — confirms the stay
+                          will surface as read-only chips in every day
+                          between date_from and date_to. Clicking scrolls
+                          to the first matching day so the agent sees the
+                          chip and feels reassured nothing duplicated. */}
+                      {(() => {
+                        const matchingDays = (itn.days || []).filter((d) => {
+                          if (!d.date || !a.date_from || !a.date_to) return false;
+                          const dd = new Date(d.date);
+                          return !isNaN(dd) && dd >= new Date(a.date_from) && dd <= new Date(a.date_to);
+                        });
+                        const canApply = matchingDays.length > 0 && a.name;
+                        const dayNumbers = matchingDays
+                          .map((d) => d.day_number)
+                          .filter((n) => n != null);
+                        const label = canApply
+                          ? `Aplicada${dayNumbers.length > 0
+                              ? ` · días ${dayNumbers[0]}${dayNumbers.length > 1 ? `–${dayNumbers[dayNumbers.length - 1]}` : ""}`
+                              : ""}`
+                          : "Aplicar estancia";
+                        return (
+                          <button
+                            type="button"
+                            disabled={!canApply}
+                            data-testid={`apply-stay-${a.acc_id}`}
+                            onClick={() => {
+                              if (!canApply) return;
+                              const firstDay = matchingDays[0];
+                              // Find any element in DayBlock that anchors
+                              // the chip for this acc_id (data-testid is
+                              // stable across renders).
+                              const chip = document.querySelector(
+                                `[data-testid="stay-chip-${a.acc_id}"]`
+                              );
+                              const dayEl = chip
+                                ? chip.closest("[data-day-id]")
+                                : document.querySelector(`[data-day-id="${firstDay.day_id}"]`);
+                              if (dayEl) {
+                                dayEl.scrollIntoView({ behavior: "smooth", block: "center" });
+                              } else if (chip) {
+                                chip.scrollIntoView({ behavior: "smooth", block: "center" });
+                              }
+                              if (chip) {
+                                chip.classList.add("ring-2", "ring-terracotta");
+                                setTimeout(() => chip.classList.remove("ring-2", "ring-terracotta"), 1800);
+                              }
+                              toast.success(
+                                `Estancia aplicada en ${matchingDays.length} día${matchingDays.length === 1 ? "" : "s"}`
+                              );
+                            }}
+                            className={`ml-auto inline-flex items-center gap-1.5 px-2 py-1 border text-[10px] uppercase tracking-[0.2em]
+                              ${canApply
+                                ? "border-pine-soft bg-pine-soft/30 text-pine hover:bg-pine-soft/60 cursor-pointer"
+                                : "border-clay-200 bg-clay-50 text-clay-400 cursor-not-allowed"}`}
+                            title={canApply
+                              ? "Aplica esta estancia en los días que cubre (visible en la línea de tiempo)"
+                              : "Necesita nombre + fechas de entrada y salida"}
+                          >
+                            <CalendarCheck size={12} /> {label}
+                          </button>
+                        );
+                      })()}
                     </div>
                     {rooms.length === 0 ? (
                       <div className="text-xs text-clay-500 italic mb-1">Sin habitaciones — usando precio plano</div>
