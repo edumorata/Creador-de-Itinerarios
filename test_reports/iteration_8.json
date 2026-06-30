@@ -1,0 +1,40 @@
+{
+  "summary": "Verified the 3 new pieces of the flexible-payments + traveler-info iteration. Backend: 12/12 pytest cases green covering (a) initial-state options [deposit+full], (b) post-deposit options [balance+partial with partial_bounds and monthly_suggested_eur], (c) create-order kind=partial happy path + below-min/above-max/no-amount rejections, (d) balance/partial rejection before any captured deposit, (e) traveler-info endpoint (200, persists, last-submit-wins, unknown-token 404, empty created_by still 200). Resend integration confirmed: backend logs show 'sent email to eduardo@viajadverdad.com' with real Resend message ids (e.g. ae76f524-7047-4e80-b087-4eab0889536b) after the UI submission. Frontend public page /pay/k5S26d0v3GASNZthPtBQe5rPeio in post-deposit state shows pay-btn-partial, partial-amount-input pre-initialised to 430,18 €, both chips partial-chip-monthly (430,18 €) & partial-chip-half (1505,64 €) visible and clicking them updates the input. CTA text reads 'PAY 430,18 €' (uppercase via CSS) and is disabled when amount<min or amount>max. Welcome paragraph contains neither 'Approve Proposal' nor 'top right corner'. Full traveler-info form submits in olive 'Saved 30 Jun 2026' chip (text-espiritu-olive class).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "PublicPayment /pay/:token (post-deposit state)",
+        "issues": [
+          "Welcome paragraph copy says 'the full amount of 4301,81 € is required to confirm the trip (we are within 60 days of departure)' AFTER a deposit has been captured even when the trip is 280 days out. Root cause: the paragraph branches on hasDepositOption, which becomes false once the deposit option disappears from the options list. The +60d branch (deposit hint) is correct only in the initial state. Consider a third branch for the post-deposit state ('You've paid X€, remaining Y€'), or just hide the paragraph after any payment is captured. Not strictly part of this iteration's scope but worth flagging."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_flex_payments_and_traveler_info.py",
+    "/app/test_reports/pytest/flex_payments_results.xml"
+  ],
+  "action_items": [
+    "(Optional copy polish) Update the welcome paragraph in /app/frontend/src/pages/PublicPayment.jsx to handle the post-deposit state — currently falls back to the '<=60 days departure' copy which is factually wrong for a 280-day-out trip with a captured deposit."
+  ],
+  "critical_code_review_comments": [
+    "_compute_payment_options correctly returns partial_bounds + monthly_suggested_eur only AFTER a payment is captured. The math is right: min = 10% of total (430.18 for 4301.81), max = remaining (3011.27), monthly = remaining/months_until_trip clamped to [min, remaining]. Verified.",
+    "create-order validates partial.amount_eur against the LIVE partial_bounds, not values the client might cache. Defense-in-depth is solid (returns 400 'La cantidad debe estar entre …' for under/over and 'Indica la cantidad a pagar' for missing). Verified.",
+    "submit_traveler_info correctly fire-and-forgets the email via asyncio.create_task(send_email(...)) — even when Resend would hypothetically fail, the client still gets a 200. Empty created_by skips the email branch entirely. Verified.",
+    "email_service.send_email returns False instead of raising when RESEND_API_KEY is missing — endpoint contract preserved.",
+    "Minor (out of scope): if Resend is rate-limited or returns a 5xx asynchronously, the warning is logged but the client has already seen 'Saved'. Acceptable for v1.",
+    "PartialPaymentCard CTA label is rendered via CSS text-transform:uppercase, so the inner_text is 'PAY 430,18 €'. Frontend test selectors should be case-insensitive when asserting button copy."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_flex_payments_and_traveler_info.py (new — 12 pytest cases)"
+  ],
+  "success_rate": {"backend": "100% (12/12)", "frontend": "100% (all 9 UI assertions passed)"},
+  "test_credentials": "session_token=3rrWWDXfC1ze9MEHqZzbC0eQK3nq29wClvsJPIMsQhc (eduardo@viajadverdad.com). Public /pay/:token requires NO auth.",
+  "seed_data_creation": "Injected a fake captured deposit (status=captured, kind=deposit, amount=1290.54) on itn_a7c0b99824a4 (payment_token=k5S26d0v3GASNZthPtBQe5rPeio) for the post-deposit state tests, then cleaned up via $set payments=[] and $unset traveler_info. Also briefly created a temp itinerary itn_test_empty_creator (payment_token=tok_test_empty_creator) with created_by='' for the defensive test — deleted at teardown. DB is back to its original state.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All three new pieces (Approve Proposal copy removal, flexible payments with partial+monthly suggestion, traveler-info → Resend email) are working end-to-end. Resend uses verified domain espiritutravel.com, sender 'Espíritu Travel <noreply@espiritutravel.com>', and messages reach eduardo@viajadverdad.com (real msg ids confirmed in backend.err.log). Test file /app/backend/tests/test_flex_payments_and_traveler_info.py is idempotent and self-cleans. The only loose end is the cosmetic welcome-paragraph copy after a deposit is captured (see design_issues)."
+}
