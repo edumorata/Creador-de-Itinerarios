@@ -1,0 +1,32 @@
+{
+  "summary": "Full E2E test of PayPal payment-link feature passed. Backend: 11/11 pytest cases green (create-link auth+idempotency+shape, >60 days deposit+full options, <=60 days only full, public landing GET, unknown-token 404s, real PayPal sandbox order creation returning checkoutnow URL, invalid-kind 400, no-cookie 401). Frontend: builder header shows [data-testid=payment-link-btn] right next to [data-testid=share-btn] in the same parent container; clicking opens [data-testid=payment-modal] with payment URL, instructions textarea, and copy-email/whatsapp/url buttons. Public /pay/:token page (loaded in a fresh browser context with NO session cookie) renders trip-name, total-eur (4301,81€), paid-eur (0,00€), remaining-eur (4301,81€), and BOTH pay-btn-deposit and pay-btn-full because the trip is 276 days out. Clicking pay-btn-full redirected to https://www.sandbox.paypal.com/checkoutnow?token=7WL21223UR453325Y as expected.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "PaymentLinkModal", "issues": ["Public link domain comes back as 'itinerary-builder-74.cluster-5.preview.emergentcf.cloud' (resolved from request Origin) while the agent is browsing on 'itinerary-builder-74.preview.emergentagent.com'. Not a functional bug — both hosts route to the same app, and the token is what matters. Worth a note: in production the FRONTEND_PUBLIC_URL fallback ensures emails always use itinerarios.viajadverdad.com. Only the Origin header in preview produces the cluster URL."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_paypal_payment_link.py",
+    "/app/test_reports/pytest/paypal_payment_link.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "_compute_payment_options correctly enforces business rules: deposit only when days>60 AND no captured deposit/full; balance only when deposit captured; full only when nothing captured. Logic is clean.",
+    "create-link is properly idempotent (token persisted on first call, reused on subsequent calls). Verified.",
+    "create-order rejects invalid kinds by re-checking the live options[] (defense-in-depth against a malicious client posting kind=deposit on a <=60-day trip). Good.",
+    "Public endpoints (GET /api/payments/{token}, POST /api/payments/{token}/create-order) correctly require NO auth. /pay/:token route is registered before ProtectedRoute in App.js. Verified.",
+    "Minor: payment_url uses request Origin header which produces a non-canonical preview host in preview env (cluster-5.preview.emergentcf.cloud). Not a bug — emails generated in prod will use FRONTEND_PUBLIC_URL fallback. Just noted for awareness."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_paypal_payment_link.py (new)"
+  ],
+  "success_rate": {"backend": "100% (11/11)", "frontend": "100% (5/5 steps)"},
+  "test_credentials": "session_token=3rrWWDXfC1ze9MEHqZzbC0eQK3nq29wClvsJPIMsQhc (eduardo@viajadverdad.com)",
+  "seed_data_creation": "None. Used existing itineraries itn_a7c0b99824a4 (future, +276 days → both options) and itn_708e44718bc6 (past → only full). The create-order test added a 'created' Payment row to itn_708e44718bc6 — this is intentional and matches expected behavior (PayPal sandbox order, never captured).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "PayPal payment-link flow fully verified end-to-end (backend pytest suite at /app/backend/tests/test_paypal_payment_link.py covers all rules + PayPal sandbox happy-path). Frontend modal and public page work. If extending: writing a webhook capture test would require simulating PayPal's signed webhook payload — PAYPAL_WEBHOOK_ID in backend/.env is currently empty so verify_webhook may be lax. Not in scope for this iteration."
+}

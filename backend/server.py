@@ -1954,7 +1954,15 @@ async def payment_return_handler(token: str, payment_id: str, request: Request):
             "updated_at": now_iso(),
         }},
     )
-    return _redirect_to_payment_page(token, "?success=1" if new_status == "captured" else "?error=not_completed")
+    if new_status == "captured":
+        from urllib.parse import urlencode
+        qs = "?" + urlencode({
+            "success": 1,
+            "kind": payment.get("kind") or "",
+            "amount": f"{paid_amount:.2f}" if paid_amount is not None else "",
+        })
+        return _redirect_to_payment_page(token, qs)
+    return _redirect_to_payment_page(token, "?error=not_completed")
 
 
 def _redirect_to_payment_page(token: str, qs: str = ""):

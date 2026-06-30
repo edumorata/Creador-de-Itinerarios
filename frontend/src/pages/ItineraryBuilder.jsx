@@ -16,7 +16,8 @@ import { FxConverter } from "./builder/FxConverter";
 import { PartnerSelector } from "./builder/PartnerSelector";
 import { SofiPushModal } from "./builder/SofiPushModal";
 import { ShareItineraryModal } from "./builder/ShareItineraryModal";
-import { RotateCw, ExternalLink, Eye, Send, Users, Moon } from "lucide-react";
+import { PaymentLinkModal } from "./builder/PaymentLinkModal";
+import { RotateCw, ExternalLink, Eye, Send, Users, Moon, CreditCard } from "lucide-react";
 
 export default function ItineraryBuilder() {
   const { id } = useParams();
@@ -36,6 +37,9 @@ export default function ItineraryBuilder() {
   // Share-with-agent modal state. Owner of the itinerary + any current
   // collaborator can open it to manage the `shared_with` list.
   const [shareModalOpen, setShareModalOpen] = useState(false);
+  // PayPal payment-link modal state. Lazy-generates / refreshes the public
+  // /pay/:token link the agent sends to the client.
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false);
 
   // FX rate for EUR↔USD conversion. Starts from the daily ECB feed, but if
   // the itinerary already has a `fx_rate` value saved on the doc, that value
@@ -495,6 +499,12 @@ export default function ItineraryBuilder() {
                     className="inline-flex items-center gap-2 px-4 py-2 border border-clay-300 hover:bg-clay-100 text-sm">
               <Users size={14} /> Compartir con
             </button>
+            <button onClick={() => setPaymentModalOpen(true)}
+                    data-testid="payment-link-btn"
+                    title="Generar enlace de pago PayPal para el cliente"
+                    className="inline-flex items-center gap-2 px-4 py-2 border border-clay-300 hover:bg-clay-100 text-sm">
+              <CreditCard size={14} /> Enlace de pago
+            </button>
             {/* "Exportar Excel" + "Vista previa Sofi" are hidden for now — the
                 team works directly off Sofi's UI. Keep the handlers/imports
                 wired so we can re-enable them with a single line if needed.
@@ -778,6 +788,12 @@ export default function ItineraryBuilder() {
         sharedWith={itn.shared_with || []}
         onClose={() => setShareModalOpen(false)}
         onChange={(nextShared) => setItn((prev) => prev ? { ...prev, shared_with: nextShared } : prev)}
+      />
+
+      <PaymentLinkModal
+        open={paymentModalOpen}
+        itineraryId={id}
+        onClose={() => setPaymentModalOpen(false)}
       />
     </div>
   );

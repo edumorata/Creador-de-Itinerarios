@@ -13,6 +13,7 @@ import Hotels from "@/pages/Hotels";
 import AITrainer from "@/pages/AITrainer";
 import AIGenerate from "@/pages/AIGenerate";
 import AdminUsers from "@/pages/AdminUsers";
+import PublicPayment from "@/pages/PublicPayment";
 import "@/App.css";
 
 function HashRouter() {
@@ -21,6 +22,7 @@ function HashRouter() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/pay/:token" element={<PublicPayment />} />
       <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/itineraries/:id" element={<ItineraryBuilder />} />
