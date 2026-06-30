@@ -75,6 +75,7 @@ packaging==26.2
 pandas==3.0.3
 passlib==1.7.4
 pathspec==1.1.1
+pdf2image==1.17.0
 pillow==12.2.0
 platformdirs==4.9.6
 playwright==1.60.0
@@ -94,6 +95,7 @@ Pygments==2.20.0
 PyJWT==2.13.0
 pymongo==4.5.0
 pyparsing==3.3.2
+pypdf==6.14.2
 pytest==9.0.3
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
@@ -105,6 +107,7 @@ referencing==0.37.0
 regex==2026.5.9
 requests==2.34.2
 requests-oauthlib==2.0.0
+resend==2.32.2
 rich==15.0.0
 rpds-py==0.30.0
 rsa==4.9.1

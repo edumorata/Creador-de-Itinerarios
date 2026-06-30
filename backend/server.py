@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import math
 import os
 import re
 import uuid
@@ -1665,48 +1666,50 @@ def _days_to_trip(start_date: Optional[str]) -> Optional[int]:
 
 def _compute_payment_options(itn: dict, totals: dict) -> dict:
     """Return what the client can pay RIGHT NOW given the trip dates and
-    the existing payments. Pure function — does no DB writes."""
+    the existing payments. Pure function — does no DB writes.
+
+    State machine:
+      • no payments + >60d → [deposit 30%, full 100%]
+      • no payments + ≤60d → [full 100%]
+      • some paid, remaining > 0 → [balance (rest), partial (custom)]
+      • fully paid → []
+
+    Partial payment rules:
+      • min = 10% of the total (configurable per trip later if needed)
+      • max = remaining
+      • capped to remaining if min > remaining
+    """
     total_eur = float(totals.get("pvp") or 0)
     days = _days_to_trip(itn.get("start_date"))
     payments = itn.get("payments") or []
     captured = [p for p in payments if p.get("status") == "captured"]
     paid_eur = sum(float(p.get("paid_amount") or p.get("amount_eur") or 0) for p in captured)
-    has_deposit = any(p.get("kind") == "deposit" and p.get("status") == "captured" for p in captured)
-    has_full = any(p.get("kind") == "full" and p.get("status") == "captured" for p in captured)
-    has_balance = any(p.get("kind") == "balance" and p.get("status") == "captured" for p in captured)
+    remaining = round(max(0.0, total_eur - paid_eur), 2)
 
-    options = []
     deposit_amount = round(total_eur * 0.30, 2)
-    balance_amount = round(total_eur - paid_eur, 2)
     full_amount = round(total_eur, 2)
+    min_partial = round(total_eur * 0.10, 2)
 
-    fully_paid = has_full or (has_deposit and has_balance) or (paid_eur >= total_eur - 0.01)
+    fully_paid = remaining < 0.01
 
-    if fully_paid:
+    if fully_paid or total_eur < 0.01:
         return {
             "total_eur": total_eur, "paid_eur": round(paid_eur, 2),
             "remaining_eur": 0.0, "days_to_trip": days,
             "fully_paid": True, "options": [],
+            "partial_bounds": None, "monthly_suggested_eur": None,
         }
 
-    # >60 days → deposit option is available (only if NO deposit captured yet)
-    if days is not None and days > 60 and not has_deposit and not has_full:
-        options.append({
-            "kind": "deposit",
-            "amount_eur": deposit_amount,
-            "label": "Pagar reserva (30%)",
-            "description": "Confirma el viaje. El resto se paga antes de 45 días del inicio del viaje.",
-        })
-    # Balance option — only if a deposit was already captured
-    if has_deposit and not has_balance and balance_amount > 0.01:
-        options.append({
-            "kind": "balance",
-            "amount_eur": balance_amount,
-            "label": "Pagar saldo restante",
-            "description": f"Saldo pendiente del viaje ({balance_amount:.2f}€).",
-        })
-    # Full option is ALWAYS available unless something is already captured
-    if not has_deposit and not has_full and not has_balance:
+    options: List[dict] = []
+    # Initial state — nothing captured yet.
+    if paid_eur < 0.01:
+        if days is not None and days > 60:
+            options.append({
+                "kind": "deposit",
+                "amount_eur": deposit_amount,
+                "label": "Pagar reserva (30%)",
+                "description": "Confirma el viaje. El resto se paga antes de 45 días del inicio del viaje.",
+            })
         options.append({
             "kind": "full",
             "amount_eur": full_amount,
@@ -1717,14 +1720,57 @@ def _compute_payment_options(itn: dict, totals: dict) -> dict:
                 else "Pago total del viaje en un solo plazo."
             ),
         })
+        partial_bounds = None  # not offered before any payment
+        monthly = None
+    else:
+        # Some captured already → offer the full remaining as 'balance', and
+        # a custom partial payment for clients who want to chip away.
+        options.append({
+            "kind": "balance",
+            "amount_eur": remaining,
+            "label": "Pagar saldo restante",
+            "description": f"Importe pendiente del viaje ({remaining:.2f} €).",
+        })
+        # Custom partial — only offered if there's room above the 10% floor.
+        partial_min = min(min_partial, remaining)
+        if remaining > partial_min + 0.01 or remaining >= min_partial - 0.01:
+            options.append({
+                "kind": "partial",
+                "amount_eur": None,  # client chooses
+                "label": "Otra cantidad",
+                "description": (
+                    f"Paga cualquier cantidad entre {partial_min:.2f} € y {remaining:.2f} €. "
+                    "Puedes volver al enlace cuantas veces quieras hasta liquidar el viaje."
+                ),
+            })
+        partial_bounds = {
+            "min_eur": round(partial_min, 2),
+            "max_eur": remaining,
+        }
+        # Suggested monthly payment — remaining ÷ months until trip
+        # (rounded up), or remaining if departure is imminent.
+        monthly = None
+        if days is not None and days > 0:
+            months = max(1, math.ceil(days / 30))
+            suggested = round(remaining / months, 2)
+            # Floor at the partial minimum so the chip is a valid payment.
+            suggested = max(suggested, partial_bounds["min_eur"])
+            suggested = min(suggested, remaining)
+            monthly = {
+                "amount_eur": suggested,
+                "months": months,
+                "days_to_trip": days,
+            }
 
     return {
         "total_eur": total_eur,
         "paid_eur": round(paid_eur, 2),
-        "remaining_eur": round(max(0.0, total_eur - paid_eur), 2),
+        "remaining_eur": remaining,
         "days_to_trip": days,
         "fully_paid": False,
         "options": options,
+        "partial_bounds": partial_bounds,
+        "monthly_suggested_eur": monthly,
     }
 
 
@@ -1868,9 +1914,10 @@ class TravelerInfoBody(BaseModel):
 
 
 @api.post("/payments/{token}/traveler-info")
-async def submit_traveler_info(token: str, payload: TravelerInfoBody):
+async def submit_traveler_info(token: str, payload: TravelerInfoBody, request: Request):
     """Public — store the booking info the client filled in (passports,
-    flights, allergies). Last submit wins. Stamps `submitted_at`."""
+    flights, allergies). Last submit wins. Stamps `submitted_at`. Notifies
+    the agent who owns the itinerary by email (Resend)."""
     doc = await db.itineraries.find_one({"payment_token": token}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Enlace de pago no válido")
@@ -1887,11 +1934,31 @@ async def submit_traveler_info(token: str, payload: TravelerInfoBody):
         {"payment_token": token},
         {"$set": {"traveler_info": traveler_info, "updated_at": now_iso()}},
     )
+    # Notify the agent who created the trip. Best-effort: never fail the
+    # client's form submission because the email service is down.
+    agent_email = (doc.get("created_by") or "").strip()
+    if agent_email:
+        from email_service import send_email, render_traveler_info_email
+        origin = (request.headers.get("origin") or _frontend_base_url()).rstrip("/")
+        public_url = f"{origin}/pay/{token}"
+        subject, html, text = render_traveler_info_email(doc, traveler_info, public_url=public_url)
+        # Schedule the email send so we return to the client immediately.
+        asyncio.create_task(send_email(
+            to=agent_email,
+            subject=subject,
+            html=html,
+            text=text,
+            reply_to=traveler_info.get("submitted_by_email") or None,
+        ))
     return {"ok": True, "submitted_at": traveler_info["submitted_at"]}
 
 
 class CreatePayPalOrderBody(BaseModel):
-    kind: Literal["deposit", "balance", "full"]
+    kind: Literal["deposit", "balance", "full", "partial"]
+    # For kind="partial", the exact EUR amount the client wants to pay.
+    # Validated server-side against the current partial_bounds (10% floor
+    # of the total, capped at the remaining balance).
+    amount_eur: Optional[float] = None
     # Browser's window.location.origin sent by the public page so the
     # return / cancel URLs (and the post-capture redirect) bounce back to
     # the EXACT host the client is on. Falls back to the request's Origin
@@ -1924,14 +1991,33 @@ async def create_payment_order(
             detail="Esta opción de pago no está disponible para este viaje en este momento",
         )
 
+    # Resolve the concrete amount. For 'partial' the client provides it and
+    # we validate it against the active bounds. For everything else the
+    # backend dictates it.
+    if payload.kind == "partial":
+        if payload.amount_eur is None:
+            raise HTTPException(status_code=400, detail="Indica la cantidad a pagar")
+        amount = round(float(payload.amount_eur), 2)
+        bounds = options.get("partial_bounds") or {}
+        min_eur = float(bounds.get("min_eur") or 0)
+        max_eur = float(bounds.get("max_eur") or 0)
+        if amount < min_eur - 0.01 or amount > max_eur + 0.01:
+            raise HTTPException(
+                status_code=400,
+                detail=f"La cantidad debe estar entre {min_eur:.2f} € y {max_eur:.2f} €.",
+            )
+    else:
+        amount = float(chosen["amount_eur"])
+
     payment_id = new_id("pmt")
     origin = (payload.origin or request.headers.get("origin") or _frontend_base_url()).rstrip("/")
     return_url = f"{origin}/api/payments/{token}/return?payment_id={payment_id}"
     cancel_url = f"{origin}/pay/{token}?cancelled=1"
-    description = f"{doc.get('name', 'Viaje')} · {chosen['label']}"
+    label_for_paypal = chosen["label"] if payload.kind != "partial" else f"Pago parcial ({amount:.2f} €)"
+    description = f"{doc.get('name', 'Viaje')} · {label_for_paypal}"
     try:
         order = await _paypal_create_order(
-            amount_eur=chosen["amount_eur"],
+            amount_eur=amount,
             return_url=return_url,
             cancel_url=cancel_url,
             reference=payment_id,
@@ -1944,7 +2030,7 @@ async def create_payment_order(
     payment = {
         "payment_id": payment_id,
         "kind": payload.kind,
-        "amount_eur": chosen["amount_eur"],
+        "amount_eur": amount,
         "paypal_order_id": order["id"],
         "paypal_capture_id": None,
         "status": "created",

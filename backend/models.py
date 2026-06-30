@@ -306,9 +306,10 @@ class Payment(BaseModel):
     (deposit, balance, or full) through its lifecycle."""
     payment_id: str = Field(default_factory=lambda: new_id("pmt"))
     # "deposit" → 30% of total when >60 days to trip; "balance" → remaining
-    # 70% after deposit; "full" → 100% (always allowed, mandatory when
-    # ≤60 days).
-    kind: Literal["deposit", "balance", "full"]
+    # after deposit; "full" → 100% (always allowed, mandatory when
+    # ≤60 days); "partial" → custom amount chosen by the client (between 10%
+    # of total and the remaining balance) — multiple partials allowed.
+    kind: Literal["deposit", "balance", "full", "partial"]
     amount_eur: float
     paypal_order_id: Optional[str] = None
     paypal_capture_id: Optional[str] = None

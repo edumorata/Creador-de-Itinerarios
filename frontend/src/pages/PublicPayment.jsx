@@ -20,9 +20,10 @@ const fmtDate = (iso) => {
 };
 
 const KIND_DESCRIPTOR = {
-  deposit: { tag: "Deposit", pct: "30%", helper: "Confirm your trip today. The remaining 70% is paid 45 days before departure." },
-  balance: { tag: "Remaining balance", pct: "70%", helper: "Final payment to complete your booking." },
+  deposit: { tag: "Deposit", pct: "30%", helper: "Confirm your trip today. The remaining balance is paid 45 days before departure." },
+  balance: { tag: "Remaining balance", pct: null, helper: "Final payment to complete your booking." },
   full:    { tag: "Full payment", pct: "100%", helper: "Single full payment to confirm your trip." },
+  partial: { tag: "Custom amount", pct: null, helper: "Pay any amount you want. Come back to this same link whenever you'd like to pay another instalment." },
 };
 
 const emptyPerson = () => ({ full_name: "", passport_number: "", date_of_birth: "" });
@@ -58,6 +59,14 @@ export default function PublicPayment() {
     try {
       const { data: d } = await axios.get(`${API_BASE}/payments/${token}`);
       setData(d);
+      // Initialise the partial-amount input from the suggested monthly
+      // (preferred) or the partial minimum, so the input is never empty
+      // when the option becomes available.
+      const seed =
+        d?.monthly_suggested_eur?.amount_eur ||
+        d?.partial_bounds?.min_eur ||
+        "";
+      setPartialAmount(seed ? String(seed) : "");
       // Pre-populate the form from any previous submission, or size `people`
       // to match num_travelers (default to 1 row).
       const prev = d?.traveler_info;
@@ -81,17 +90,16 @@ export default function PublicPayment() {
   };
   useEffect(() => { load(); }, [token]);
 
-  const onPay = async (kind) => {
+  // Partial-amount input state. Initialised from the suggested monthly
+  // payment when the API returns one (otherwise the partial minimum).
+  const [partialAmount, setPartialAmount] = useState("");
+
+  const onPay = async (kind, customAmount) => {
     setSubmittingKind(kind);
     try {
-      // Send the browser origin so the post-payment redirect (and PayPal's
-      // return_url) bounces back to the EXACT host the client is on — the
-      // ingress can otherwise rewrite the Origin header to an internal
-      // cluster URL that returns 403.
-      const { data: res } = await axios.post(`${API_BASE}/payments/${token}/create-order`, {
-        kind,
-        origin: window.location.origin,
-      });
+      const body = { kind, origin: window.location.origin };
+      if (kind === "partial") body.amount_eur = customAmount;
+      const { data: res } = await axios.post(`${API_BASE}/payments/${token}/create-order`, body);
       if (res?.approval_url) { window.location.href = res.approval_url; return; }
       throw new Error("PayPal didn't return an approval URL");
     } catch (e) {
@@ -228,11 +236,7 @@ export default function PublicPayment() {
       {/* Welcome paragraph */}
       <Prose>
         <p>
-          Here&apos;s the info regarding the next steps &amp; payment to fully confirm your trip;
-          first, you will need to click on the button <strong>&ldquo;Approve Proposal&rdquo;</strong> you
-          will see in the top right corner to confirm the latest version of the itinerary with all details.
-        </p>
-        <p>
+          Here&apos;s the info regarding the next steps &amp; payment to fully confirm your trip.
           On this page, you can see the invoice for the total of your trip. You can pay with a
           credit/debit card using the PayPal platform (<em>you do not need a PayPal account to do so</em>), and{" "}
           {hasDepositOption ? (
@@ -283,6 +287,21 @@ export default function PublicPayment() {
         {!fullyPaid && options.length > 0 && (
           <div className={`grid gap-5 ${options.length > 1 ? "sm:grid-cols-2" : ""}`}>
             {options.map((o) => {
+              if (o.kind === "partial") {
+                return (
+                  <PartialPaymentCard
+                    key="partial"
+                    bounds={data?.partial_bounds}
+                    monthly={data?.monthly_suggested_eur}
+                    remaining={remaining}
+                    amount={partialAmount}
+                    onAmountChange={setPartialAmount}
+                    onPay={(amt) => onPay("partial", amt)}
+                    isSubmitting={submittingKind === "partial"}
+                    submitDisabled={submittingKind !== null}
+                  />
+                );
+              }
               const d = KIND_DESCRIPTOR[o.kind] || { tag: o.kind, pct: "", helper: o.description };
               return (
                 <div key={o.kind}
@@ -555,5 +574,98 @@ function Field({ label, children }) {
       <span className="font-raleway text-[10px] uppercase tracking-[0.22em] text-espiritu-deep/60 block mb-1.5">{label}</span>
       {children}
     </label>
+  );
+}
+
+/** Card for custom-amount payments. The client either types an amount or
+ *  picks one of the suggested chips. CTA disabled until the amount is
+ *  within the bounds returned by the API. */
+function PartialPaymentCard({ bounds, monthly, remaining, amount, onAmountChange, onPay, isSubmitting, submitDisabled }) {
+  const min = parseFloat(bounds?.min_eur || 0);
+  const max = parseFloat(bounds?.max_eur || remaining || 0);
+  const num = parseFloat(amount);
+  const valid = !isNaN(num) && num >= min - 0.01 && num <= max + 0.01;
+
+  const chips = [];
+  if (monthly?.amount_eur) {
+    chips.push({
+      label: `Monthly · ${fmtEUR(monthly.amount_eur)}`,
+      sublabel: monthly.months > 1 ? `${monthly.months} payments until departure` : "one payment before departure",
+      value: monthly.amount_eur,
+    });
+  }
+  const halfRemaining = Math.round(remaining * 0.5 * 100) / 100;
+  if (halfRemaining >= min - 0.01 && Math.abs(halfRemaining - (monthly?.amount_eur || 0)) > 1) {
+    chips.push({
+      label: `Half remaining · ${fmtEUR(halfRemaining)}`,
+      sublabel: "split what's left into two",
+      value: halfRemaining,
+    });
+  }
+
+  return (
+    <div data-testid="payment-option-partial"
+         className="bg-white border border-espiritu-sand-deep p-7 flex flex-col">
+      <div className="flex items-baseline justify-between">
+        <div className="font-raleway text-[11px] tracking-[0.25em] uppercase text-espiritu-deep/60">
+          {KIND_DESCRIPTOR.partial.tag}
+        </div>
+        <div className="font-kanit italic font-extrabold text-espiritu-terra text-base leading-none">
+          You choose
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <div className="font-raleway text-[10px] uppercase tracking-[0.22em] text-espiritu-deep/60 mb-1.5">
+          Amount to pay now
+        </div>
+        <div className="relative">
+          <input
+            value={amount}
+            onChange={(e) => onAmountChange(e.target.value)}
+            inputMode="decimal"
+            data-testid="partial-amount-input"
+            placeholder={`${min.toFixed(2)} – ${max.toFixed(2)}`}
+            className="brand-input font-kanit text-3xl font-bold tabular pl-3 pr-10"
+          />
+          <span className="absolute right-3 top-1/2 -translate-y-1/2 font-kanit text-2xl text-espiritu-deep/40">€</span>
+        </div>
+        <div className="mt-1.5 font-raleway text-[11px] text-espiritu-deep/60">
+          Between <span className="tabular">{fmtEUR(min)}</span> and <span className="tabular">{fmtEUR(max)}</span>.
+        </div>
+      </div>
+
+      {chips.length > 0 && (
+        <div className="mt-4 grid gap-2">
+          {chips.map((c) => (
+            <button
+              key={c.label}
+              onClick={() => onAmountChange(String(c.value))}
+              data-testid={`partial-chip-${c.label.split(" ")[0].toLowerCase()}`}
+              type="button"
+              className="text-left px-3 py-2 border border-espiritu-sand-deep hover:border-espiritu-terra hover:bg-espiritu-sand transition-colors">
+              <div className="font-kanit font-bold text-sm text-espiritu-deep">{c.label}</div>
+              <div className="font-raleway text-[11px] text-espiritu-deep/60">{c.sublabel}</div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="font-raleway text-xs text-espiritu-deep/70 mt-4 flex-1 leading-relaxed">
+        {KIND_DESCRIPTOR.partial.helper}
+      </div>
+
+      <button
+        onClick={() => onPay(num)}
+        disabled={submitDisabled || !valid}
+        data-testid="pay-btn-partial"
+        className="mt-5 inline-flex items-center justify-center gap-2 bg-espiritu-terra hover:bg-espiritu-terra-hover disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 py-3.5 font-kanit font-bold tracking-wider uppercase text-sm transition-colors">
+        {isSubmitting ? (
+          <><Loader2 size={14} className="animate-spin"/> Redirecting to PayPal…</>
+        ) : (
+          <><CreditCard size={14}/> Pay {valid ? fmtEUR(num) : "—"}</>
+        )}
+      </button>
+    </div>
   );
 }
