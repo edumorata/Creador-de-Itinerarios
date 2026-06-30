@@ -581,11 +581,50 @@ Files touched (iter-18):
 
 - (none — main Sofi integration goal is now complete)
 
-## P1 backlog
-- Pydantic body model for `POST /api/itineraries/{id}/push-to-sofi`
-  (currently a free dict; testing agent flagged in iter-4/iter-5).
-- Unify 404/403 on `GET /api/itineraries/push-to-sofi/{job_id}` to avoid
-  leaking job-id existence to other agents.
+### Iteration 20 (2026-06-30) — PayPal payment-link flow (end-to-end)
+- **Backend**: complete in iteration 19 (this fork extended it):
+  - `POST /api/itineraries/{id}/payments/create-link` (auth, idempotent on
+    `payment_token`)
+  - `GET  /api/payments/{token}` (public landing data)
+  - `POST /api/payments/{token}/create-order` (public, creates PayPal Order
+    and returns approval_url)
+  - `GET  /api/payments/{token}/return` (PayPal redirect → capture → bounce
+    back to `/pay/{token}?success=1&kind=…&amount=…` or `?error=…`)
+  - `POST /api/paypal/webhook` (signed verification + idempotent mirror)
+- **Pricing rules**: deposit (30%) only when `days_to_trip > 60` and no
+  captured deposit/full; balance only after deposit captured; full always
+  available otherwise. Defense-in-depth: `create-order` re-checks live
+  options on POST and 400s on disallowed kinds.
+- **Frontend builder UI**: new button `data-testid=payment-link-btn` in the
+  ItineraryBuilder header, next to "Compartir con". Opens
+  `PaymentLinkModal` (was created last iteration) that surfaces the public
+  URL, the pre-filled email/WhatsApp instructions, and the payment history.
+- **Public page** (`/app/frontend/src/pages/PublicPayment.jsx` — NEW):
+  no-auth `/pay/:token` route registered before ProtectedRoute. Renders
+  trip summary, totals (total/paid/remaining), deposit + full payment
+  options with PayPal sandbox redirect. Handles success/cancelled/error
+  banners from PayPal return redirect.
+- **Routing**: `App.js` adds `<Route path="/pay/:token" element={<PublicPayment/>} />`
+  before the protected layout so the client never sees the login screen.
+- **Tests**: testing_agent_v3_fork covered 11 backend cases + 5 frontend
+  steps — 100% pass. Sandbox redirect to `sandbox.paypal.com/checkoutnow`
+  verified.
+
+Files touched (iter-20):
+- `backend/server.py` — return handler now appends `kind` and `amount` to
+  the success redirect querystring so the public page can show a precise
+  banner.
+- `frontend/src/pages/PublicPayment.jsx` (new — client-facing page).
+- `frontend/src/pages/ItineraryBuilder.jsx` — header button + modal mount.
+- `frontend/src/App.js` — public `/pay/:token` route.
+- `backend/tests/test_paypal_payment_link.py` (new — by testing agent).
+
+## P1 backlog (next)
+- Configure PayPal Webhook in PayPal Developer dashboard once production URL
+  is live (`PAYPAL_WEBHOOK_ID` env). `verify_webhook` currently returns
+  False on missing config (defensive).
+- Migrate Preview DB → Production DB (mongodump/mongorestore, coordinated
+  with the owner).
 
 ### Iteration 19 (2026-06-24) — Sales agent ("Agente de ventas") gets the trip owner
 - **Bug from prod**: every trip pushed to Sofi was showing Eduardo as the
