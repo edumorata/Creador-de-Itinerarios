@@ -4,7 +4,7 @@ import axios from "axios";
 import {
   CreditCard, ShieldCheck, Sun, CheckCircle2,
   AlertCircle, Loader2, MapPin, Plane, FileText,
-  Users, Plus, Trash2, Send,
+  Users, Plus, Trash2, Send, X, Edit3,
 } from "lucide-react";
 
 const API_BASE = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -48,6 +48,12 @@ export default function PublicPayment() {
   });
   const [formSaving, setFormSaving] = useState(false);
   const [formSavedAt, setFormSavedAt] = useState(null);
+  // Popup state — the traveler-info form is presented as a mandatory-feeling
+  // modal that auto-opens whenever the client lands on the page WITHOUT
+  // having submitted their details, and again right after a successful
+  // payment. Once submitted, it stays closed unless the client explicitly
+  // hits "Update my details".
+  const [showInfoDialog, setShowInfoDialog] = useState(false);
 
   const successKind = search.get("success") ? search.get("kind") : null;
   const successAmount = search.get("amount");
@@ -80,9 +86,14 @@ export default function PublicPayment() {
           submitted_by_email: prev.submitted_by_email || "",
         });
         setFormSavedAt(prev.submitted_at || null);
+        setShowInfoDialog(false);
       } else {
         const count = Math.max(1, Math.min(10, d?.num_travelers || 1));
         setForm((f) => ({ ...f, people: Array.from({ length: count }, emptyPerson) }));
+        // Auto-open the popup whenever the client visits without having
+        // submitted the form yet — including right after a successful
+        // PayPal capture (?success=1 in the URL).
+        setShowInfoDialog(true);
       }
     } catch (e) {
       setError(e?.response?.data?.detail || "We couldn't load this payment link. It may have expired.");
@@ -113,6 +124,9 @@ export default function PublicPayment() {
     try {
       const { data: res } = await axios.post(`${API_BASE}/payments/${token}/traveler-info`, form);
       setFormSavedAt(res.submitted_at);
+      // Close the modal — the client can still edit later via the inline
+      // section or the "Update my details" button.
+      setShowInfoDialog(false);
     } catch (e) {
       setError(e?.response?.data?.detail || "Could not save your details. Please try again.");
     } finally { setFormSaving(false); }
@@ -372,124 +386,70 @@ export default function PublicPayment() {
         </Prose>
       </section>
 
-      {/* Traveler info form */}
+      {/* Traveler info form — inline. Visible only AFTER the client has
+          submitted at least once, so they can edit any field. Before the
+          first submission the popup carries the workflow (single source
+          of truth, avoids duplicate DOM elements). */}
       <section className="mt-16 mb-10">
         <SectionTitle icon={<FileText size={14}/>}>Your booking details</SectionTitle>
-        <Prose>
-          <p>
-            To confirm your services we&apos;ll need the following information from each traveler.
-            You can save partial info now and complete it later from the same link.
-          </p>
-        </Prose>
-
-        <div className="mt-6 bg-white border border-espiritu-sand-deep">
-          {/* Travelers list */}
-          <div className="px-5 py-4 border-b border-espiritu-sand-deep flex items-center justify-between">
-            <div className="font-raleway text-[11px] uppercase tracking-[0.25em] text-espiritu-deep/70 inline-flex items-center gap-2">
-              <Users size={13} className="text-espiritu-terra"/> Travelers ({form.people.length})
-            </div>
-            <button
-              onClick={addPerson}
-              data-testid="add-traveler"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-espiritu-sand-deep hover:bg-espiritu-sand text-espiritu-deep font-raleway text-xs">
-              <Plus size={12}/> Add traveler
-            </button>
-          </div>
-
-          <div className="divide-y divide-espiritu-sand-deep">
-            {form.people.map((p, i) => (
-              <div key={i} className="px-5 py-4 grid gap-3 md:grid-cols-[1.5fr_1fr_1fr_auto] items-end"
-                   data-testid={`traveler-row-${i}`}>
-                <Field label={`Traveler ${i + 1} · Full name (as per passport)`}>
-                  <input value={p.full_name} onChange={(e) => setPerson(i, "full_name", e.target.value)}
-                         data-testid={`traveler-name-${i}`}
-                         className="brand-input" placeholder="e.g. Amy Jennings"/>
-                </Field>
-                <Field label="Passport number">
-                  <input value={p.passport_number} onChange={(e) => setPerson(i, "passport_number", e.target.value)}
-                         data-testid={`traveler-passport-${i}`}
-                         className="brand-input" placeholder="AB1234567"/>
-                </Field>
-                <Field label="Date of birth">
-                  <input type="date" value={p.date_of_birth} onChange={(e) => setPerson(i, "date_of_birth", e.target.value)}
-                         data-testid={`traveler-dob-${i}`}
-                         className="brand-input tabular"/>
-                </Field>
-                <div>
-                  {form.people.length > 1 && (
-                    <button onClick={() => removePerson(i)}
-                            data-testid={`remove-traveler-${i}`}
-                            title="Remove traveler"
-                            className="p-2 text-espiritu-deep/60 hover:text-espiritu-magenta">
-                      <Trash2 size={15}/>
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Trip-level fields */}
-          <div className="px-5 py-4 border-t border-espiritu-sand-deep grid gap-3 md:grid-cols-2">
-            <Field label="Arrival flight number">
-              <input value={form.arrival_flight} onChange={(e) => setField("arrival_flight", e.target.value)}
-                     data-testid="arrival-flight"
-                     className="brand-input" placeholder="e.g. IB6234 — landing in Madrid"/>
-            </Field>
-            <Field label="Departure flight number">
-              <input value={form.departure_flight} onChange={(e) => setField("departure_flight", e.target.value)}
-                     data-testid="departure-flight"
-                     className="brand-input" placeholder="e.g. IB6172 — from Barcelona"/>
-            </Field>
-            <Field label="Phone number">
-              <input value={form.phone} onChange={(e) => setField("phone", e.target.value)}
-                     data-testid="phone"
-                     className="brand-input" placeholder="+34 600 000 000"/>
-            </Field>
-            <Field label="Your email (so we can keep in touch)">
-              <input value={form.submitted_by_email} onChange={(e) => setField("submitted_by_email", e.target.value)}
-                     data-testid="email"
-                     type="email" className="brand-input" placeholder="you@example.com"/>
-            </Field>
-            <div className="md:col-span-2">
-              <Field label="Allergies, food restrictions or anything else we should consider">
-                <textarea value={form.notes} onChange={(e) => setField("notes", e.target.value)}
-                          data-testid="notes" rows={4}
-                          className="brand-input resize-y"
-                          placeholder="e.g. lactose intolerant, vegetarian, mobility considerations…"/>
-              </Field>
-            </div>
-          </div>
-
-          {/* Submit footer */}
-          <div className="px-5 py-4 border-t border-espiritu-sand-deep flex items-center justify-between flex-wrap gap-3">
-            <div className="font-raleway text-xs text-espiritu-deep/70">
-              {formSavedAt ? (
-                <span className="inline-flex items-center gap-1.5 text-espiritu-olive">
-                  <CheckCircle2 size={13}/> Saved {fmtDate(formSavedAt)} — you can update any field and submit again.
-                </span>
-              ) : (
-                <span>Save your details whenever you&apos;re ready. You can come back later to update them.</span>
-              )}
-            </div>
-            <button
-              onClick={submitForm}
-              disabled={formSaving}
-              data-testid="submit-traveler-info"
-              className="inline-flex items-center justify-center gap-2 bg-espiritu-deep hover:bg-black disabled:opacity-60 text-white px-5 py-3 font-kanit font-bold tracking-wider uppercase text-sm">
-              {formSaving ? (
-                <><Loader2 size={14} className="animate-spin"/> Saving…</>
-              ) : (
-                <><Send size={14}/> Send my details</>
-              )}
-            </button>
-          </div>
-        </div>
+        {formSavedAt ? (
+          <>
+            <Prose>
+              <p>
+                Your details are saved. You can update any field below and hit
+                <em> Send my details</em> again — the last submission wins.
+              </p>
+            </Prose>
+            <TravelerInfoFormBody
+              form={form}
+              setPerson={setPerson}
+              addPerson={addPerson}
+              removePerson={removePerson}
+              setField={setField}
+              formSaving={formSaving}
+              formSavedAt={formSavedAt}
+              submitForm={submitForm}
+            />
+          </>
+        ) : (
+          <Prose>
+            <p>
+              To confirm your services we&apos;ll need the following information from each traveler.
+              You can save partial info now and complete it later from the same link.
+            </p>
+            <p>
+              <button
+                onClick={() => setShowInfoDialog(true)}
+                data-testid="open-info-dialog"
+                className="inline-flex items-center gap-2 bg-espiritu-terra hover:bg-espiritu-terra-hover text-white px-4 py-2.5 font-kanit font-bold tracking-wider uppercase text-xs">
+                <Edit3 size={13}/> Complete my details
+              </button>
+            </p>
+          </Prose>
+        )}
 
         <div className="mt-7 font-kanit italic text-espiritu-deep/80 text-lg">
           Let me know if you have any questions :)
         </div>
       </section>
+
+      {/* Traveler info modal — auto-opens when the client hasn't submitted
+          yet (including right after a successful payment). Not dismissable
+          by backdrop click; the client can close via the X but the popup
+          will re-open on their next visit until submitted. */}
+      {showInfoDialog && (
+        <TravelerInfoDialog
+          onClose={() => setShowInfoDialog(false)}
+          form={form}
+          setPerson={setPerson}
+          addPerson={addPerson}
+          removePerson={removePerson}
+          setField={setField}
+          formSaving={formSaving}
+          formSavedAt={formSavedAt}
+          submitForm={submitForm}
+        />
+      )}
     </Shell>
   );
 }
@@ -583,6 +543,167 @@ function Field({ label, children }) {
       <span className="font-raleway text-[10px] uppercase tracking-[0.22em] text-espiritu-deep/60 block mb-1.5">{label}</span>
       {children}
     </label>
+  );
+}
+
+/** The traveler-info form fields + submit footer, reused both inline and
+ *  inside the popup so we never diverge on validation or styling. */
+function TravelerInfoFormBody({ form, setPerson, addPerson, removePerson, setField, formSaving, formSavedAt, submitForm, compact = false }) {
+  return (
+    <div className={`${compact ? "" : "mt-6"} bg-white border border-espiritu-sand-deep`}>
+      {/* Travelers list */}
+      <div className="px-5 py-4 border-b border-espiritu-sand-deep flex items-center justify-between">
+        <div className="font-raleway text-[11px] uppercase tracking-[0.25em] text-espiritu-deep/70 inline-flex items-center gap-2">
+          <Users size={13} className="text-espiritu-terra"/> Travelers ({form.people.length})
+        </div>
+        <button
+          onClick={addPerson}
+          data-testid="add-traveler"
+          type="button"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-espiritu-sand-deep hover:bg-espiritu-sand text-espiritu-deep font-raleway text-xs">
+          <Plus size={12}/> Add traveler
+        </button>
+      </div>
+
+      <div className="divide-y divide-espiritu-sand-deep">
+        {form.people.map((p, i) => (
+          <div key={i} className="px-5 py-4 grid gap-3 md:grid-cols-[1.5fr_1fr_1fr_auto] items-end"
+               data-testid={`traveler-row-${i}`}>
+            <Field label={`Traveler ${i + 1} · Full name (as per passport)`}>
+              <input value={p.full_name} onChange={(e) => setPerson(i, "full_name", e.target.value)}
+                     data-testid={`traveler-name-${i}`}
+                     className="brand-input" placeholder="e.g. Amy Jennings"/>
+            </Field>
+            <Field label="Passport number">
+              <input value={p.passport_number} onChange={(e) => setPerson(i, "passport_number", e.target.value)}
+                     data-testid={`traveler-passport-${i}`}
+                     className="brand-input" placeholder="AB1234567"/>
+            </Field>
+            <Field label="Date of birth">
+              <input type="date" value={p.date_of_birth} onChange={(e) => setPerson(i, "date_of_birth", e.target.value)}
+                     data-testid={`traveler-dob-${i}`}
+                     className="brand-input tabular"/>
+            </Field>
+            <div>
+              {form.people.length > 1 && (
+                <button onClick={() => removePerson(i)}
+                        data-testid={`remove-traveler-${i}`}
+                        type="button"
+                        title="Remove traveler"
+                        className="p-2 text-espiritu-deep/60 hover:text-espiritu-magenta">
+                  <Trash2 size={15}/>
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Trip-level fields */}
+      <div className="px-5 py-4 border-t border-espiritu-sand-deep grid gap-3 md:grid-cols-2">
+        <Field label="Arrival flight number">
+          <input value={form.arrival_flight} onChange={(e) => setField("arrival_flight", e.target.value)}
+                 data-testid="arrival-flight"
+                 className="brand-input" placeholder="e.g. IB6234 — landing in Madrid"/>
+        </Field>
+        <Field label="Departure flight number">
+          <input value={form.departure_flight} onChange={(e) => setField("departure_flight", e.target.value)}
+                 data-testid="departure-flight"
+                 className="brand-input" placeholder="e.g. IB6172 — from Barcelona"/>
+        </Field>
+        <Field label="Phone number">
+          <input value={form.phone} onChange={(e) => setField("phone", e.target.value)}
+                 data-testid="phone"
+                 className="brand-input" placeholder="+34 600 000 000"/>
+        </Field>
+        <Field label="Your email (so we can keep in touch)">
+          <input value={form.submitted_by_email} onChange={(e) => setField("submitted_by_email", e.target.value)}
+                 data-testid="email"
+                 type="email" className="brand-input" placeholder="you@example.com"/>
+        </Field>
+        <div className="md:col-span-2">
+          <Field label="Allergies, food restrictions or anything else we should consider">
+            <textarea value={form.notes} onChange={(e) => setField("notes", e.target.value)}
+                      data-testid="notes" rows={4}
+                      className="brand-input resize-y"
+                      placeholder="e.g. lactose intolerant, vegetarian, mobility considerations…"/>
+          </Field>
+        </div>
+      </div>
+
+      {/* Submit footer */}
+      <div className="px-5 py-4 border-t border-espiritu-sand-deep flex items-center justify-between flex-wrap gap-3">
+        <div className="font-raleway text-xs text-espiritu-deep/70">
+          {formSavedAt ? (
+            <span className="inline-flex items-center gap-1.5 text-espiritu-olive">
+              <CheckCircle2 size={13}/> Saved {fmtDate(formSavedAt)} — you can update any field and submit again.
+            </span>
+          ) : (
+            <span>Save your details whenever you&apos;re ready. You can come back later to update them.</span>
+          )}
+        </div>
+        <button
+          onClick={submitForm}
+          disabled={formSaving}
+          data-testid="submit-traveler-info"
+          type="button"
+          className="inline-flex items-center justify-center gap-2 bg-espiritu-deep hover:bg-black disabled:opacity-60 text-white px-5 py-3 font-kanit font-bold tracking-wider uppercase text-sm">
+          {formSaving ? (
+            <><Loader2 size={14} className="animate-spin"/> Saving…</>
+          ) : (
+            <><Send size={14}/> Send my details</>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Modal wrapper — bg overlay + centered card, non-dismissable by backdrop
+ *  click on purpose (the client can only close via the X button, which
+ *  won't prevent it from re-opening on the next visit until they submit). */
+function TravelerInfoDialog({ onClose, ...formProps }) {
+  // Lock body scroll while the modal is open.
+  useEffect(() => {
+    const original = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = original; };
+  }, []);
+  return (
+    <div
+      className="fixed inset-0 z-[100] bg-espiritu-deep/70 backdrop-blur-sm flex items-start sm:items-center justify-center overflow-y-auto py-6 px-4"
+      data-testid="traveler-info-dialog"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className="relative w-full max-w-3xl bg-espiritu-sand border-l-4 border-espiritu-terra">
+        <button
+          onClick={onClose}
+          data-testid="close-info-dialog"
+          type="button"
+          title="Close (you'll see this again next time you visit)"
+          className="absolute top-4 right-4 p-1.5 text-espiritu-deep/60 hover:text-espiritu-deep hover:bg-espiritu-sand-deep/40"
+        >
+          <X size={18}/>
+        </button>
+        <div className="px-6 sm:px-10 pt-8 sm:pt-10 pb-6">
+          <div className="font-raleway text-[10px] tracking-[0.3em] uppercase text-espiritu-terra mb-3 inline-flex items-center gap-2">
+            <FileText size={12}/> Booking details
+          </div>
+          <h2 className="font-kanit italic font-extrabold text-espiritu-deep leading-[1.1] text-3xl sm:text-4xl">
+            One quick step to finish
+          </h2>
+          <p className="mt-4 font-raleway text-espiritu-deep/85 text-[15px] leading-relaxed max-w-prose">
+            <strong>Completing this information is key to making your trip bookings.</strong>{" "}
+            Please fill in the details below so our Operations Team can start reserving your services.
+            You can save partial info now and update it later — the last submission is the one we&apos;ll use.
+          </p>
+        </div>
+        <div className="px-6 sm:px-10 pb-8">
+          <TravelerInfoFormBody {...formProps} compact />
+        </div>
+      </div>
+    </div>
   );
 }
 
