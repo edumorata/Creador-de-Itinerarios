@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Calendar, MapPin, Plus, Bed, ArrowDown } from "lucide-react";
-import { fmt, fmtEUR } from "./utils";
+import { fmt } from "./utils";
 import { ServiceRow } from "./ServiceRow";
 import { confirmAsync } from "@/lib/safeConfirm";
 
@@ -34,7 +34,6 @@ function StayChip({ acc, tag }) {
   const rooms = acc.rooms || [];
   const numRooms = rooms.length;
   const totalPax = rooms.reduce((s, r) => s + (r.pax || 0), 0);
-  const total = acc.price_tax_incl || acc.price || 0;
   const tagColor = tag === "check-in"
     ? "bg-pine-soft/40 text-pine border-pine-soft"
     : tag === "check-out"
@@ -65,9 +64,6 @@ function StayChip({ acc, tag }) {
         {numRooms > 0 && `${numRooms} hab · `}
         {totalPax > 0 && `${totalPax} pax`}
       </span>
-      {tag === "check-in" && total > 0 && (
-        <span className="text-sm tabular font-semibold text-clay-900 shrink-0">{fmtEUR(total)}</span>
-      )}
       <ArrowDown size={11} className="text-clay-400 group-hover:text-terracotta shrink-0" />
     </button>
   );
