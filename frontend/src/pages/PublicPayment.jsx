@@ -151,7 +151,7 @@ export default function PublicPayment() {
 
   if (loading) {
     return (
-      <Shell>
+      <Shell token={token}>
         <div className="text-center py-24 inline-flex items-center gap-2 justify-center w-full text-espiritu-deep/70 font-raleway">
           <Loader2 size={16} className="animate-spin" /> Loading your trip…
         </div>
@@ -161,7 +161,7 @@ export default function PublicPayment() {
 
   if (error && !data) {
     return (
-      <Shell>
+      <Shell token={token}>
         <div className="border border-espiritu-magenta/30 bg-white px-6 py-8 text-espiritu-deep" data-testid="payment-error">
           <div className="font-kanit font-bold text-2xl mb-2 inline-flex items-center gap-2"><AlertCircle size={20} className="text-espiritu-magenta"/> Link unavailable</div>
           <div className="font-raleway">{error}</div>
@@ -197,7 +197,7 @@ export default function PublicPayment() {
   };
 
   return (
-    <Shell>
+    <Shell token={token}>
       {/* Return-from-PayPal banners */}
       {showInitialBanner && (
         <div className="mb-10">
@@ -232,17 +232,15 @@ export default function PublicPayment() {
 
       {/* HERO */}
       <section className="mb-14">
-        <div className="font-raleway text-xs tracking-[0.25em] uppercase text-espiritu-deep/60 mb-3">
-          Trip confirmation
-        </div>
-        <h1 className="font-kanit italic font-extrabold text-espiritu-deep leading-[1.05] text-5xl sm:text-6xl"
+        <div className="kicker mb-4">Trip confirmation</div>
+        <h1 className="font-serif text-espiritu-deep leading-[1.02] text-5xl sm:text-6xl lg:text-7xl"
             data-testid="trip-name">
           Hi {firstName},<br/>
-          <span className="not-italic font-bold text-espiritu-terra">your trip is ready</span>
+          <span className="italic text-espiritu-terra">your trip is ready</span>
         </h1>
         {data?.trip_name && (
-          <div className="mt-5 font-raleway text-espiritu-deep/80 text-lg">
-            <span className="font-medium">{data.trip_name}</span>
+          <div className="mt-6 font-raleway text-espiritu-deep/70 text-lg">
+            {data.trip_name}
           </div>
         )}
       </section>
@@ -331,12 +329,12 @@ export default function PublicPayment() {
                      data-testid={`payment-option-${o.kind}`}
                      className="bg-white border border-espiritu-sand-deep p-7 flex flex-col">
                   <div className="flex items-baseline justify-between">
-                    <div className="font-raleway text-[11px] tracking-[0.25em] uppercase text-espiritu-deep/60">{d.tag}</div>
+                    <div className="kicker">{d.tag}</div>
                     {d.pct && (
-                      <div className="font-kanit italic font-extrabold text-espiritu-terra text-2xl leading-none">{d.pct}</div>
+                      <div className="font-serif italic text-espiritu-terra text-2xl leading-none">{d.pct}</div>
                     )}
                   </div>
-                  <div className="font-kanit font-extrabold tabular text-4xl mt-3 text-espiritu-deep">{fmtEUR(o.amount_eur)}</div>
+                  <div className="font-serif tabular text-5xl mt-3 text-espiritu-deep">{fmtEUR(o.amount_eur)}</div>
                   <div className="font-raleway text-sm text-espiritu-deep/70 mt-3 flex-1 leading-relaxed">
                     {d.helper}
                   </div>
@@ -344,7 +342,7 @@ export default function PublicPayment() {
                     onClick={() => onPay(o.kind)}
                     disabled={submittingKind !== null}
                     data-testid={`pay-btn-${o.kind}`}
-                    className="mt-6 inline-flex items-center justify-center gap-2 bg-espiritu-terra hover:bg-espiritu-terra-hover disabled:opacity-60 text-white px-5 py-3.5 font-kanit font-bold tracking-wider uppercase text-sm transition-colors">
+                    className="mt-6 inline-flex items-center justify-center gap-2 bg-espiritu-deep hover:bg-black disabled:opacity-60 text-white px-5 py-3.5 rounded-full text-sm font-medium transition-colors">
                     {submittingKind === o.kind ? (
                       <><Loader2 size={14} className="animate-spin"/> Redirecting to PayPal…</>
                     ) : (
@@ -456,7 +454,7 @@ export default function PublicPayment() {
 
 /* -- Brand layout primitives ----------------------------------------------- */
 
-function Shell({ children }) {
+function Shell({ children, token }) {
   return (
     <div className="min-h-screen bg-espiritu-sand text-espiritu-deep">
       <style>{`
@@ -473,17 +471,37 @@ function Shell({ children }) {
         }
         .brand-input:focus { border-color: #e37e5e; }
         .brand-input::placeholder { color: #121b2870; }
+        .kicker {
+          font-family: Raleway, system-ui, sans-serif;
+          font-size: 10px;
+          letter-spacing: 0.25em;
+          text-transform: uppercase;
+          color: #B08749;
+        }
       `}</style>
       <header className="border-b border-espiritu-sand-deep bg-espiritu-sand">
-        <div className="max-w-3xl mx-auto px-6 py-5 flex items-center justify-between">
-          <img
-            src="/espiritu/logo-horizontal.png"
-            alt="Espíritu Travel"
-            className="h-10 sm:h-12 w-auto"
-            data-testid="brand-logo"
-          />
-          <div className="font-raleway text-[10px] tracking-[0.25em] uppercase text-espiritu-deep/60 inline-flex items-center gap-1.5">
-            <ShieldCheck size={12}/> Secure payment
+        <div className="max-w-3xl mx-auto px-6 py-5 flex items-center justify-between gap-4">
+          <a href={token ? `/trip/${token}` : "#"} className="shrink-0" title="Back to your trip">
+            <img
+              src="/espiritu/logo-horizontal.png"
+              alt="Espíritu Travel"
+              className="h-10 sm:h-12 w-auto"
+              data-testid="brand-logo"
+            />
+          </a>
+          <div className="flex items-center gap-5">
+            {token && (
+              <a
+                href={`/trip/${token}`}
+                data-testid="back-to-trip"
+                className="hidden sm:inline-flex items-center gap-1.5 text-espiritu-deep/60 hover:text-espiritu-deep text-xs font-raleway"
+              >
+                ← Back to your trip
+              </a>
+            )}
+            <div className="font-raleway text-[10px] tracking-[0.25em] uppercase text-espiritu-deep/60 inline-flex items-center gap-1.5">
+              <ShieldCheck size={12}/> Secure payment
+            </div>
           </div>
         </div>
       </header>
@@ -502,7 +520,7 @@ function SectionTitle({ icon, children }) {
   return (
     <div className="flex items-center gap-3 mb-4">
       <div className="text-espiritu-terra">{icon}</div>
-      <div className="font-raleway text-[11px] tracking-[0.3em] uppercase text-espiritu-deep/70">{children}</div>
+      <div className="kicker">{children}</div>
       <div className="flex-1 h-px bg-espiritu-sand-deep" />
     </div>
   );
@@ -519,10 +537,10 @@ function Prose({ children }) {
 function Meta({ icon, label, value, testid }) {
   return (
     <div className="px-5 py-4 border-r border-espiritu-sand-deep last:border-r-0 sm:[&:nth-child(2)]:border-r-0 sm:[&:nth-child(2)]:border-r">
-      <div className="font-raleway text-[10px] uppercase tracking-[0.25em] text-espiritu-deep/60 inline-flex items-center gap-1.5">
-        <span className="text-espiritu-terra">{icon}</span>{label}
+      <div className="kicker inline-flex items-center gap-1.5">
+        <span className="text-espiritu-terra normal-case">{icon}</span>{label}
       </div>
-      <div className="mt-1.5 font-kanit font-medium text-espiritu-deep tabular" data-testid={testid}>{value}</div>
+      <div className="mt-1.5 font-serif text-espiritu-deep tabular text-xl" data-testid={testid}>{value}</div>
     </div>
   );
 }
@@ -531,8 +549,8 @@ function Total({ label, value, accent, testid }) {
   const accentCls = accent === "olive" ? "text-espiritu-olive" : accent === "terra" ? "text-espiritu-terra" : "text-espiritu-deep";
   return (
     <div className="px-5 py-5 border-r border-espiritu-sand-deep last:border-r-0">
-      <div className="font-raleway text-[10px] uppercase tracking-[0.25em] text-espiritu-deep/60">{label}</div>
-      <div className={`font-kanit font-extrabold tabular text-2xl mt-1 ${accentCls}`} data-testid={testid}>{value}</div>
+      <div className="kicker">{label}</div>
+      <div className={`font-serif tabular text-3xl mt-1 ${accentCls}`} data-testid={testid}>{value}</div>
     </div>
   );
 }
@@ -747,16 +765,16 @@ function PartialPaymentCard({ bounds, monthly, remaining, amount, onAmountChange
     <div data-testid="payment-option-partial"
          className="bg-white border border-espiritu-sand-deep p-7 flex flex-col">
       <div className="flex items-baseline justify-between">
-        <div className="font-raleway text-[11px] tracking-[0.25em] uppercase text-espiritu-deep/60">
+        <div className="kicker">
           {KIND_DESCRIPTOR.partial.tag}
         </div>
-        <div className="font-kanit italic font-extrabold text-espiritu-terra text-base leading-none">
+        <div className="font-serif italic text-espiritu-terra text-lg leading-none">
           You choose
         </div>
       </div>
 
       <div className="mt-3">
-        <div className="font-raleway text-[10px] uppercase tracking-[0.22em] text-espiritu-deep/60 mb-1.5">
+        <div className="kicker mb-1.5">
           Amount to pay now
         </div>
         <div className="relative">
@@ -766,9 +784,9 @@ function PartialPaymentCard({ bounds, monthly, remaining, amount, onAmountChange
             inputMode="decimal"
             data-testid="partial-amount-input"
             placeholder={`${min.toFixed(2)} – ${max.toFixed(2)}`}
-            className="brand-input font-kanit text-3xl font-bold tabular pl-3 pr-10"
+            className="brand-input font-serif text-4xl tabular pl-3 pr-10"
           />
-          <span className="absolute right-3 top-1/2 -translate-y-1/2 font-kanit text-2xl text-espiritu-deep/40">€</span>
+          <span className="absolute right-3 top-1/2 -translate-y-1/2 font-serif text-2xl text-espiritu-deep/40">€</span>
         </div>
         <div className="mt-1.5 font-raleway text-[11px] text-espiritu-deep/60">
           Between <span className="tabular">{fmtEUR(min)}</span> and <span className="tabular">{fmtEUR(max)}</span>.
@@ -784,7 +802,7 @@ function PartialPaymentCard({ bounds, monthly, remaining, amount, onAmountChange
               data-testid={`partial-chip-${c.label.split(" ")[0].toLowerCase()}`}
               type="button"
               className="text-left px-3 py-2 border border-espiritu-sand-deep hover:border-espiritu-terra hover:bg-espiritu-sand transition-colors">
-              <div className="font-kanit font-bold text-sm text-espiritu-deep">{c.label}</div>
+              <div className="font-raleway font-semibold text-sm text-espiritu-deep">{c.label}</div>
               <div className="font-raleway text-[11px] text-espiritu-deep/60">{c.sublabel}</div>
             </button>
           ))}
@@ -799,7 +817,7 @@ function PartialPaymentCard({ bounds, monthly, remaining, amount, onAmountChange
         onClick={() => onPay(num)}
         disabled={submitDisabled || !valid}
         data-testid="pay-btn-partial"
-        className="mt-5 inline-flex items-center justify-center gap-2 bg-espiritu-terra hover:bg-espiritu-terra-hover disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 py-3.5 font-kanit font-bold tracking-wider uppercase text-sm transition-colors">
+        className="mt-5 inline-flex items-center justify-center gap-2 bg-espiritu-deep hover:bg-black disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 py-3.5 rounded-full text-sm font-medium transition-colors">
         {isSubmitting ? (
           <><Loader2 size={14} className="animate-spin"/> Redirecting to PayPal…</>
         ) : (

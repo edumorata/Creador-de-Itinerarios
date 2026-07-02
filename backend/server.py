@@ -1799,15 +1799,21 @@ def _format_payment_instructions(itn: dict, payment_url: str, options: dict) -> 
     )
     return f"""Hi {first_name},
 
-Here's the info regarding the next steps & payment to fully confirm your trip; first, you will need to click on the button "Approve Proposal" you will see in the top right corner to confirm the latest version of the itinerary with all details.
+Here's your trip presentation and the info regarding the next steps & payment to fully confirm your trip.
 
-Here in this link, you will see the invoice for the total of your trip. You can pay with a credit/debit card using the PayPal platform (you do not need a PayPal account to do so), and {intro_amount}.
+You can browse the full day-by-day itinerary here (mobile-friendly):
+
+{payment_url.replace('/pay/', '/trip/')}
+
+When you're ready to reserve, hit the "Reserve" button in the top right or open the payment page directly at:
 
 {payment_url}
 
-Once the booking is confirmed, our Operations Team will start booking all your services, and around 15 days before your arrival you will receive your travel documents with all the detailed information about your trip (exact directions, meeting points, schedules, guides contacts...), so you will have the detailed information needed about everything you have booked to be followed in those travel documents that are sent online via a mobile App. These travel documents will also include suggestions of places to visit and restaurants for each city you will visit.
+You can pay with a credit/debit card using the PayPal platform (you do not need a PayPal account to do so), and {intro_amount}.
 
-To confirm your services, I would also need the following information from all of you so we can start booking all your services:
+Once the booking is confirmed, our Operations Team will start booking all your services. Around 15 days before your arrival you'll receive your travel documents with all the detailed information about your trip (exact directions, meeting points, schedules, guides' contacts...), sent online via a mobile app. These travel documents also include suggestions of places to visit and restaurants for each city you'll visit.
+
+To confirm your services, I would also need the following information from all of you so we can start booking:
 
 - Full names (as per passport)
 - Passport Numbers
@@ -1868,6 +1874,114 @@ async def create_payment_link(
         "options": options,
         "payments": doc.get("payments") or [],
         "traveler_info": doc.get("traveler_info"),
+    }
+
+
+@api.get("/trip/{token}")
+async def get_trip_view(token: str):
+    """Public — the Fora-style client presentation of the itinerary at
+    /trip/:token. Returns the itinerary shape the client actually needs
+    (no internal cost breakdown, no supplier info, no notes_internal).
+    Auto-selects hero + day photos from the destination gallery when the
+    itinerary hasn't been decorated with images yet."""
+    from destinations import pick_hero, pick_day_image, gallery_for
+    doc = await db.itineraries.find_one({"payment_token": token}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Enlace de itinerario no válido")
+
+    totals = _compute_pricing_totals(doc)
+    total_eur = round(float(totals.get("pvp") or 0), 2)
+
+    # Sanitize days for public consumption
+    days_public = []
+    for d in (doc.get("days") or []):
+        services_public = []
+        for s in (d.get("services") or []):
+            # Skip accommodation services (they're rendered separately as
+            # "Where you stay" cards) and hidden ones.
+            if s.get("acc_id") or s.get("hidden"):
+                continue
+            services_public.append({
+                "id": s.get("id") or s.get("service_id"),
+                "type": s.get("type"),
+                "name": s.get("name"),
+                "description": s.get("description") or s.get("public_description"),
+                "duration": s.get("duration"),
+                "meeting_point": s.get("meeting_point"),
+                "time": s.get("time") or s.get("start_time"),
+                "image_url": s.get("image_url"),
+            })
+        days_public.append({
+            "day_id": d.get("day_id"),
+            "date": d.get("date"),
+            "label": d.get("label"),
+            "city": d.get("city"),
+            "image_url": pick_day_image(d, doc),
+            "services": services_public,
+        })
+
+    accs_public = []
+    for a in (doc.get("accommodations") or []):
+        rooms = [{
+            "type": r.get("type") or r.get("name"),
+            "size_sqm": r.get("size_sqm"),
+            "pax": r.get("pax"),
+        } for r in (a.get("rooms") or [])]
+        images = gallery_for(a.get("city") or a.get("name"))
+        accs_public.append({
+            "acc_id": a.get("acc_id"),
+            "name": a.get("name"),
+            "city": a.get("city"),
+            "date_from": a.get("date_from"),
+            "date_to": a.get("date_to"),
+            "address": a.get("address"),
+            "notes": a.get("public_description") or a.get("notes"),
+            "image_urls": (a.get("image_urls") or [])[:4] or images[:4],
+            "rooms": rooms,
+        })
+
+    return {
+        "trip_name": doc.get("name"),
+        "main_traveler": doc.get("main_traveler"),
+        "start_date": doc.get("start_date"),
+        "end_date": doc.get("end_date"),
+        "duration_days": doc.get("duration_days"),
+        "num_travelers": doc.get("num_travelers"),
+        "num_adults": doc.get("num_adults"),
+        "num_children": doc.get("num_children"),
+        "cities": doc.get("cities") or _extract_cities(doc),
+        "hero_image": pick_hero(doc),
+        "summary": doc.get("public_summary") or doc.get("summary"),
+        "days": days_public,
+        "accommodations": accs_public,
+        "total_eur": total_eur,
+        "currency": "EUR",
+        "agent": await _agent_public_info_from_db(doc.get("created_by")),
+    }
+
+
+def _extract_cities(doc: dict) -> list:
+    """Fallback when itinerary doesn't have a curated cities list: derive
+    from days & accommodations, preserving order."""
+    seen: list = []
+    for d in (doc.get("days") or []):
+        c = (d.get("city") or "").strip()
+        if c and c not in seen:
+            seen.append(c)
+    return seen
+
+
+async def _agent_public_info_from_db(email: str) -> dict:
+    """Return the agent's public-facing name & avatar (nothing sensitive)."""
+    if not email:
+        return {}
+    u = await db.users.find_one({"email": email}, {"_id": 0, "name": 1, "avatar_url": 1, "email": 1})
+    if not u:
+        return {"email": email, "name": email.split("@")[0].replace(".", " ").title()}
+    return {
+        "name": u.get("name") or (email.split("@")[0].replace(".", " ").title() if email else ""),
+        "avatar_url": u.get("avatar_url"),
+        "email": u.get("email") or email,
     }
 
 

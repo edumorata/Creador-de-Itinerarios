@@ -62,6 +62,10 @@ export function PaymentLinkModal({ open, itineraryId, onClose }) {
   const options = data?.options || {};
   const payments = data?.payments || [];
   const paymentUrl = data?.payment_url;
+  // The trip-view URL uses the SAME token as the payment link (same string
+  // → different route), so we derive it locally instead of asking the
+  // backend for a second URL.
+  const tripViewUrl = paymentUrl ? paymentUrl.replace("/pay/", "/trip/") : "";
   const instructions = data?.instructions || "";
 
   return (
@@ -116,10 +120,39 @@ export function PaymentLinkModal({ open, itineraryId, onClose }) {
                 {options.days_to_trip == null && <>No hay fecha de inicio definida. El cliente solo verá el pago total.</>}
               </div>
 
+              {/* Client trip presentation URL (Fora-style view) — same
+                  token as the payment link, different route. Agents share
+                  this first, and the "Reserve" button inside routes the
+                  client to the payment page. */}
+              <div>
+                <div className="smallcaps mb-2 flex items-center justify-between">
+                  <span>Vista cliente (presentación del viaje)</span>
+                  <span className="text-[10px] text-clay-500 normal-case tracking-normal">Compárteselo primero al cliente</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    data-testid="trip-view-url"
+                    readOnly value={tripViewUrl}
+                    onClick={(e) => e.target.select()}
+                    className="flex-1 bg-clay-50 border border-clay-300 px-3 py-2 text-sm font-mono outline-none"
+                  />
+                  <button onClick={() => copyToClipboard(tripViewUrl, "Enlace de la vista cliente")}
+                          data-testid="copy-trip-view-url"
+                          className="inline-flex items-center gap-2 px-3 py-2 border border-clay-300 hover:bg-clay-100 text-xs">
+                    <Copy size={13}/> Copiar URL
+                  </button>
+                  <a href={tripViewUrl} target="_blank" rel="noreferrer"
+                     data-testid="open-trip-view-url"
+                     className="inline-flex items-center gap-2 px-3 py-2 border border-clay-300 hover:bg-clay-100 text-xs">
+                    <ExternalLink size={13}/> Abrir
+                  </a>
+                </div>
+              </div>
+
               {/* Public URL */}
               <div>
                 <div className="smallcaps mb-2 flex items-center justify-between">
-                  <span>Enlace público</span>
+                  <span>Enlace de pago directo</span>
                   <button onClick={load} disabled={loading}
                           data-testid="payment-link-refresh"
                           title="Refrescar (mismo token, totales actualizados)"
