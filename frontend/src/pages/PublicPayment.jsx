@@ -681,10 +681,11 @@ function TravelerInfoDialog({ onClose, ...formProps }) {
           onClick={onClose}
           data-testid="close-info-dialog"
           type="button"
-          title="Close (you'll see this again next time you visit)"
-          className="absolute top-4 right-4 p-1.5 text-espiritu-deep/60 hover:text-espiritu-deep hover:bg-espiritu-sand-deep/40"
+          aria-label="Close"
+          title="Close — you can complete this later, we'll remind you next time you visit"
+          className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 inline-flex items-center gap-1.5 px-3 py-2 bg-espiritu-deep text-white hover:bg-black font-raleway text-xs font-bold uppercase tracking-wider"
         >
-          <X size={18}/>
+          <X size={14}/> Close
         </button>
         <div className="px-6 sm:px-10 pt-8 sm:pt-10 pb-6">
           <div className="font-raleway text-[10px] tracking-[0.3em] uppercase text-espiritu-terra mb-3 inline-flex items-center gap-2">
@@ -699,8 +700,17 @@ function TravelerInfoDialog({ onClose, ...formProps }) {
             You can save partial info now and update it later — the last submission is the one we&apos;ll use.
           </p>
         </div>
-        <div className="px-6 sm:px-10 pb-8">
+        <div className="px-6 sm:px-10 pb-6">
           <TravelerInfoFormBody {...formProps} compact />
+        </div>
+        <div className="px-6 sm:px-10 pb-8 flex items-center justify-center">
+          <button
+            onClick={onClose}
+            data-testid="skip-info-dialog"
+            type="button"
+            className="font-raleway text-sm text-espiritu-deep/60 hover:text-espiritu-terra underline underline-offset-4">
+            Skip for now — I&apos;ll complete this later
+          </button>
         </div>
       </div>
     </div>
