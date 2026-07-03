@@ -475,24 +475,31 @@ export default function PublicPayment() {
                 payer_email: payerEmail || undefined,
                 share_label: `${sharePos} of ${split.count}`,
               } : {};
-              // Per-share amount in split mode. Semantics per kind:
-              //  • complete_deposit → amount is already the *gap* to reach
-              //    the deposit threshold; divide it among the payers that
-              //    haven't paid yet so each covers their bit.
-              //  • balance / full   → amount is a whole-trip figure, so
-              //    divide by TOTAL trip (total_eur / N) — this is the
-              //    traveler's full share of the trip, deposit + balance
-              //    combined. Using remaining/N would under-charge because
-              //    the payment made by earlier travelers would end up
-              //    unfairly reducing this payer's share too.
-              //  • partial          → client picks the amount, no split
-              //    math applied here (see PartialPaymentCard).
+              // Per-share amount in split mode. Two phases apply:
+              //  (1) Deposit phase (booking NOT secured yet):
+              //      • complete_deposit → gap ÷ remaining payers
+              //      • balance / full   → total ÷ N (traveler pays their
+              //        WHOLE share of the trip in one go — deposit + final
+              //        balance combined). Uses total so paid-so-far by
+              //        other travelers doesn't shrink this payer's share.
+              //  (2) Balance phase (booking secured, deposit already met):
+              //      • balance / full   → (total - deposit) ÷ N (each
+              //        traveler pays their share of just the final balance
+              //        that remains after the deposit).
+              // We derive the phase from `booking_secured` returned by the
+              // backend so the split maths stays a pure function of the
+              // ledger.
               const remainingPayers = Math.max(1, split.count - alreadySplit);
+              const bookingSecured = !!data?.booking_secured;
+              const depositThreshold = data?.deposit_threshold_eur || 0;
+              const finalPhaseShareTotal = bookingSecured
+                ? Math.round(((total - depositThreshold) / split.count) * 100) / 100
+                : Math.round((total / split.count) * 100) / 100;
               const perShare = split.enabled && o.amount_eur
                 ? (o.kind === "complete_deposit"
                     ? Math.round((o.amount_eur / remainingPayers) * 100) / 100
                     : (o.kind === "balance" || o.kind === "full")
-                      ? Math.round((total / split.count) * 100) / 100
+                      ? finalPhaseShareTotal
                       : Math.round((o.amount_eur / split.count) * 100) / 100)
                 : null;
               if (o.kind === "partial") {
@@ -508,6 +515,8 @@ export default function PublicPayment() {
                         ? Math.max(0, data.deposit_threshold_eur - paid)
                         : 0
                     }
+                    bookingSecured={!!data?.booking_secured}
+                    depositThreshold={data?.deposit_threshold_eur || 0}
                     amount={partialAmount}
                     onAmountChange={setPartialAmount}
                     onPay={(amt) => onPay("partial", amt, shareMeta)}
@@ -538,7 +547,11 @@ export default function PublicPayment() {
                         {o.kind === "complete_deposit" ? (
                           <>Your share ({sharePos} of {split.count}) · Deposit gap {fmtEUR(o.amount_eur)}</>
                         ) : (o.kind === "balance" || o.kind === "full") ? (
-                          <>Your full share of the trip ({sharePos} of {split.count}) · Total {fmtEUR(total)}</>
+                          bookingSecured ? (
+                            <>Your share of the final balance ({sharePos} of {split.count}) · Deposit already paid</>
+                          ) : (
+                            <>Your full share of the trip ({sharePos} of {split.count}) · Total {fmtEUR(total)}</>
+                          )
                         ) : (
                           <>Your share ({sharePos} of {split.count}) · Full amount {fmtEUR(o.amount_eur)}</>
                         )}
@@ -551,8 +564,13 @@ export default function PublicPayment() {
                     {d.helper}
                     {split.enabled && (
                       (o.kind === "balance" || o.kind === "full") ? (
-                        <> This is one traveler&apos;s <em>full</em> portion of the trip (deposit + final balance combined).
-                          Each of the {split.count} travelers pays this once.</>
+                        bookingSecured ? (
+                          <> Deposit is already covered. Each of the {split.count} travelers now pays
+                            their share of the final balance ({fmtEUR(total - (data?.deposit_threshold_eur || 0))} in total).</>
+                        ) : (
+                          <> This is one traveler&apos;s <em>full</em> portion of the trip (deposit + final balance combined).
+                            Each of the {split.count} travelers pays this once.</>
+                        )
                       ) : (
                         <> Each of the {split.count} travelers pays this amount separately.</>
                       )
@@ -1168,17 +1186,18 @@ function TravelerInfoDialog({ onClose, ...formProps }) {
 /** Card for custom-amount payments. The client either types an amount or
  *  picks one of the suggested chips. CTA disabled until the amount is
  *  within the bounds returned by the API. */
-function PartialPaymentCard({ bounds, monthly, remaining, total, depositGap, amount, onAmountChange, onPay, isSubmitting, submitDisabled, splitCount = 0, remainingPayers = 0 }) {
+function PartialPaymentCard({ bounds, monthly, remaining, total, depositGap, bookingSecured, depositThreshold, amount, onAmountChange, onPay, isSubmitting, submitDisabled, splitCount = 0, remainingPayers = 0 }) {
   const min = parseFloat(bounds?.min_eur || 0);
   const max = parseFloat(bounds?.max_eur || remaining || 0);
   const num = parseFloat(amount);
   const valid = !isNaN(num) && num >= min - 0.01 && num <= max + 0.01;
 
   const chips = [];
-  // Split-mode chips: (1) my share of the deposit gap so the booking gets
-  // confirmed asap, (2) my full share of the whole trip (total/N).
+  // Split-mode chips are phase-aware:
+  //  • Deposit phase: prompt to finish deposit + option to pay full share
+  //  • Balance phase (booking secured): prompt to pay share of final balance
   if (splitCount >= 2) {
-    if (depositGap > 0 && remainingPayers >= 1) {
+    if (!bookingSecured && depositGap > 0 && remainingPayers >= 1) {
       const share = Math.round((depositGap / remainingPayers) * 100) / 100;
       if (share >= min - 0.01 && share <= max + 0.01) {
         chips.push({
@@ -1188,7 +1207,17 @@ function PartialPaymentCard({ bounds, monthly, remaining, total, depositGap, amo
         });
       }
     }
-    if (total && total > 0) {
+    if (bookingSecured && depositThreshold > 0) {
+      const finalTotal = total - depositThreshold;
+      const share = Math.round((finalTotal / splitCount) * 100) / 100;
+      if (share >= min - 0.01 && share <= max + 0.01) {
+        chips.push({
+          label: `Final-balance share · ${fmtEUR(share)}`,
+          sublabel: `${fmtEUR(finalTotal)} final balance split ${splitCount} ways`,
+          value: share,
+        });
+      }
+    } else if (total && total > 0) {
       const share = Math.round((total / splitCount) * 100) / 100;
       if (share >= min - 0.01 && share <= max + 0.01) {
         chips.push({
