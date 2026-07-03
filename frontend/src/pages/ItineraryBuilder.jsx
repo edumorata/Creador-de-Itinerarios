@@ -19,6 +19,7 @@ import { ShareItineraryModal } from "./builder/ShareItineraryModal";
 import { PaymentLinkModal } from "./builder/PaymentLinkModal";
 import { ExtrasModal } from "./builder/ExtrasModal";
 import { RefundsModal } from "./builder/RefundsModal";
+import { PostSaleSection } from "./builder/PostSaleSection";
 import { RotateCw, ExternalLink, Eye, Send, Users, Moon, CreditCard, Sparkles, Undo2 } from "lucide-react";
 
 export default function ItineraryBuilder() {
@@ -70,35 +71,34 @@ export default function ItineraryBuilder() {
   }, []);
 
   // Initial itinerary load + legacy data cleanup (dash-separated cities).
-  useEffect(() => {
-    (async () => {
-      const { data } = await api.get(`/itineraries/${id}`);
-      if ((!data.days || data.days.length === 0) && data.start_date && data.end_date) {
-        const n = daysBetween(data.start_date, data.end_date);
-        data.days = Array.from({ length: n }).map((_, i) => ({
-          day_id: uid("day"),
-          date: dateAdd(data.start_date, i),
-          label: `Día ${i + 1}`,
-          city: "",
-          services: [],
-        }));
+  const load = useCallback(async () => {
+    const { data } = await api.get(`/itineraries/${id}`);
+    if ((!data.days || data.days.length === 0) && data.start_date && data.end_date) {
+      const n = daysBetween(data.start_date, data.end_date);
+      data.days = Array.from({ length: n }).map((_, i) => ({
+        day_id: uid("day"),
+        date: dateAdd(data.start_date, i),
+        label: `Día ${i + 1}`,
+        city: "",
+        services: [],
+      }));
+    }
+    // Multi-city is now expressed with commas — legacy dash values returned 0 results.
+    let cleaned = false;
+    (data.days || []).forEach((d) => {
+      if (typeof d.city === "string" && d.city.includes("-")) {
+        d.city = ""; cleaned = true;
       }
-      // Multi-city is now expressed with commas — legacy dash values returned 0 results.
-      let cleaned = false;
-      (data.days || []).forEach((d) => {
-        if (typeof d.city === "string" && d.city.includes("-")) {
-          d.city = ""; cleaned = true;
-        }
-      });
-      if (cleaned) toast.message("Limpieza automática de filtros antiguos de ciudad (formato con guión).");
-      setItn(data);
-      setActiveDayId(data.days?.[0]?.day_id || null);
-      // Honour a manually-saved FX rate if present — overrides the live feed.
-      if (typeof data.fx_rate === "number" && data.fx_rate > 0) {
-        setFx({ rate: Number(data.fx_rate), source: "manual", date: "" });
-      }
-    })();
+    });
+    if (cleaned) toast.message("Limpieza automática de filtros antiguos de ciudad (formato con guión).");
+    setItn(data);
+    setActiveDayId((prev) => prev || data.days?.[0]?.day_id || null);
+    if (typeof data.fx_rate === "number" && data.fx_rate > 0) {
+      setFx({ rate: Number(data.fx_rate), source: "manual", date: "" });
+    }
   }, [id]);
+
+  useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
     (async () => {
@@ -228,7 +228,25 @@ export default function ItineraryBuilder() {
     // client to cover PayPal's cut. Toggleable per itinerary.
     const paypal_eur = itn.paypal_fee ? pvp_pre_paypal * (PAYPAL_FEE_PCT / 100) : 0;
     const pvp = pvp_pre_paypal + paypal_eur;
-    return { sub_excl: excl, sub_incl: incl, sub_with_markup, markup_eur, commission_eur, paypal_eur, pvp, iva: incl - excl };
+    // Post-sale accounting: extras already paid by the client (kind="extra"
+    // captures) add to the trip's realised PVP; refunds already executed
+    // through the manager-approval flow subtract from it. `pvp_adjusted`
+    // is what should ultimately reach Sofi / reporting for a sold trip.
+    const extras_paid = (itn.extras || []).reduce(
+      (s, ex) => s + (ex.status === "paid" ? (ex.paid_amount ?? ex.amount_eur ?? 0) : 0),
+      0
+    );
+    const refunds_executed = (itn.refund_requests || []).reduce(
+      (s, rr) => s + (rr.status === "executed" ? (rr.amount_eur ?? 0) : 0),
+      0
+    );
+    const net_adjustments = extras_paid - refunds_executed;
+    const pvp_adjusted = pvp + net_adjustments;
+    return {
+      sub_excl: excl, sub_incl: incl, sub_with_markup, markup_eur,
+      commission_eur, paypal_eur, pvp, iva: incl - excl,
+      extras_paid, refunds_executed, net_adjustments, pvp_adjusted,
+    };
   }, [itn]);
 
   if (!itn) return <div className="p-10 text-sm text-clay-700">Cargando itinerario…</div>;
@@ -696,6 +714,24 @@ export default function ItineraryBuilder() {
           </div>
 
           <AccommodationsBlock itn={itn} schedSave={schedSave} markup={itn.markup_pct || 0} onOrient={openOrient} />
+
+          {/* Post-sale accounting: renders below the itinerary body once
+              the trip has activity to show (paid extras or refund requests).
+              Reads from `itn.extras` and `itn.refund_requests` and mirrors
+              the modals so agents don't have to open a dialog to see the
+              audit trail. */}
+          {((itn.extras || []).length > 0 || (itn.refund_requests || []).length > 0) && (
+            <PostSaleSection
+              itineraryId={id}
+              extras={itn.extras || []}
+              refunds={itn.refund_requests || []}
+              payments={itn.payments || []}
+              onOpenExtras={() => setExtrasModalOpen(true)}
+              onOpenRefunds={() => setRefundsModalOpen(true)}
+              sofiTripId={itn.sofi_trip_id}
+              onChange={load}
+            />
+          )}
         </div>
 
         {/* Right: cost summary — starts BELOW the header so the trip metadata
@@ -759,6 +795,34 @@ export default function ItineraryBuilder() {
                   <div className="smallcaps text-white/70">PVP final</div>
                   <div className="font-serif text-2xl tabular">{fmtEUR(totals.pvp)}</div>
                 </div>
+                {/* Post-sale accounting — only render when there's actually
+                    an extra paid or a refund executed. Keeps the summary
+                    clean for draft trips. */}
+                {(totals.extras_paid > 0 || totals.refunds_executed > 0) && (
+                  <div className="mt-2 border border-clay-300"
+                       data-testid="post-sale-summary">
+                    <div className="px-3 py-2 border-b border-clay-300 bg-clay-50 smallcaps inline-flex items-center gap-2">
+                      <Sparkles size={11}/> Ajustes post-venta
+                    </div>
+                    {totals.extras_paid > 0 && (
+                      <div className="flex items-center justify-between px-3 py-1.5 text-sm">
+                        <span className="text-clay-700">Extras cobrados</span>
+                        <span className="tabular text-pine">+ {fmtEUR(totals.extras_paid)}</span>
+                      </div>
+                    )}
+                    {totals.refunds_executed > 0 && (
+                      <div className="flex items-center justify-between px-3 py-1.5 text-sm border-t border-clay-300">
+                        <span className="text-clay-700">Reembolsos ejecutados</span>
+                        <span className="tabular text-red-700">− {fmtEUR(totals.refunds_executed)}</span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between px-3 py-2 border-t border-clay-300 bg-terracotta-soft/30"
+                         data-testid="pvp-adjusted">
+                      <div className="smallcaps text-clay-700">PVP ajustado</div>
+                      <div className="font-serif text-xl tabular text-terracotta">{fmtEUR(totals.pvp_adjusted)}</div>
+                    </div>
+                  </div>
+                )}
                 <FxConverter
                   fx={fx}
                   setFx={setFx}

@@ -380,6 +380,10 @@ class RefundRequest(BaseModel):
     # If PayPal or the manager rejected the refund, capture the reason so
     # the agent can retry with a corrected amount / message.
     error_message: Optional[str] = None
+    # Sofi sync trace — set to True once the agent records the refund
+    # inside Sofi (currently a manual note; real Sofi push comes later).
+    synced_to_sofi: bool = False
+    synced_to_sofi_at: Optional[str] = None
 
 
 class PostSaleExtra(BaseModel):
@@ -414,6 +418,12 @@ class PostSaleExtra(BaseModel):
     # them without another lookup.
     paypal_order_id: Optional[str] = None
     paypal_capture_id: Optional[str] = None
+    # Sofi sync trace — set to True once the agent explicitly pushes the
+    # extra as a booking into the trip's Sofi record. `sofi_booking_id`
+    # captures the returned id so the audit trail links back to the row.
+    synced_to_sofi: bool = False
+    synced_to_sofi_at: Optional[str] = None
+    sofi_booking_id: Optional[int] = None
 
 
 class TravelerInfoPerson(BaseModel):

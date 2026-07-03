@@ -2609,6 +2609,93 @@ async def delete_post_sale_extra(
     return {"ok": True, "status": "deleted"}
 
 
+@api.post("/itineraries/{itinerary_id}/extras/{extra_id}/push-to-sofi")
+async def push_extra_to_sofi(
+    itinerary_id: str,
+    extra_id: str,
+    user: Annotated[User, Depends(current_user)],
+):
+    """Register a paid post-sale extra as a new booking on the trip's
+    Sofi record. Requires the itinerary to have been pushed to Sofi
+    first (so `sofi_trip_id` is set) and the extra to be status='paid'.
+
+    Idempotent — a second call on the same extra returns early with the
+    stored `sofi_booking_id`.
+    """
+    doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Itinerario no encontrado")
+    if not _can_access(doc, user):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este itinerario")
+    if not doc.get("sofi_trip_id"):
+        raise HTTPException(status_code=400,
+                            detail="El viaje aún no está en Sofi — publícalo primero.")
+    extra = next((e for e in (doc.get("extras") or []) if e.get("extra_id") == extra_id), None)
+    if not extra:
+        raise HTTPException(status_code=404, detail="Extra no encontrado")
+    if extra.get("status") != "paid":
+        raise HTTPException(status_code=400,
+                            detail="Sólo se pueden sincronizar extras cobrados.")
+    if extra.get("synced_to_sofi"):
+        return {"ok": True, "already_synced": True,
+                "sofi_booking_id": extra.get("sofi_booking_id")}
+    from sofi import push_extra_to_sofi_as_booking
+    res = await push_extra_to_sofi_as_booking(doc, extra)
+    if res.get("ok"):
+        await db.itineraries.update_one(
+            {"itinerary_id": itinerary_id, "extras.extra_id": extra_id},
+            {"$set": {
+                "extras.$.synced_to_sofi": True,
+                "extras.$.synced_to_sofi_at": now_iso(),
+                "extras.$.sofi_booking_id": res.get("sofi_booking_id"),
+                "updated_at": now_iso(),
+            }},
+        )
+    else:
+        # Surface the error to the agent but don't flag as synced.
+        raise HTTPException(status_code=502,
+                            detail=res.get("error") or "Sofi rechazó la reserva")
+    return res
+
+
+@api.post("/itineraries/{itinerary_id}/refund-requests/{refund_id}/push-to-sofi")
+async def push_refund_to_sofi(
+    itinerary_id: str,
+    refund_id: str,
+    user: Annotated[User, Depends(current_user)],
+):
+    """Record that an executed refund has been reconciled in Sofi. For
+    now this is a manual gate — flag it as `synced_to_sofi=True` so the
+    UI stops nagging the agent. The Sofi refund/adjustment row is
+    entered by hand until we build the automation for it."""
+    doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Itinerario no encontrado")
+    if not _can_access(doc, user):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este itinerario")
+    if not doc.get("sofi_trip_id"):
+        raise HTTPException(status_code=400,
+                            detail="El viaje aún no está en Sofi.")
+    refund = next((r for r in (doc.get("refund_requests") or [])
+                   if r.get("refund_id") == refund_id), None)
+    if not refund:
+        raise HTTPException(status_code=404, detail="Reembolso no encontrado")
+    if refund.get("status") != "executed":
+        raise HTTPException(status_code=400,
+                            detail="Sólo se pueden marcar como sincronizados los reembolsos ejecutados.")
+    await db.itineraries.update_one(
+        {"itinerary_id": itinerary_id, "refund_requests.refund_id": refund_id},
+        {"$set": {
+            "refund_requests.$.synced_to_sofi": True,
+            "refund_requests.$.synced_to_sofi_at": now_iso(),
+            "updated_at": now_iso(),
+        }},
+    )
+    return {"ok": True, "manual": True,
+            "hint": "Marcado como sincronizado. Introduce el ajuste "
+                    "en la ficha de Sofi manualmente."}
+
+
 @api.get("/payments/extra/{token}")
 async def get_extra_landing(token: str):
     """Public — what the client sees at /pay/extra/:token. Loads the extra
@@ -4218,6 +4305,21 @@ def _compute_pricing_totals(itn: dict) -> dict:
     pvp_pre_paypal = sub_with_markup + commission_eur
     paypal_eur = pvp_pre_paypal * 0.03 if itn.get("paypal_fee") else 0.0
     pvp = pvp_pre_paypal + paypal_eur
+    # Post-sale adjustments — extras already paid by the client add to the
+    # trip's true PVP, refunds already executed subtract from it. We
+    # expose both figures separately so the UI can show the audit trail,
+    # plus the `pvp_adjusted` field that Sofi/reporting should ultimately
+    # rely on when the trip has been sold.
+    extras_paid = 0.0
+    for ex in (itn.get("extras") or []):
+        if ex.get("status") == "paid":
+            extras_paid += float(ex.get("paid_amount") or ex.get("amount_eur") or 0)
+    refunds_executed = 0.0
+    for rr in (itn.get("refund_requests") or []):
+        if rr.get("status") == "executed":
+            refunds_executed += float(rr.get("amount_eur") or 0)
+    net_adjustments = round(extras_paid - refunds_executed, 2)
+    pvp_adjusted = round(pvp + net_adjustments, 2)
     return {
         "sub_excl": round(sub_excl, 2),
         "sub_incl": round(sub_incl, 2),
@@ -4226,6 +4328,10 @@ def _compute_pricing_totals(itn: dict) -> dict:
         "commission_eur": round(commission_eur, 2),
         "paypal_eur": round(paypal_eur, 2),
         "pvp": round(pvp, 2),
+        "extras_paid_eur": round(extras_paid, 2),
+        "refunds_executed_eur": round(refunds_executed, 2),
+        "net_adjustments_eur": net_adjustments,
+        "pvp_adjusted": pvp_adjusted,
     }
 
 

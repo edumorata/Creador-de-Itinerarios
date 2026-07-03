@@ -1450,3 +1450,114 @@ async def _push_one_booking_fast(page, b: dict, hidden: dict,
         "error": f"{err_msg} (HTTP {resp.status})",
         "details": [body_excerpt[:200]] if body_excerpt else [],
     }
+
+
+# ---------------------------------------------------------------------------
+# Post-sale extras — add to an already-pushed Sofi trip
+# ---------------------------------------------------------------------------
+async def push_extra_to_sofi_as_booking(itn: dict, extra: dict) -> dict:
+    """Open Sofi, log in, load a fresh booking form and post a NEW booking
+    row for the given `extra` (a PostSaleExtra dict) tied to the parent
+    itinerary's `sofi_trip_id`. Idempotency is the caller's job (main
+    server pathway checks `synced_to_sofi` before invoking this).
+
+    Returns a dict with either
+      { ok: True, sofi_booking_id, url } — booking created
+      { ok: False, error, ... }         — Sofi login failed, no trip_id, HTTP error
+    """
+    if not GESTION_USER or not GESTION_PASS:
+        return {"ok": False, "error": "Sofi credentials not configured"}
+    trip_id = itn.get("sofi_trip_id")
+    if not trip_id:
+        return {"ok": False, "error": "El viaje aún no tiene sofi_trip_id — publícalo primero."}
+
+    # Build the booking dict shape that `_push_one_booking_fast` expects.
+    # Extra activities are always type_radio=0 (Actividades / Transporte),
+    # single-line, priced at the paid amount (which the client already
+    # paid via PayPal separately). Notes tag the origin so the agent can
+    # tell "post-sale" bookings apart in Sofi.
+    qty = int(itn.get("num_travelers") or 1) or 1
+    paid_amount = float(extra.get("paid_amount") or extra.get("amount_eur") or 0)
+    # Extras don't carry a VAT split; store the paid amount in both cols
+    # (Sofi will show excl==incl which is honest given we don't know the
+    # provider's tax status yet).
+    booking = {
+        "kind": "extra",
+        "trip_id": int(trip_id),
+        "service_name": (extra.get("title") or "Extra post-venta")[:120],
+        "city": "",
+        "quantity": qty,
+        "date_entry": extra.get("date"),
+        "date_exit": None,
+        "room": None,
+        "invoice_excl": round(paid_amount, 2),
+        "invoice_incl": round(paid_amount, 2),
+        "price_total": round(paid_amount, 2),
+        "notes": (
+            f"[POST-VENTA] Vendido tras la firma del viaje. "
+            f"Pagado por el cliente por separado vía PayPal "
+            f"(capture {extra.get('paypal_capture_id') or 'n/a'}). "
+            + (extra.get("description") or "").strip()
+        )[:500],
+        "provider": None,
+        "type_radio": 0,
+    }
+
+    async with _BROWSER_SEMAPHORE:
+        async with async_playwright() as pw:
+            try:
+                browser = await pw.chromium.launch(args=_CHROMIUM_LAUNCH_ARGS)
+            except Exception as e:
+                msg = str(e)
+                if "Executable doesn't exist" in msg or "playwright install" in msg:
+                    await _ensure_chromium_installed()
+                    browser = await pw.chromium.launch(args=_CHROMIUM_LAUNCH_ARGS)
+                else:
+                    return {"ok": False, "error": f"Playwright: {e}"}
+            try:
+                ctx = await browser.new_context(viewport={"width": 1400, "height": 1100})
+                page = await ctx.new_page()
+
+                # 1. Login into Sofi.
+                try:
+                    await page.goto(f"{GESTION_BASE}/login",
+                                    wait_until="domcontentloaded", timeout=30000)
+                except Exception as e:
+                    return {"ok": False, "error": f"No se pudo abrir Sofi: {e}"}
+                for sel in ['input[name="username"]', "#username", "#mod-login-username"]:
+                    if await page.query_selector(sel):
+                        await page.fill(sel, GESTION_USER); break
+                for sel in ['input[name="password"]', "#password", "#mod-login-password"]:
+                    if await page.query_selector(sel):
+                        await page.fill(sel, GESTION_PASS); break
+                sub = (await page.query_selector('button[type="submit"]')
+                       or await page.query_selector('input[type="submit"]'))
+                if sub:
+                    await sub.click()
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=20000)
+                except Exception:
+                    pass
+                if "/login" in page.url.lower():
+                    return {"ok": False, "error": "Login a Sofi falló"}
+
+                # 2. Load a fresh booking form to grab the CSRF + hidden fields.
+                await page.goto(f"{GESTION_BASE}/reservas/form/3/",
+                                wait_until="domcontentloaded", timeout=30000)
+                try:
+                    await page.wait_for_selector("input[name*='__form_id']",
+                                                  timeout=15000)
+                except Exception:
+                    pass
+                hidden = await _fetch_booking_form_hidden(page)
+                if not hidden:
+                    return {"ok": False, "error": "No se pudieron leer los campos ocultos de Sofi"}
+
+                # 3. Fire the POST via the fast path.
+                operator_cache: dict = {}
+                result = await _push_one_booking_fast(
+                    page, booking, hidden, operator_cache
+                )
+                return result
+            finally:
+                await browser.close()
