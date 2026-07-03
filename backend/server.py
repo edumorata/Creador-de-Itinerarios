@@ -2871,7 +2871,7 @@ async def create_refund_request(
     try:
         from email_service import send_email, render_refund_request_email
         base_url = os.environ.get("FRONTEND_PUBLIC_URL") or _frontend_base_url()
-        itinerary_url = f"{base_url.rstrip('/')}/itineraries/{itinerary_id}"
+        itinerary_url = f"{base_url.rstrip('/')}/itineraries/{itinerary_id}?open=refunds"
         subj, html, text = render_refund_request_email(
             trip_name=doc.get("name") or "Viaje",
             main_traveler=doc.get("main_traveler") or "",
@@ -3004,7 +3004,7 @@ async def approve_refund(
         try:
             from email_service import send_email, render_refund_decision_email
             base_url = os.environ.get("FRONTEND_PUBLIC_URL") or _frontend_base_url()
-            itinerary_url = f"{base_url.rstrip('/')}/itineraries/{itinerary_id}"
+            itinerary_url = f"{base_url.rstrip('/')}/itineraries/{itinerary_id}?open=refunds"
             subj, html, text = render_refund_decision_email(
                 trip_name=doc.get("name") or "Viaje",
                 main_traveler=doc.get("main_traveler") or "",
@@ -3069,7 +3069,7 @@ async def reject_refund(
         if refund and refund.get("requested_by"):
             from email_service import send_email, render_refund_decision_email
             base_url = os.environ.get("FRONTEND_PUBLIC_URL") or _frontend_base_url()
-            itinerary_url = f"{base_url.rstrip('/')}/itineraries/{itinerary_id}"
+            itinerary_url = f"{base_url.rstrip('/')}/itineraries/{itinerary_id}?open=refunds"
             subj, html, text = render_refund_decision_email(
                 trip_name=(doc or {}).get("name") or "Viaje",
                 main_traveler=(doc or {}).get("main_traveler") or "",

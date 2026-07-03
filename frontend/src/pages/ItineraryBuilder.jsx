@@ -49,6 +49,17 @@ export default function ItineraryBuilder() {
   const [extrasModalOpen, setExtrasModalOpen] = useState(false);
   const [refundsModalOpen, setRefundsModalOpen] = useState(false);
 
+  // Auto-open a modal when the page is opened from an email deep-link.
+  // e.g. `/itineraries/xxx?open=refunds` (from refund notification emails)
+  // or `?open=extras`. Runs once on mount; the flag is deliberately not
+  // cleared from the URL so a refresh keeps the same view.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const which = params.get("open");
+    if (which === "refunds") setRefundsModalOpen(true);
+    else if (which === "extras") setExtrasModalOpen(true);
+  }, []);
+
   // FX rate for EUR↔USD conversion. Starts from the daily ECB feed, but if
   // the itinerary already has a `fx_rate` value saved on the doc, that value
   // overrides the live feed once the itinerary loads. Agents can change the
