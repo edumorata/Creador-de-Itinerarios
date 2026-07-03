@@ -21,7 +21,7 @@ import { ExtrasModal } from "./builder/ExtrasModal";
 import { RefundsModal } from "./builder/RefundsModal";
 import { PostSaleSection } from "./builder/PostSaleSection";
 import { CashflowStatus } from "./builder/CashflowStatus";
-import { RotateCw, ExternalLink, Eye, Send, Users, Moon, CreditCard, Sparkles, Undo2 } from "lucide-react";
+import { RotateCw, ExternalLink, Eye, Send, Users, Moon, CreditCard, Sparkles, Undo2, ChevronDown, ChevronUp } from "lucide-react";
 
 export default function ItineraryBuilder() {
   const { id } = useParams();
@@ -49,6 +49,19 @@ export default function ItineraryBuilder() {
   // add-ons and cancellations at any time.
   const [extrasModalOpen, setExtrasModalOpen] = useState(false);
   const [refundsModalOpen, setRefundsModalOpen] = useState(false);
+  // Aside "Coste" collapse toggle — when collapsed only the PVP final is
+  // shown so the estado-de-cobros + payment history are visible without
+  // scrolling. Persist locally to remember the agent's preference.
+  const [costCollapsed, setCostCollapsed] = useState(() => {
+    try { return localStorage.getItem("vdv_cost_collapsed") === "1"; } catch { return false; }
+  });
+  const toggleCost = () => {
+    setCostCollapsed((v) => {
+      const next = !v;
+      try { localStorage.setItem("vdv_cost_collapsed", next ? "1" : "0"); } catch { /* ignore */ }
+      return next;
+    });
+  };
 
   // Auto-open a modal when the page is opened from an email deep-link.
   // e.g. `/itineraries/xxx?open=refunds` (from refund notification emails)
@@ -749,8 +762,19 @@ export default function ItineraryBuilder() {
         <aside className="bg-clay-50/60">
           <div className="sticky top-2 max-h-screen overflow-auto flex flex-col">
             <div className="border-b border-clay-300 p-5 bg-white">
-              <div className="smallcaps">Coste</div>
+              <button type="button"
+                      onClick={toggleCost}
+                      data-testid="cost-collapse-toggle"
+                      className="w-full flex items-center justify-between text-left group">
+                <div className="smallcaps">Coste</div>
+                <span className="text-clay-500 group-hover:text-clay-700 inline-flex items-center gap-1 text-[10px] uppercase tracking-widest">
+                  {costCollapsed ? "Ampliar" : "Colapsar"}
+                  {costCollapsed ? <ChevronDown size={12}/> : <ChevronUp size={12}/>}
+                </span>
+              </button>
               <div className="grid-borders mt-3">
+                {!costCollapsed && (
+                  <>
                 <Row label="Subtotal con IVA">{fmtEUR(totals.sub_incl)}</Row>
                 <Row label={(
                   <div className="flex items-center gap-2">
@@ -801,6 +825,8 @@ export default function ItineraryBuilder() {
                   </label>
                   <span className="tabular text-clay-700">{itn.paypal_fee ? `+ ${fmtEUR(totals.paypal_eur)}` : "—"}</span>
                 </div>
+                  </>
+                )}
                 <div className="flex items-center justify-between py-3 bg-clay-900 text-white px-3 mt-2" data-testid="final-price">
                   <div className="smallcaps text-white/70">PVP final</div>
                   <div className="font-serif text-2xl tabular">{fmtEUR(totals.pvp)}</div>

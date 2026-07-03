@@ -68,10 +68,9 @@ export function CashflowStatus({ startDate, total, payments = [], onOpenLinkModa
 
   const paidPct = total > 0 ? Math.min(100, Math.round((paid / total) * 100)) : 0;
 
-  const lastThree = captured
+  const capturedSorted = captured
     .slice()
-    .sort((a, b) => (b.paid_at || "").localeCompare(a.paid_at || ""))
-    .slice(0, 3);
+    .sort((a, b) => (b.paid_at || "").localeCompare(a.paid_at || ""));
 
   return (
     <div className="mt-2 border border-clay-300" data-testid="cashflow-status">
@@ -145,12 +144,15 @@ export function CashflowStatus({ startDate, total, payments = [], onOpenLinkModa
         </div>
       )}
 
-      {/* Captured payments (last 3) */}
-      {lastThree.length > 0 && (
+      {/* Captured payments (all, scroll if many) */}
+      {capturedSorted.length > 0 && (
         <div className="px-3 py-2 border-t border-clay-300">
-          <div className="text-[10px] uppercase tracking-widest text-clay-500 mb-1">Últimos pagos</div>
-          <div className="space-y-1">
-            {lastThree.map((p) => (
+          <div className="text-[10px] uppercase tracking-widest text-clay-500 mb-1 flex items-center justify-between">
+            <span>Pagos recibidos</span>
+            <span className="tabular text-clay-500">{capturedSorted.length}</span>
+          </div>
+          <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
+            {capturedSorted.map((p) => (
               <div key={p.payment_id}
                    data-testid={`cashflow-payment-${p.payment_id}`}
                    className="flex items-center justify-between text-[11px]">
