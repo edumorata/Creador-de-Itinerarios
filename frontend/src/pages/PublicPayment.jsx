@@ -475,15 +475,25 @@ export default function PublicPayment() {
                 payer_email: payerEmail || undefined,
                 share_label: `${sharePos} of ${split.count}`,
               } : {};
-              // For "complete_deposit" the amount is already the gap to
-              // finish the deposit. Divide it among the payers who
-              // haven't paid yet (`count - alreadySplit`), so each
-              // remaining traveler covers their fair share of the gap.
+              // Per-share amount in split mode. Semantics per kind:
+              //  • complete_deposit → amount is already the *gap* to reach
+              //    the deposit threshold; divide it among the payers that
+              //    haven't paid yet so each covers their bit.
+              //  • balance / full   → amount is a whole-trip figure, so
+              //    divide by TOTAL trip (total_eur / N) — this is the
+              //    traveler's full share of the trip, deposit + balance
+              //    combined. Using remaining/N would under-charge because
+              //    the payment made by earlier travelers would end up
+              //    unfairly reducing this payer's share too.
+              //  • partial          → client picks the amount, no split
+              //    math applied here (see PartialPaymentCard).
               const remainingPayers = Math.max(1, split.count - alreadySplit);
               const perShare = split.enabled && o.amount_eur
                 ? (o.kind === "complete_deposit"
                     ? Math.round((o.amount_eur / remainingPayers) * 100) / 100
-                    : Math.round((o.amount_eur / split.count) * 100) / 100)
+                    : (o.kind === "balance" || o.kind === "full")
+                      ? Math.round((total / split.count) * 100) / 100
+                      : Math.round((o.amount_eur / split.count) * 100) / 100)
                 : null;
               if (o.kind === "partial") {
                 return (
@@ -492,12 +502,19 @@ export default function PublicPayment() {
                     bounds={data?.partial_bounds}
                     monthly={data?.monthly_suggested_eur}
                     remaining={remaining}
+                    total={total}
+                    depositGap={
+                      (!data?.booking_secured && data?.deposit_threshold_eur)
+                        ? Math.max(0, data.deposit_threshold_eur - paid)
+                        : 0
+                    }
                     amount={partialAmount}
                     onAmountChange={setPartialAmount}
                     onPay={(amt) => onPay("partial", amt, shareMeta)}
                     isSubmitting={submittingKind === "partial"}
                     submitDisabled={submittingKind !== null || (split.enabled && !payerName.trim())}
                     splitCount={split.enabled ? split.count : 0}
+                    remainingPayers={split.enabled ? Math.max(1, split.count - alreadySplit) : 0}
                   />
                 );
               }
@@ -518,7 +535,13 @@ export default function PublicPayment() {
                         {fmtEUR(perShare)}
                       </div>
                       <div className="mt-1.5 font-raleway text-[11px] text-espiritu-deep/60">
-                        Your share ({sharePos} of {split.count}) · Full amount {fmtEUR(o.amount_eur)}
+                        {o.kind === "complete_deposit" ? (
+                          <>Your share ({sharePos} of {split.count}) · Deposit gap {fmtEUR(o.amount_eur)}</>
+                        ) : (o.kind === "balance" || o.kind === "full") ? (
+                          <>Your full share of the trip ({sharePos} of {split.count}) · Total {fmtEUR(total)}</>
+                        ) : (
+                          <>Your share ({sharePos} of {split.count}) · Full amount {fmtEUR(o.amount_eur)}</>
+                        )}
                       </div>
                     </>
                   ) : (
@@ -527,7 +550,12 @@ export default function PublicPayment() {
                   <div className="font-raleway text-sm text-espiritu-deep/70 mt-3 flex-1 leading-relaxed">
                     {d.helper}
                     {split.enabled && (
-                      <> Each of the {split.count} travelers pays this amount separately.</>
+                      (o.kind === "balance" || o.kind === "full") ? (
+                        <> This is one traveler&apos;s <em>full</em> portion of the trip (deposit + final balance combined).
+                          Each of the {split.count} travelers pays this once.</>
+                      ) : (
+                        <> Each of the {split.count} travelers pays this amount separately.</>
+                      )
                     )}
                   </div>
                   <button
@@ -1140,21 +1168,35 @@ function TravelerInfoDialog({ onClose, ...formProps }) {
 /** Card for custom-amount payments. The client either types an amount or
  *  picks one of the suggested chips. CTA disabled until the amount is
  *  within the bounds returned by the API. */
-function PartialPaymentCard({ bounds, monthly, remaining, amount, onAmountChange, onPay, isSubmitting, submitDisabled, splitCount = 0 }) {
+function PartialPaymentCard({ bounds, monthly, remaining, total, depositGap, amount, onAmountChange, onPay, isSubmitting, submitDisabled, splitCount = 0, remainingPayers = 0 }) {
   const min = parseFloat(bounds?.min_eur || 0);
   const max = parseFloat(bounds?.max_eur || remaining || 0);
   const num = parseFloat(amount);
   const valid = !isNaN(num) && num >= min - 0.01 && num <= max + 0.01;
 
   const chips = [];
-  if (splitCount >= 2 && remaining > 0) {
-    const share = Math.round((remaining / splitCount) * 100) / 100;
-    if (share >= min - 0.01 && share <= max + 0.01) {
-      chips.push({
-        label: `Your share · ${fmtEUR(share)}`,
-        sublabel: `${fmtEUR(remaining)} split ${splitCount} ways`,
-        value: share,
-      });
+  // Split-mode chips: (1) my share of the deposit gap so the booking gets
+  // confirmed asap, (2) my full share of the whole trip (total/N).
+  if (splitCount >= 2) {
+    if (depositGap > 0 && remainingPayers >= 1) {
+      const share = Math.round((depositGap / remainingPayers) * 100) / 100;
+      if (share >= min - 0.01 && share <= max + 0.01) {
+        chips.push({
+          label: `Complete deposit · ${fmtEUR(share)}`,
+          sublabel: `deposit gap ${fmtEUR(depositGap)} · ${remainingPayers} payer${remainingPayers > 1 ? 's' : ''} left`,
+          value: share,
+        });
+      }
+    }
+    if (total && total > 0) {
+      const share = Math.round((total / splitCount) * 100) / 100;
+      if (share >= min - 0.01 && share <= max + 0.01) {
+        chips.push({
+          label: `My full share · ${fmtEUR(share)}`,
+          sublabel: `${fmtEUR(total)} split ${splitCount} ways — covers deposit + balance`,
+          value: share,
+        });
+      }
     }
   }
   if (monthly?.amount_eur) {
