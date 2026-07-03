@@ -309,9 +309,11 @@ class Payment(BaseModel):
     # after deposit; "full" → 100% (always allowed, mandatory when
     # ≤60 days); "partial" → custom amount chosen by the client (between 10%
     # of total and the remaining balance) — multiple partials allowed;
+    # "complete_deposit" → pre-computed amount that finishes the deposit
+    # so the booking gets confirmed (offered when paid>0 but < threshold);
     # "extra" → standalone payment for a PostSaleExtra (separate invoice
     # from the main trip so refunds are isolated).
-    kind: Literal["deposit", "balance", "full", "partial", "extra"]
+    kind: Literal["deposit", "balance", "full", "partial", "complete_deposit", "extra"]
     amount_eur: float
     paypal_order_id: Optional[str] = None
     paypal_capture_id: Optional[str] = None

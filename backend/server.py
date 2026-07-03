@@ -1736,8 +1736,24 @@ def _compute_payment_options(itn: dict, totals: dict) -> dict:
         }
         monthly = None
     else:
-        # Some captured already → offer the full remaining as 'balance', and
-        # a custom partial payment for clients who want to chip away.
+        # Some captured already → prioritise finishing the deposit (so the
+        # booking is confirmed) if the threshold isn't crossed yet. Then
+        # offer the full remaining as 'balance', plus a custom partial.
+        threshold_amount = (
+            full_amount if (days is not None and days <= 60) else deposit_amount
+        )
+        booking_secured_now = paid_eur >= threshold_amount - 0.01
+        if not booking_secured_now:
+            gap = round(threshold_amount - paid_eur, 2)
+            options.append({
+                "kind": "complete_deposit",
+                "amount_eur": gap,
+                "label": "Completar depósito",
+                "description": (
+                    f"Faltan {gap:.2f} € para asegurar la reserva. "
+                    "Al llegar al depósito completo, el viaje queda confirmado."
+                ),
+            })
         options.append({
             "kind": "balance",
             "amount_eur": remaining,
@@ -2167,7 +2183,7 @@ async def submit_traveler_info(token: str, payload: TravelerInfoBody, request: R
 
 
 class CreatePayPalOrderBody(BaseModel):
-    kind: Literal["deposit", "balance", "full", "partial"]
+    kind: Literal["deposit", "balance", "full", "partial", "complete_deposit"]
     # For kind="partial", the exact EUR amount the client wants to pay.
     # Validated server-side against the current partial_bounds (10% floor
     # of the total, capped at the remaining balance).

@@ -22,6 +22,7 @@ const fmtDate = (iso) => {
 
 const KIND_DESCRIPTOR = {
   deposit: { tag: "Deposit", pct: "30%", helper: "Confirm your trip today. The remaining balance is paid 45 days before departure." },
+  complete_deposit: { tag: "Complete deposit", pct: null, helper: "This last bit finishes the 30% deposit and confirms the booking. Ideal for the second traveler in a split payment.", highlight: true },
   balance: { tag: "Remaining balance", pct: null, helper: "Final payment to complete your booking." },
   full:    { tag: "Full payment", pct: "100%", helper: "Single full payment to confirm your trip." },
   partial: { tag: "Custom amount", pct: null, helper: "Pay any amount you want. Come back to this same link whenever you'd like to pay another instalment." },
@@ -474,8 +475,15 @@ export default function PublicPayment() {
                 payer_email: payerEmail || undefined,
                 share_label: `${sharePos} of ${split.count}`,
               } : {};
+              // For "complete_deposit" the amount is already the gap to
+              // finish the deposit. Divide it among the payers who
+              // haven't paid yet (`count - alreadySplit`), so each
+              // remaining traveler covers their fair share of the gap.
+              const remainingPayers = Math.max(1, split.count - alreadySplit);
               const perShare = split.enabled && o.amount_eur
-                ? Math.round((o.amount_eur / split.count) * 100) / 100
+                ? (o.kind === "complete_deposit"
+                    ? Math.round((o.amount_eur / remainingPayers) * 100) / 100
+                    : Math.round((o.amount_eur / split.count) * 100) / 100)
                 : null;
               if (o.kind === "partial") {
                 return (
@@ -497,7 +505,7 @@ export default function PublicPayment() {
               return (
                 <div key={o.kind}
                      data-testid={`payment-option-${o.kind}`}
-                     className="bg-white border border-espiritu-sand-deep p-7 flex flex-col">
+                     className={`p-7 flex flex-col ${d.highlight ? "bg-espiritu-sand-deep/40 border-2 border-espiritu-olive" : "bg-white border border-espiritu-sand-deep"}`}>
                   <div className="flex items-baseline justify-between">
                     <div className="kicker">{d.tag}</div>
                     {d.pct && (
