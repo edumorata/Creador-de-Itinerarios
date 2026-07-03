@@ -757,10 +757,10 @@ export default function ItineraryBuilder() {
           )}
         </div>
 
-        {/* Right: cost summary — starts BELOW the header so the trip metadata
-            has the full width on top */}
+        {/* Right: cost summary — sticky pricing at top + non-sticky
+            cashflow below so many-payment histories scroll with the page */}
         <aside className="bg-clay-50/60">
-          <div className="sticky top-2 max-h-screen overflow-auto flex flex-col">
+          <div className="sticky top-2 flex flex-col">
             <div className="border-b border-clay-300 p-5 bg-white">
               <button type="button"
                       onClick={toggleCost}
@@ -865,14 +865,18 @@ export default function ItineraryBuilder() {
                   totals={totals}
                   onPersist={(rate) => setField("fx_rate", rate)}
                 />
-                <CashflowStatus
-                  startDate={itn.start_date}
-                  total={totals.pvp_adjusted || totals.pvp}
-                  payments={itn.payments || []}
-                  onOpenLinkModal={() => setPaymentModalOpen(true)}
-                />
               </div>
             </div>
+          </div>
+          {/* Non-sticky: scrolls with the page so many-payment histories
+              are always reachable via natural page scroll. */}
+          <div className="px-0">
+            <CashflowStatus
+              startDate={itn.start_date}
+              total={totals.pvp_adjusted || totals.pvp}
+              payments={itn.payments || []}
+              onOpenLinkModal={() => setPaymentModalOpen(true)}
+            />
           </div>
         </aside>
       </div>

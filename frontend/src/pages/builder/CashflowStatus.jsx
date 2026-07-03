@@ -73,7 +73,7 @@ export function CashflowStatus({ startDate, total, payments = [], onOpenLinkModa
     .sort((a, b) => (b.paid_at || "").localeCompare(a.paid_at || ""));
 
   return (
-    <div className="mt-2 border border-clay-300" data-testid="cashflow-status">
+    <div className="mt-4 mx-4 mb-6 border border-clay-300 bg-white" data-testid="cashflow-status">
       <button onClick={onOpenLinkModal}
               data-testid="cashflow-open-link"
               type="button"
@@ -151,7 +151,7 @@ export function CashflowStatus({ startDate, total, payments = [], onOpenLinkModa
             <span>Pagos recibidos</span>
             <span className="tabular text-clay-500">{capturedSorted.length}</span>
           </div>
-          <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
+          <div className="space-y-1">
             {capturedSorted.map((p) => (
               <div key={p.payment_id}
                    data-testid={`cashflow-payment-${p.payment_id}`}
