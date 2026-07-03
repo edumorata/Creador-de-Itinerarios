@@ -961,3 +961,48 @@ Files touched (iter-22.2):
 - `frontend/src/pages/ItineraryBuilder.jsx` — dropped `itineraryId` +
   `onChange` props from `<PostSaleSection>`.
 
+
+### Iteration 22.3 — Refund approval email notifications (2026-07-03)
+
+**Owner request**: agregar notificaciones por email al flujo de aprobación
+de reembolsos para que Bea, Marina y Eduardo se enteren en tiempo real
+cuando hay una petición pendiente, y para que el agente que la solicitó
+sepa el resultado.
+
+**Backend (`email_service.py`)** — dos templates nuevos:
+- `render_refund_request_email(trip_name, main_traveler, amount_eur,
+  reason, requested_by, itinerary_url)` — HTML+text en castellano con la
+  estética Espíritu Travel (cream `#f4ebd7` + terra accent). Botón grande
+  "Revisar y aprobar →" que abre el itinerario en el builder.
+- `render_refund_decision_email(trip_name, main_traveler, amount_eur,
+  reason, approved, approver_email, decision_note, paypal_refund_id,
+  itinerary_url)` — reutilizable para aprobación (verde `#3d7d5b`) y
+  rechazo (rojo `#c94433`). Incluye el `paypal_refund_id` cuando aplica.
+
+**Backend (`server.py`)** — 3 endpoints extendidos:
+- `POST /itineraries/{id}/refund-requests` → tras guardar, dispara con
+  `asyncio.create_task(send_email(...))` un correo a cada dirección en
+  `REFUND_APPROVERS` (Beatriz, Marina, Eduardo). Fire-and-forget: si
+  Resend falla el endpoint sigue devolviendo 200. `reply_to` = agente
+  solicitante para que los aprobadores puedan responder directamente.
+- `POST .../refund-requests/{rid}/approve` → tras completar el PayPal
+  refund exitoso, envía email a `refund.requested_by` con el
+  `paypal_refund_id` y la nota del aprobador. Un fallo en el envío no
+  revierte el refund.
+- `POST .../refund-requests/{rid}/reject` → envía email al solicitante
+  con el motivo del rechazo. Mismo patrón fire-and-forget.
+
+**E2E verificado en sandbox** (2026-07-03):
+- 3 emails de petición → `ccb6e8d8-…` (Marina), `ed57d5a6-…` (Eduardo),
+  `fc251efe-…` (Beatriz).
+- 1 email de rechazo → `014c94fd-…` (a Eduardo, solicitante).
+- 1 email de aprobación → `ee31ec1d-…` (a Eduardo, solicitante) tras
+  ejecutar refund real en PayPal sandbox (`0MR865132S288554N`).
+
+**No mocks**: usa Resend con dominio `espiritutravel.com` ya verificado.
+
+Files touched (iter-22.3):
+- `backend/email_service.py` — 2 helpers nuevos (~150 LOC).
+- `backend/server.py` — 3 bloques try/except en los endpoints de
+  create/approve/reject para disparar emails (~65 LOC).
+

@@ -2864,6 +2864,30 @@ async def create_refund_request(
         {"itinerary_id": itinerary_id},
         {"$push": {"refund_requests": refund}, "$set": {"updated_at": now_iso()}},
     )
+
+    # Notify approvers (fire-and-forget). Email failure never blocks the
+    # refund request from being saved — the approver can still find it in
+    # the UI. `sorted()` gives a stable send order for tests.
+    try:
+        from email_service import send_email, render_refund_request_email
+        base_url = os.environ.get("FRONTEND_PUBLIC_URL") or _frontend_base_url()
+        itinerary_url = f"{base_url.rstrip('/')}/itineraries/{itinerary_id}"
+        subj, html, text = render_refund_request_email(
+            trip_name=doc.get("name") or "Viaje",
+            main_traveler=doc.get("main_traveler") or "",
+            amount_eur=refund["amount_eur"],
+            reason=refund["reason"],
+            requested_by=refund["requested_by"] or "un agente",
+            itinerary_url=itinerary_url,
+        )
+        for approver_email in sorted(REFUND_APPROVERS):
+            asyncio.create_task(send_email(
+                to=approver_email, subject=subj, html=html, text=text,
+                reply_to=refund["requested_by"] or None,
+            ))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("refund email dispatch failed: %s", e)
+
     return refund
 
 
@@ -2973,6 +2997,32 @@ async def approve_refund(
             {"itinerary_id": itinerary_id, "payments.payment_id": refund["payment_id"]},
             {"$set": {"payments.$.status": "refunded", "updated_at": now_iso()}},
         )
+
+    # Notify the agent who requested the refund. Fire-and-forget: PayPal
+    # already ran, so a failed email must not fail the endpoint.
+    if new_status == "executed" and refund.get("requested_by"):
+        try:
+            from email_service import send_email, render_refund_decision_email
+            base_url = os.environ.get("FRONTEND_PUBLIC_URL") or _frontend_base_url()
+            itinerary_url = f"{base_url.rstrip('/')}/itineraries/{itinerary_id}"
+            subj, html, text = render_refund_decision_email(
+                trip_name=doc.get("name") or "Viaje",
+                main_traveler=doc.get("main_traveler") or "",
+                amount_eur=round(amount, 2),
+                reason=refund.get("reason") or "",
+                approved=True,
+                approver_email=user.email,
+                decision_note=payload.note_to_payer or "",
+                paypal_refund_id=paypal_refund_id,
+                itinerary_url=itinerary_url,
+            )
+            asyncio.create_task(send_email(
+                to=refund["requested_by"], subject=subj, html=html, text=text,
+                reply_to=user.email,
+            ))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("refund approve email dispatch failed: %s", e)
+
     return {"ok": True, "status": new_status, "paypal_refund_id": paypal_refund_id}
 
 
@@ -3010,6 +3060,34 @@ async def reject_refund(
             status_code=404,
             detail="Reembolso no encontrado o ya decidido.",
         )
+
+    # Notify the agent who requested the refund. Best-effort, non-blocking.
+    try:
+        doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+        refund = next((rr for rr in (doc.get("refund_requests") or [])
+                       if rr.get("refund_id") == refund_id), None) if doc else None
+        if refund and refund.get("requested_by"):
+            from email_service import send_email, render_refund_decision_email
+            base_url = os.environ.get("FRONTEND_PUBLIC_URL") or _frontend_base_url()
+            itinerary_url = f"{base_url.rstrip('/')}/itineraries/{itinerary_id}"
+            subj, html, text = render_refund_decision_email(
+                trip_name=(doc or {}).get("name") or "Viaje",
+                main_traveler=(doc or {}).get("main_traveler") or "",
+                amount_eur=float(refund.get("amount_eur") or 0),
+                reason=refund.get("reason") or "",
+                approved=False,
+                approver_email=user.email,
+                decision_note=(payload.reason or "").strip(),
+                paypal_refund_id=None,
+                itinerary_url=itinerary_url,
+            )
+            asyncio.create_task(send_email(
+                to=refund["requested_by"], subject=subj, html=html, text=text,
+                reply_to=user.email,
+            ))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("refund reject email dispatch failed: %s", e)
+
     return {"ok": True, "status": "rejected"}
 
 

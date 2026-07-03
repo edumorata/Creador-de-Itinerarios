@@ -242,3 +242,153 @@ Pay securely here: {public_url}
 Espíritu Travel · payment invite
 """
     return subject, html, text
+
+
+def render_refund_request_email(
+    *,
+    trip_name: str,
+    main_traveler: str,
+    amount_eur: float,
+    reason: str,
+    requested_by: str,
+    itinerary_url: str,
+) -> tuple[str, str, str]:
+    """Email to the approver whitelist (Bea, Marina) when an agent files a
+    new refund request. Direct link back to the itinerary so the approver
+    can review the RefundsModal in one click."""
+    subject = f"[Reembolso pendiente] {trip_name} · {amount_eur:.2f} €"
+    reason_line = (reason or "").strip() or "(sin motivo especificado)"
+    html = f"""\
+<!doctype html>
+<html>
+  <body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#f4ebd7;padding:24px;color:#121b28">
+    <table cellpadding="0" cellspacing="0" width="100%" style="max-width:600px;margin:0 auto;background:#fff;border:1px solid #ead9b8">
+      <tr><td style="padding:24px 28px;border-bottom:1px solid #ead9b8">
+        <div style="font-size:11px;letter-spacing:.25em;text-transform:uppercase;color:#B08749">Reembolso pendiente de aprobación</div>
+        <div style="font-family:Georgia,serif;font-size:24px;margin-top:8px;line-height:1.15">{trip_name}</div>
+        {f'<div style="color:#666;margin-top:4px;font-size:13px">Cliente: {main_traveler}</div>' if main_traveler else ''}
+      </td></tr>
+      <tr><td style="padding:0 28px">
+        <div style="background:#f4ebd7;padding:18px 20px;border-left:4px solid #e37e5e;margin-top:20px">
+          <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:#B08749">Importe solicitado</div>
+          <div style="font-family:Georgia,serif;font-size:34px;color:#c94433;margin-top:4px">− {amount_eur:.2f} €</div>
+          <div style="font-size:12px;color:#666;margin-top:8px">Solicitado por <strong>{requested_by}</strong></div>
+        </div>
+      </td></tr>
+      <tr><td style="padding:16px 28px 8px">
+        <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:#666;margin-bottom:6px">Motivo</div>
+        <div style="font-size:14px;white-space:pre-wrap;background:#faf6ec;padding:12px 14px;border:1px solid #ead9b8">{reason_line}</div>
+      </td></tr>
+      <tr><td style="padding:20px 28px 8px">
+        <a href="{itinerary_url}" style="display:inline-block;background:#121b28;color:#fff;padding:14px 28px;text-decoration:none;font-size:13px;letter-spacing:.15em;text-transform:uppercase;font-weight:700">Revisar y aprobar →</a>
+      </td></tr>
+      <tr><td style="padding:12px 28px 24px;font-size:12px;color:#666;line-height:1.6">
+        Al aprobar, PayPal ejecuta el reembolso automáticamente y el importe se descuenta del PVP del viaje. Sólo Beatriz, Marina o Eduardo pueden aprobar.
+      </td></tr>
+    </table>
+  </body>
+</html>
+"""
+    text = f"""\
+Reembolso pendiente de aprobación
+{trip_name}
+{f'Cliente: {main_traveler}' if main_traveler else ''}
+
+Importe solicitado: {amount_eur:.2f} €
+Solicitado por: {requested_by}
+
+Motivo:
+{reason_line}
+
+Revisar y aprobar: {itinerary_url}
+
+Al aprobar, PayPal ejecuta el reembolso automáticamente.
+"""
+    return subject, html, text
+
+
+def render_refund_decision_email(
+    *,
+    trip_name: str,
+    main_traveler: str,
+    amount_eur: float,
+    reason: str,
+    approved: bool,
+    approver_email: str,
+    decision_note: str,
+    paypal_refund_id: Optional[str],
+    itinerary_url: str,
+) -> tuple[str, str, str]:
+    """Email to the agent who requested the refund, once a manager has
+    approved (money returned) or rejected the request."""
+    verb = "aprobado" if approved else "rechazado"
+    accent = "#3d7d5b" if approved else "#c94433"
+    subject = f"[Reembolso {verb}] {trip_name} · {amount_eur:.2f} €"
+    reason_line = (reason or "").strip() or "(sin motivo especificado)"
+    note_html = (
+        f"<tr><td style='padding:16px 28px 8px'><div style='font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:#666;margin-bottom:6px'>Nota del aprobador</div>"
+        f"<div style='font-size:14px;white-space:pre-wrap;background:#faf6ec;padding:12px 14px;border:1px solid #ead9b8'>{decision_note}</div></td></tr>"
+        if (decision_note or "").strip() else ""
+    )
+    pp_line_html = (
+        f"<div style='font-size:12px;color:#666;margin-top:8px'>PayPal refund id: <code style='font-family:monospace'>{paypal_refund_id}</code></div>"
+        if paypal_refund_id else ""
+    )
+    action_line = (
+        "El importe se ha devuelto al cliente vía PayPal y ya se descuenta del PVP del viaje."
+        if approved else
+        "La solicitud ha sido rechazada. No se ha movido dinero."
+    )
+    html = f"""\
+<!doctype html>
+<html>
+  <body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#f4ebd7;padding:24px;color:#121b28">
+    <table cellpadding="0" cellspacing="0" width="100%" style="max-width:600px;margin:0 auto;background:#fff;border:1px solid #ead9b8">
+      <tr><td style="padding:24px 28px;border-bottom:1px solid #ead9b8">
+        <div style="font-size:11px;letter-spacing:.25em;text-transform:uppercase;color:{accent}">Reembolso {verb}</div>
+        <div style="font-family:Georgia,serif;font-size:24px;margin-top:8px;line-height:1.15">{trip_name}</div>
+        {f'<div style="color:#666;margin-top:4px;font-size:13px">Cliente: {main_traveler}</div>' if main_traveler else ''}
+      </td></tr>
+      <tr><td style="padding:0 28px">
+        <div style="background:#f4ebd7;padding:18px 20px;border-left:4px solid {accent};margin-top:20px">
+          <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:#B08749">Importe</div>
+          <div style="font-family:Georgia,serif;font-size:34px;color:{accent};margin-top:4px">{'− ' if approved else ''}{amount_eur:.2f} €</div>
+          <div style="font-size:13px;color:#666;margin-top:8px">Decisión tomada por <strong>{approver_email}</strong></div>
+          {pp_line_html}
+        </div>
+      </td></tr>
+      <tr><td style="padding:16px 28px 8px">
+        <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:#666;margin-bottom:6px">Motivo original</div>
+        <div style="font-size:14px;white-space:pre-wrap;background:#faf6ec;padding:12px 14px;border:1px solid #ead9b8">{reason_line}</div>
+      </td></tr>
+      {note_html}
+      <tr><td style="padding:16px 28px">
+        <p style="font-size:14px;line-height:1.65;margin:0 0 12px">{action_line}</p>
+      </td></tr>
+      <tr><td style="padding:8px 28px 8px">
+        <a href="{itinerary_url}" style="display:inline-block;background:#121b28;color:#fff;padding:14px 28px;text-decoration:none;font-size:13px;letter-spacing:.15em;text-transform:uppercase;font-weight:700">Abrir itinerario →</a>
+      </td></tr>
+      <tr><td style="padding:12px 28px 24px;font-size:12px;color:#666">Espíritu Travel · notificaciones internas</td></tr>
+    </table>
+  </body>
+</html>
+"""
+    text = f"""\
+Reembolso {verb}
+{trip_name}
+{f'Cliente: {main_traveler}' if main_traveler else ''}
+
+Importe: {amount_eur:.2f} €
+Decisión de: {approver_email}
+{f'PayPal refund id: {paypal_refund_id}' if paypal_refund_id else ''}
+
+Motivo original:
+{reason_line}
+
+{f'Nota del aprobador: {decision_note}' if (decision_note or '').strip() else ''}
+
+{action_line}
+
+Abrir itinerario: {itinerary_url}
+"""
+    return subject, html, text
