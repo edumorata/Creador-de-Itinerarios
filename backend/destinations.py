@@ -36,12 +36,9 @@ _GALLERY = {
         "1531572753322-ad063cecc140",
         "1525874684015-58379d421a52",
     ],
-    "florence": [
-        "1541370545831-faf645b12dd8",
-        "1543429770-b0f9de0fed11",
-    ],
+    "florence": ["1523906630133-f6934a1ab2b9"],
     "tuscany": [
-        "1523906630133-f6934a1ab2b9",   # Tuscan hills
+        "1523906630133-f6934a1ab2b9",
         "1533107862482-0e6974b06ec4",
     ],
     "venice": [
@@ -49,38 +46,35 @@ _GALLERY = {
         "1514890547357-a9ee288728e0",
     ],
     "milan": ["1512058564366-18510be2db19"],
-    "naples": ["1631274329756-e6b04a06c0cc"],
-    "sorrento": ["1560800452-f2d475982b96"],
+    "naples": ["1533105079780-92b9be482077"],
+    "sorrento": ["1533105079780-92b9be482077"],
     "capri": ["1533107862482-0e6974b06ec4"],
     "amalfi": ["1533105079780-92b9be482077"],
-    "positano": ["1583312605516-4c14e9d9c1a1"],
+    "positano": ["1533105079780-92b9be482077"],
     "sicily": ["1602343168117-bb8ffe3e2e9f"],
     "cinque terre": ["1517093602195-b40af9688b46"],
-    "bologna": ["1543429770-b0f9de0fed11"],
-    "verona": ["1567604134859-f5bbe20b0f2f"],
+    "bologna": ["1552832230-c0197dd311b5"],
+    "verona": ["1552832230-c0197dd311b5"],
     "lake como": ["1550399105-c4db5fb85c18"],
-    "puglia": ["1594906297894-27e0e2f0d90d"],
+    "puglia": ["1533105079780-92b9be482077"],
     "italy": ["1552832230-c0197dd311b5"],
     # ---- Spain ------------------------------------------------------------
     "madrid": [
         "1543783207-ec64e4d95325",
         "1509840841025-9088ba78a826",
     ],
-    "barcelona": [
-        "1583422409516-2895a77efded",
-        "1591261730799-ee4e6c2d1e5f",
-    ],
+    "barcelona": ["1583422409516-2895a77efded"],
     "seville": ["1560179707-f14e90ef3623"],
-    "cordoba": ["1591634616938-1dfa13ee1f0f"],  # placeholder — Cordoba mezquita
-    "granada": ["1591121779720-3f27f28fbbd6"],
+    "cordoba": ["1560179707-f14e90ef3623"],
+    "granada": ["1560179707-f14e90ef3623"],
     "valencia": ["1560787313-5dff3307e257"],
     "san sebastian": ["1571893544028-06b07af6dade"],
-    "bilbao": ["1580419443186-31acbf50c1c9"],
-    "toledo": ["1591634616938-1dfa13ee1f0f"],
+    "bilbao": ["1571893544028-06b07af6dade"],
+    "toledo": ["1543783207-ec64e4d95325"],
     "salamanca": ["1543783207-ec64e4d95325"],
     "mallorca": ["1519677100203-a0e668c92439"],
     "menorca": ["1519677100203-a0e668c92439"],
-    "ibiza": ["1520370968810-f5f8e5b8b0a4"],
+    "ibiza": ["1519677100203-a0e668c92439"],
     "tenerife": ["1509233725247-49e657c54213"],
     "gran canaria": ["1509233725247-49e657c54213"],
     "andalusia": ["1560179707-f14e90ef3623"],
@@ -88,13 +82,15 @@ _GALLERY = {
     "spain": ["1543783207-ec64e4d95325"],
     # ---- Portugal ---------------------------------------------------------
     "lisbon": ["1526392060635-9d6019884377"],
-    "porto": ["1555990538-32a76bbeb1e5"],
-    "algarve": ["1590420889722-eeb2bdbc32d5"],
-    "madeira": ["1590420889722-eeb2bdbc32d5"],
+    "porto": ["1526392060635-9d6019884377"],
+    "algarve": ["1526392060635-9d6019884377"],
+    "cascais": ["1526392060635-9d6019884377"],
+    "sintra": ["1526392060635-9d6019884377"],
+    "madeira": ["1526392060635-9d6019884377"],
     "portugal": ["1526392060635-9d6019884377"],
     # ---- France -----------------------------------------------------------
     "paris": ["1502602898657-3e91760cbb34"],
-    "provence": ["1595351298080-25c92e79b47b"],
+    "provence": ["1502602898657-3e91760cbb34"],
     "nice": ["1502602898657-3e91760cbb34"],
     "cannes": ["1502602898657-3e91760cbb34"],
     "france": ["1502602898657-3e91760cbb34"],
@@ -231,14 +227,28 @@ def gallery_for(destination: Optional[str]) -> List[str]:
 
 def pick_hero(itinerary: dict) -> str:
     """Choose the best hero image for an itinerary. Priority: explicit
-    `hero_image` → first city on day 1 → first accommodation city →
-    default."""
+    `hero_image` → first REAL city on the itinerary (skipping labels like
+    "Departing US") → first accommodation city → default."""
     if itinerary.get("hero_image"):
         return itinerary["hero_image"]
+    # 1. Prefer the cleaned top-level `cities[]` list — that's already
+    # been de-noised at import time.
+    for city in itinerary.get("cities") or []:
+        imgs = gallery_for(city)
+        if imgs and _DEFAULT_URL not in imgs:
+            return imgs[0]
+    # 2. Otherwise, scan day.city, skipping obvious non-city labels
     for d in itinerary.get("days") or []:
-        city = d.get("city")
-        if city:
-            return gallery_for(city)[0]
+        city = (d.get("city") or "").strip()
+        if not city:
+            continue
+        low = city.lower()
+        if any(bad in low for bad in _NON_CITY_TOKENS):
+            continue
+        imgs = gallery_for(city)
+        if imgs:
+            return imgs[0]
+    # 3. Finally accommodations
     for a in itinerary.get("accommodations") or []:
         for hint in (a.get("city"), a.get("destination"), a.get("name")):
             if hint:
@@ -246,6 +256,14 @@ def pick_hero(itinerary: dict) -> str:
                 if imgs:
                     return imgs[0]
     return _DEFAULT_URL
+
+
+_NON_CITY_TOKENS = (
+    "departing", "departure", "arriving", "arrival", "return", "home",
+    "flight", "transfer", "airport", "en route", "layover", "check-in day",
+    "welcome to", "goodbye", "farewell", "day at leisure", "free day",
+    "information", "documents",
+)
 
 
 def pick_day_image(day: dict, itinerary: dict) -> Optional[str]:

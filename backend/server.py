@@ -3331,6 +3331,44 @@ async def import_travefy_confirm(
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
+# Non-city phrases the Travefy day labels sometimes surface. When one of
+# these matches (case-insensitive substring), the token is dropped from
+# the top-level itinerary.cities list.
+_NON_CITY_TOKENS = (
+    "departing", "departure", "arriving", "arrival", "return", "home",
+    "flight", "transfer", "airport", "en route", "layover", "check-in day",
+    "welcome to", "goodbye", "farewell", "day at leisure", "free day",
+    "information", "documents",
+)
+
+
+def _clean_city_list(raw_cities) -> list:
+    """Normalise the per-day `city` strings into a clean, deduped list of
+    real cities suitable for the trip-view hero and destination pills.
+
+    - Splits transfer strings on separators (`-`, `→`, `to`, `/`, `,`) so
+      "Porto - Cascais" contributes both cities.
+    - Drops non-city labels ("Departing US", "Flight to Lisbon"...).
+    - Preserves first-seen order.
+    """
+    seen: list = []
+    for raw in raw_cities:
+        if not raw:
+            continue
+        parts = re.split(r"\s*(?:[-→/]|\bto\b|,)\s*", str(raw), flags=re.IGNORECASE)
+        for part in parts:
+            token = (part or "").strip()
+            if not token:
+                continue
+            low = token.lower()
+            if any(bad in low for bad in _NON_CITY_TOKENS):
+                continue
+            if token not in seen:
+                seen.append(token)
+    return seen
+
+
+
 async def _build_itinerary_from_travefy_preview(payload: dict, user: User) -> Itinerary:
     days_in = payload.get("days") or []
     hotels_in = payload.get("hotels") or []
@@ -3434,13 +3472,11 @@ async def _build_itinerary_from_travefy_preview(payload: dict, user: User) -> It
         except (TypeError, ValueError):
             duration = 0
 
-    # Derive `cities[]` from the day list preserving first-seen order.
-    # Handy for the trip view's hero + destination pills, and for the
-    # cotizador filters later.
-    cities_seen: list = []
-    for d in days_out:
-        if d.city and d.city not in cities_seen:
-            cities_seen.append(d.city)
+    # Derive a CLEAN top-level `cities[]` list from the day list. We keep
+    # the raw per-day `day.city` string as-is (informative for transfer
+    # days like "Porto - Cascais"), but the trip-view hero + destination
+    # pill must show only real cities, in first-seen order.
+    cities_seen = _clean_city_list([d.city for d in days_out])
 
     itn = Itinerary(
         name=payload.get("trip_name") or "Itinerario importado de Travefy",

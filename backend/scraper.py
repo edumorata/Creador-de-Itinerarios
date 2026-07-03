@@ -219,6 +219,7 @@ Output ONLY a single JSON object, no markdown, no commentary. Schema:
 Rules:
 - Skip Travefy boilerplate ("Add this itinerary", "Itinerary Chat", agent contact info).
 - Parse dates intelligently. If the page only shows a month + day, infer year from any nearby year reference or leave null.
+- For each day, `city` must be the PRIMARY DESTINATION the traveler is in that day (e.g. "Porto", "Cascais", "Rome"). If the day is a transfer, use the destination they arrive at (e.g. "Porto → Cascais" ⇒ "Cascais"). Do NOT use non-city labels like "Departing US", "Arrival", "Home", "Flight", or day markers as the city — set `city` to null in those cases.
 - Hotels usually appear once per stay-block; figure out check-in / check-out from the surrounding days.
 - For each hotel, extract `room_type` VERBATIM from the page (e.g. "Classic Roma", "Comfort Room", "Superior Room", "Double Executive", "Twin Room"). Look for labels like "Room / Bed Type", "Tipo de habitación", "Habitación", or any sentence describing the room. Set null when no room description is present.
 - Activities are anything that's NOT a hotel or a flight transfer.
