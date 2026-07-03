@@ -757,10 +757,11 @@ export default function ItineraryBuilder() {
           )}
         </div>
 
-        {/* Right: cost summary — sticky pricing at top + non-sticky
-            cashflow below so many-payment histories scroll with the page */}
+        {/* Right: cost summary — flows naturally with page scroll so the
+            agent can scroll past the pricing block to see the full payment
+            history in "Estado de cobros" below. No sticky behavior. */}
         <aside className="bg-clay-50/60">
-          <div className="sticky top-2 flex flex-col">
+          <div className="flex flex-col">
             <div className="border-b border-clay-300 p-5 bg-white">
               <button type="button"
                       onClick={toggleCost}
@@ -867,10 +868,6 @@ export default function ItineraryBuilder() {
                 />
               </div>
             </div>
-          </div>
-          {/* Non-sticky: scrolls with the page so many-payment histories
-              are always reachable via natural page scroll. */}
-          <div className="px-0">
             <CashflowStatus
               startDate={itn.start_date}
               total={totals.pvp_adjusted || totals.pvp}
