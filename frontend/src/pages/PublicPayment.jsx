@@ -236,37 +236,24 @@ export default function PublicPayment() {
       {showInitialBanner && (
         <div className="mb-10">
           {successKind && (
-            <div className="border-l-4 border-espiritu-olive bg-white px-5 py-5 flex items-start gap-3"
-                 data-testid="paypal-success-banner">
-              <CheckCircle2 size={22} className="mt-0.5 shrink-0 text-espiritu-olive" />
-              <div>
-                <div className="font-kanit font-bold text-xl text-espiritu-deep">Payment received — thank you!</div>
-                <div className="text-sm mt-2 font-raleway text-espiritu-deep/80 leading-relaxed">
-                  We&apos;ve captured {successAmount ? fmtEUR(parseFloat(successAmount)) : "your payment"}
-                  {KIND_DESCRIPTOR[successKind] ? ` (${KIND_DESCRIPTOR[successKind].tag.toLowerCase()})` : ""}.
-                  {data?.booking_secured
-                    ? " The booking is now confirmed — our team will be in touch shortly with the next steps."
-                    : data?.deposit_threshold_eur > 0
-                      ? ` Booking is confirmed once ${fmtEUR(data.deposit_threshold_eur)} of the deposit is collected.`
-                      : " Our team will be in touch shortly with the next steps."}
-                </div>
-              </div>
-            </div>
-          )}
-          {/* Post-payment: prompt to invite the next split-payer. Only
-              shown right after a successful capture (return from PayPal)
-              when there's still remaining balance AND the ledger has at
-              least one entry with a "X of N" label (i.e. we're clearly
-              in a split flow). */}
-          {successKind && remaining > 0.5 && (data?.captured_payments || []).some((p) => /\d+\s*of\s*\d+/i.test(p?.share_label || "")) && (
-            <ShareWithNextTravelerCard
+            <PostPaymentBanner
+              amount={successAmount ? parseFloat(successAmount) : null}
+              kindLabel={KIND_DESCRIPTOR[successKind]?.tag.toLowerCase()}
+              bookingSecured={!!data?.booking_secured}
+              depositThreshold={data?.deposit_threshold_eur || 0}
+              depositPaid={data?.paid_eur || 0}
+              // Share-with-next-traveler is only offered when we're clearly
+              // in a split flow (ledger has an "X of N" label AND there's
+              // still remaining balance).
+              showShare={
+                remaining > 0.5 &&
+                (data?.captured_payments || []).some((p) => /\d+\s*of\s*\d+/i.test(p?.share_label || ""))
+              }
               token={token}
-              trip_name={data?.trip_name}
-              remaining={remaining}
-              paidByMe={successAmount ? parseFloat(successAmount) : 0}
+              tripName={data?.trip_name}
               captured={data?.captured_payments || []}
-              deposit_threshold={data?.deposit_threshold_eur || 0}
-              booking_secured={!!data?.booking_secured}
+              total={data?.total_eur || 0}
+              remaining={remaining}
             />
           )}
           {cancelled && !successKind && (
@@ -809,25 +796,35 @@ function Total({ label, value, accent, testid }) {
 }
 
 /**
- * Post-payment card offering the client three ways to hand the same
- * `/pay/:token` link to the NEXT split-payer: WhatsApp share, copy link,
- * or send by email through Resend. Only rendered after a successful
- * capture when the ledger already carries at least one "X of N" share.
+ * Unified post-payment banner — combines "Payment received" and (when
+ * we're in a split flow) "Share with the next traveler" into a single
+ * elegant card. Sits above the hero, so it's kept tight and
+ * scannable rather than dominating the page.
  */
-function ShareWithNextTravelerCard({
-  token, trip_name, remaining, paidByMe, captured,
-  deposit_threshold, booking_secured,
+function PostPaymentBanner({
+  amount, kindLabel, bookingSecured, depositThreshold, depositPaid,
+  showShare, token, tripName, captured, total, remaining,
 }) {
-  const publicUrl = `${window.location.origin}/pay/${token}`;
-  // Derive the next share amount: same size as the last "X of N" pattern.
+  // Derive the next-traveler share amount using the SAME logic as the
+  // payment cards, so the WhatsApp / email invite carries the exact
+  // figure Beatriz will see when she opens the link.
   const lastLabel = [...captured].reverse().find((p) => /\d+\s*of\s*\d+/i.test(p?.share_label || ""));
   const m = lastLabel ? /(\d+)\s*of\s*(\d+)/i.exec(lastLabel.share_label) : null;
   const totalShares = m ? parseInt(m[2]) : 2;
   const alreadyPaidCount = captured.filter((p) => /\d+\s*of\s*\d+/i.test(p?.share_label || "")).length;
-  const remainingShares = Math.max(1, totalShares - alreadyPaidCount);
-  const suggestedShare = Math.max(0, Math.round((remaining / remainingShares) * 100) / 100);
+  const remainingPayers = Math.max(1, totalShares - alreadyPaidCount);
   const nextPos = Math.min(totalShares, alreadyPaidCount + 1);
+  // Phase-aware share amount:
+  //  • If booking not secured yet → next payer completes the deposit gap
+  //    (their share of what's missing to reach the threshold).
+  //  • If booking secured → each remaining payer covers their share of
+  //    the FINAL BALANCE only (total − deposit_threshold) / N.
+  const depositGap = Math.max(0, depositThreshold - depositPaid);
+  const suggestedShare = bookingSecured
+    ? Math.round(((total - depositThreshold) / totalShares) * 100) / 100
+    : Math.round((depositGap / remainingPayers) * 100) / 100;
   const myName = captured[captured.length - 1]?.payer_name || "your fellow traveler";
+  const publicUrl = `${window.location.origin}/pay/${token}`;
 
   const [nextEmail, setNextEmail] = useState("");
   const [nextName, setNextName] = useState("");
@@ -836,14 +833,13 @@ function ShareWithNextTravelerCard({
   const [copied, setCopied] = useState(false);
   const [emailError, setEmailError] = useState(null);
 
-  const gapText = !booking_secured && deposit_threshold > 0
-    ? ` So far ${fmtEUR(deposit_threshold - (remaining))} paid — booking confirms at ${fmtEUR(deposit_threshold)}.`
-    : "";
   const waText = encodeURIComponent(
-    `Hi! I just paid my share (${fmtEUR(paidByMe)}) of our trip "${trip_name || ""}". `
-    + `Here's the link to pay your share (${fmtEUR(suggestedShare)}). `
-    + `It's a secure PayPal checkout, no account needed:\n\n${publicUrl}`
-    + gapText
+    `Hi! I just paid my share of our trip "${tripName || ""}". `
+    + `Your share is ${fmtEUR(suggestedShare)}. `
+    + `Pay securely with credit/debit card via PayPal (no account needed):\n\n${publicUrl}`
+    + (bookingSecured
+        ? " Deposit is already covered — this is the final balance."
+        : ` So far ${fmtEUR(depositPaid)} paid — booking confirms at ${fmtEUR(depositThreshold)}.`)
   );
   const waHref = `https://wa.me/?text=${waText}`;
 
@@ -870,87 +866,115 @@ function ShareWithNextTravelerCard({
         },
       );
       if (res?.ok) setSent(true);
-      else setEmailError("Couldn't send the email — try WhatsApp or copy the link instead.");
+      else setEmailError("Couldn't send — try WhatsApp or copy the link instead.");
     } catch (e) {
-      setEmailError(e?.response?.data?.detail || "Couldn't send the email.");
+      setEmailError(e?.response?.data?.detail || "Couldn't send.");
     } finally { setSending(false); }
   };
 
   return (
-    <div className="mt-3 border-l-4 border-espiritu-terra bg-white px-6 py-6"
-         data-testid="share-next-traveler-card">
-      <div className="kicker mb-2 inline-flex items-center gap-2">
-        <Users size={12}/> Share with the next traveler
-      </div>
-      <div className="font-serif text-espiritu-deep text-2xl leading-tight">
-        {alreadyPaidCount} of {totalShares} shares paid — {fmtEUR(suggestedShare)} to go per person
-      </div>
-      <div className="mt-2 font-raleway text-sm text-espiritu-deep/75 leading-relaxed">
-        Great — your share is in! Now let the next traveler (share {nextPos} of {totalShares})
-        finish their part. They&apos;ll land on the same secure link with the split pre-filled.
-      </div>
-
-      <div className="mt-5 grid gap-3 sm:grid-cols-3">
-        <a href={waHref} target="_blank" rel="noreferrer"
-           data-testid="share-whatsapp-btn"
-           className="inline-flex items-center justify-center gap-2 bg-espiritu-olive hover:bg-espiritu-olive/90 text-white px-4 py-2.5 text-sm font-medium rounded-full transition-colors">
-          <MessageCircle size={14}/> WhatsApp
-        </a>
-        <button onClick={copy}
-                data-testid="share-copy-btn"
-                className="inline-flex items-center justify-center gap-2 bg-espiritu-deep hover:bg-black text-white px-4 py-2.5 text-sm font-medium rounded-full transition-colors">
-          <Copy size={14}/> {copied ? "Copied!" : "Copy link"}
-        </button>
-        <a href={`mailto:?subject=${encodeURIComponent(`Your share of ${trip_name || "our trip"}`)}&body=${waText}`}
-           data-testid="share-mailto-btn"
-           className="inline-flex items-center justify-center gap-2 border border-espiritu-deep hover:bg-espiritu-sand-deep/30 text-espiritu-deep px-4 py-2.5 text-sm font-medium rounded-full transition-colors">
-          <MailIcon size={14}/> Open mail app
-        </a>
-      </div>
-
-      {/* Send directly via Resend */}
-      <div className="mt-6 pt-5 border-t border-espiritu-sand-deep">
-        <div className="kicker mb-2">Or send it directly</div>
-        {sent ? (
-          <div className="text-sm text-espiritu-olive font-raleway inline-flex items-center gap-2"
-               data-testid="invite-sent">
-            <CheckCircle2 size={14}/> Email sent to {nextEmail}
+    <div className="border-l-4 border-espiritu-olive bg-white"
+         data-testid="paypal-success-banner">
+      {/* Compact success header */}
+      <div className="flex items-start gap-3 px-5 py-4">
+        <CheckCircle2 size={18} className="mt-0.5 shrink-0 text-espiritu-olive"/>
+        <div className="flex-1 min-w-0">
+          <div className="font-raleway font-semibold text-espiritu-deep text-[15px]">
+            {amount ? `${fmtEUR(amount)} received` : "Payment received"}
+            {kindLabel && <span className="font-normal text-espiritu-deep/60"> · {kindLabel}</span>}
           </div>
-        ) : (
-          <>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="Next traveler's email">
-                <input
-                  type="email"
-                  value={nextEmail}
-                  onChange={(e) => setNextEmail(e.target.value)}
-                  data-testid="next-payer-email"
-                  className="brand-input"
-                  placeholder="e.g. beatriz@example.com"
-                />
-              </Field>
-              <Field label="Their name (optional)">
-                <input
-                  value={nextName}
-                  onChange={(e) => setNextName(e.target.value)}
-                  data-testid="next-payer-name"
-                  className="brand-input"
-                  placeholder="Beatriz"
-                />
-              </Field>
-            </div>
-            <button onClick={sendEmail}
-                    disabled={sending}
-                    data-testid="send-invite-btn"
-                    className="mt-4 inline-flex items-center gap-2 bg-espiritu-deep hover:bg-black text-white disabled:opacity-60 px-4 py-2.5 text-sm font-medium rounded-full transition-colors">
-              {sending ? <><Loader2 size={14} className="animate-spin"/> Sending…</> : <><Send size={14}/> Send invite</>}
-            </button>
-            {emailError && (
-              <div className="mt-2 text-xs text-espiritu-magenta font-raleway" data-testid="invite-error">{emailError}</div>
-            )}
-          </>
-        )}
+          <div className="mt-1 font-raleway text-[13px] text-espiritu-deep/75 leading-relaxed">
+            {bookingSecured
+              ? "Booking confirmed — our team will be in touch shortly with the next steps."
+              : depositThreshold > 0
+                ? <>Booking confirms once {fmtEUR(depositThreshold)} of the deposit is collected. <span className="text-espiritu-terra font-medium">{fmtEUR(depositPaid)} paid so far.</span></>
+                : "Our team will be in touch shortly with the next steps."}
+          </div>
+        </div>
       </div>
+
+      {showShare && suggestedShare > 0 && (
+        <div className="border-t border-espiritu-sand-deep px-5 py-4"
+             data-testid="share-next-traveler-card">
+          <div className="flex flex-wrap items-baseline justify-between gap-3">
+            <div className="min-w-0">
+              <div className="kicker inline-flex items-center gap-1.5 mb-1">
+                <Users size={11}/>
+                {bookingSecured
+                  ? <>Next traveler — final-balance share</>
+                  : <>Next traveler — deposit share {nextPos} of {totalShares}</>}
+              </div>
+              <div className="font-raleway text-[13px] text-espiritu-deep/80">
+                Their share: <strong className="tabular font-serif text-espiritu-deep text-base">{fmtEUR(suggestedShare)}</strong>
+                <span className="text-espiritu-deep/60">
+                  {bookingSecured
+                    ? " · deposit already paid, they cover the final balance"
+                    : " · same secure link, split auto-detected"}
+                </span>
+              </div>
+            </div>
+            <div className="inline-flex flex-wrap items-center gap-1.5">
+              <a href={waHref} target="_blank" rel="noreferrer"
+                 data-testid="share-whatsapp-btn"
+                 className="inline-flex items-center gap-1.5 bg-espiritu-olive hover:bg-espiritu-olive/90 text-white px-3 py-1.5 text-[12px] font-medium rounded-full transition-colors">
+                <MessageCircle size={12}/> WhatsApp
+              </a>
+              <button onClick={copy}
+                      data-testid="share-copy-btn"
+                      className="inline-flex items-center gap-1.5 bg-espiritu-deep hover:bg-black text-white px-3 py-1.5 text-[12px] font-medium rounded-full transition-colors">
+                <Copy size={12}/> {copied ? "Copied!" : "Copy link"}
+              </button>
+              <a href={`mailto:?subject=${encodeURIComponent(`Your share of ${tripName || "our trip"}`)}&body=${waText}`}
+                 data-testid="share-mailto-btn"
+                 className="inline-flex items-center gap-1.5 border border-espiritu-deep hover:bg-espiritu-sand-deep/40 text-espiritu-deep px-3 py-1.5 text-[12px] font-medium rounded-full transition-colors">
+                <MailIcon size={12}/> Mail
+              </a>
+            </div>
+          </div>
+
+          {/* Inline email invite — hidden until the user clicks "or send
+              directly" to keep the banner tight. */}
+          <details className="mt-3">
+            <summary className="cursor-pointer inline-flex items-center gap-1.5 font-raleway text-[11px] text-espiritu-deep/70 hover:text-espiritu-deep list-none select-none">
+              <Send size={11}/> Or send it by email directly
+            </summary>
+            <div className="mt-3">
+              {sent ? (
+                <div className="text-[13px] text-espiritu-olive font-raleway inline-flex items-center gap-2"
+                     data-testid="invite-sent">
+                  <CheckCircle2 size={13}/> Email sent to {nextEmail}
+                </div>
+              ) : (
+                <div className="flex flex-wrap items-end gap-2">
+                  <input
+                    type="email"
+                    value={nextEmail}
+                    onChange={(e) => setNextEmail(e.target.value)}
+                    data-testid="next-payer-email"
+                    className="brand-input flex-1 min-w-[220px] py-2 text-[13px]"
+                    placeholder="beatriz@example.com"
+                  />
+                  <input
+                    value={nextName}
+                    onChange={(e) => setNextName(e.target.value)}
+                    data-testid="next-payer-name"
+                    className="brand-input w-40 py-2 text-[13px]"
+                    placeholder="Beatriz"
+                  />
+                  <button onClick={sendEmail} disabled={sending}
+                          data-testid="send-invite-btn"
+                          className="inline-flex items-center gap-1.5 bg-espiritu-deep hover:bg-black text-white disabled:opacity-60 px-3 py-2 text-[12px] font-medium rounded-full transition-colors">
+                    {sending ? <><Loader2 size={12} className="animate-spin"/> Sending…</> : <><Send size={12}/> Send</>}
+                  </button>
+                </div>
+              )}
+              {emailError && (
+                <div className="mt-1.5 text-[11px] text-espiritu-magenta font-raleway" data-testid="invite-error">{emailError}</div>
+              )}
+            </div>
+          </details>
+        </div>
+      )}
     </div>
   );
 }
