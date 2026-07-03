@@ -1006,3 +1006,71 @@ Files touched (iter-22.3):
 - `backend/server.py` — 3 bloques try/except en los endpoints de
   create/approve/reject para disparar emails (~65 LOC).
 
+
+### Iteration 22.4 — Cashflow visibility + reminders (2026-07-03)
+
+**Owner request**: dar visibilidad al agente sobre los cobros del viaje —
+tanto por email al capturarse un pago como con un widget en el builder,
+y añadir un recordatorio automático 5 días antes de que venza el saldo.
+
+**Regla de negocio confirmada**:
+- Depósito 30% disponible sólo si `start_date − hoy > 60 días`. Si el
+  cliente reserva dentro de esos 60 días, obligatorio pagar full.
+- El saldo (o el full si no hubo depósito) debe estar cobrado
+  **45 días antes** de la salida.
+
+**Backend**
+1. `email_service.py` — dos templates nuevos:
+   - `render_payment_captured_email(...)` — cubre deposit, full, balance,
+     partial (con `share_label`) y extras post-venta.
+   - `render_balance_reminder_email(...)` — recordatorio 5 días antes.
+2. `server.py` — hooks fire-and-forget al `created_by`:
+   - `payment_return_handler` (línea 2366): tras un capture COMPLETED,
+     envía email con importe, tipo (deposit/full/balance/partial), estado
+     del cobro global (paid/remaining), booking secured sí/no y link.
+   - `extra_return_handler` (línea 2821): mismo comportamiento para
+     pagos de extras post-venta.
+3. `server.py::balance_reminder_loop()` — task async lanzada en startup:
+   - Corre cada hora
+   - Busca itinerarios con `start_date = hoy + 50 días`, con al menos un
+     `payments[].status='captured'` y `remaining_eur > 0`
+   - Envía email al `created_by` y stampa `balance_reminder_sent_on=hoy`
+     para no duplicar. Idempotente aunque el backend reinicie varias veces.
+
+**Frontend**
+- `CashflowStatus.jsx` (nuevo) — widget compacto en el aside derecho,
+  bajo el bloque "PVP final". Muestra:
+  - Cobrado / Falta / barra de progreso (verde=asegurado, terra=pendiente)
+  - Badge "Reserva asegurada" o "Reserva al llegar a X €"
+  - Vencimiento del saldo (start_date − 45d) + countdown en días
+    (rojo si vencido, terra si <=5 días, gris en otro caso)
+  - Últimos 3 pagos capturados (kind, share_label, fecha, importe)
+- 100% cálculo client-side sobre `itn.payments` y `totals.pvp_adjusted`,
+  sin llamadas API extra.
+- Click sobre la cabecera abre el `PaymentLinkModal` para ver el histórico
+  completo y compartir el enlace.
+- `ItineraryBuilder.jsx`: import + render bajo el bloque PVP.
+
+**Testing E2E**:
+- Widget visible con datos reales en 2 itinerarios (deposit único y
+  split 2-of-2), screenshots confirman los valores.
+- Email de pago capturado enviado via Resend a eduardo@viajadverdad.com
+  (subject `[Pago recibido] Test Cashflow — Autumn Trip · 1840.38 EUR`).
+- Email de recordatorio enviado via Resend a eduardo@viajadverdad.com
+  (subject `[Recordatorio] En 5 días vence el saldo…`).
+
+**Deployment prep** (misma iteración):
+- `backend/.env`: entradas con caracteres especiales entrecomilladas
+  (`GESTION_VIAJADVERDAD_PASS`, `RESEND_SENDER_EMAIL`) — fix requerido
+  por deployment_agent.
+- `FRONTEND_PUBLIC_URL` ya configurado al preview actual; cuando pase a
+  prod el owner debe actualizarlo al dominio real.
+
+Files touched (iter-22.4):
+- `backend/email_service.py` — 2 helpers nuevos (~170 LOC).
+- `backend/server.py` — `balance_reminder_loop` + 2 hooks de captura
+  (~110 LOC).
+- `backend/.env` — quoted values.
+- `frontend/src/pages/builder/CashflowStatus.jsx` (nuevo).
+- `frontend/src/pages/ItineraryBuilder.jsx` — import + render.
+

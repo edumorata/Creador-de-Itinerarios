@@ -20,6 +20,7 @@ import { PaymentLinkModal } from "./builder/PaymentLinkModal";
 import { ExtrasModal } from "./builder/ExtrasModal";
 import { RefundsModal } from "./builder/RefundsModal";
 import { PostSaleSection } from "./builder/PostSaleSection";
+import { CashflowStatus } from "./builder/CashflowStatus";
 import { RotateCw, ExternalLink, Eye, Send, Users, Moon, CreditCard, Sparkles, Undo2 } from "lucide-react";
 
 export default function ItineraryBuilder() {
@@ -804,6 +805,12 @@ export default function ItineraryBuilder() {
                   <div className="smallcaps text-white/70">PVP final</div>
                   <div className="font-serif text-2xl tabular">{fmtEUR(totals.pvp)}</div>
                 </div>
+                <CashflowStatus
+                  startDate={itn.start_date}
+                  total={totals.pvp_adjusted || totals.pvp}
+                  payments={itn.payments || []}
+                  onOpenLinkModal={() => setPaymentModalOpen(true)}
+                />
                 {/* Post-sale accounting — only render when there's actually
                     an extra paid or a refund executed. Keeps the summary
                     clean for draft trips. */}

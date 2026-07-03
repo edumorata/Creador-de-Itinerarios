@@ -244,6 +244,162 @@ Espíritu Travel · payment invite
     return subject, html, text
 
 
+_PAYMENT_KIND_LABEL = {
+    "deposit": "Depósito (30%)",
+    "full":    "Pago completo (100%)",
+    "balance": "Saldo restante",
+    "partial": "Pago parcial",
+    "extra":   "Extra post-venta",
+}
+
+
+def render_payment_captured_email(
+    *,
+    trip_name: str,
+    main_traveler: str,
+    kind: str,
+    share_label: str,
+    payer_name: str,
+    amount_eur: float,
+    currency: str,
+    paid_eur_total: float,
+    total_eur: float,
+    remaining_eur: float,
+    booking_secured: bool,
+    paypal_capture_id: str,
+    itinerary_url: str,
+) -> tuple[str, str, str]:
+    """Email to the agent (created_by) whenever a client captures a payment.
+    Covers deposit, full, balance, partial share and post-sale extra.
+    Includes the running total and remaining balance."""
+    kind_label = _PAYMENT_KIND_LABEL.get(kind, kind or "Pago")
+    if share_label:
+        kind_label = f"{kind_label} · {share_label}"
+    subject = f"[Pago recibido] {trip_name} · {amount_eur:.2f} {currency or '€'}"
+    status_line = (
+        "Reserva asegurada — se ha alcanzado el umbral del depósito."
+        if booking_secured else
+        f"Cobrado hasta ahora: {paid_eur_total:.2f} € de {total_eur:.2f} €. "
+        f"Falta cobrar {remaining_eur:.2f} €."
+    )
+    accent = "#3d7d5b" if booking_secured else "#B08749"
+    payer_html = (
+        f'<div style="color:#666;margin-top:4px;font-size:13px">De: <strong>{payer_name}</strong></div>'
+        if payer_name else ""
+    )
+    html = f"""\
+<!doctype html>
+<html>
+  <body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#f4ebd7;padding:24px;color:#121b28">
+    <table cellpadding="0" cellspacing="0" width="100%" style="max-width:600px;margin:0 auto;background:#fff;border:1px solid #ead9b8">
+      <tr><td style="padding:24px 28px;border-bottom:1px solid #ead9b8">
+        <div style="font-size:11px;letter-spacing:.25em;text-transform:uppercase;color:{accent}">Pago recibido</div>
+        <div style="font-family:Georgia,serif;font-size:24px;margin-top:8px;line-height:1.15">{trip_name}</div>
+        {f'<div style="color:#666;margin-top:4px;font-size:13px">Cliente: {main_traveler}</div>' if main_traveler else ''}
+        {payer_html}
+      </td></tr>
+      <tr><td style="padding:0 28px">
+        <div style="background:#f4ebd7;padding:20px;border-left:4px solid {accent};margin-top:20px">
+          <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:#B08749">{kind_label}</div>
+          <div style="font-family:Georgia,serif;font-size:36px;color:{accent};margin-top:4px">+ {amount_eur:.2f} {currency or '€'}</div>
+          <div style="font-size:12px;color:#666;margin-top:8px;font-family:monospace">PayPal capture: {paypal_capture_id or '(pendiente)'}</div>
+        </div>
+      </td></tr>
+      <tr><td style="padding:16px 28px 8px">
+        <p style="font-size:14px;line-height:1.65;margin:0 0 6px"><strong>Estado del cobro:</strong></p>
+        <p style="font-size:14px;line-height:1.65;margin:0 0 12px">{status_line}</p>
+      </td></tr>
+      <tr><td style="padding:8px 28px 8px">
+        <a href="{itinerary_url}" style="display:inline-block;background:#121b28;color:#fff;padding:14px 28px;text-decoration:none;font-size:13px;letter-spacing:.15em;text-transform:uppercase;font-weight:700">Ver itinerario →</a>
+      </td></tr>
+      <tr><td style="padding:12px 28px 24px;font-size:12px;color:#666">Espíritu Travel · notificaciones internas</td></tr>
+    </table>
+  </body>
+</html>
+"""
+    text = f"""\
+Pago recibido
+{trip_name}
+{f'Cliente: {main_traveler}' if main_traveler else ''}
+{f'De: {payer_name}' if payer_name else ''}
+
+{kind_label}: {amount_eur:.2f} {currency or '€'}
+PayPal capture: {paypal_capture_id or '(pendiente)'}
+
+{status_line}
+
+Ver itinerario: {itinerary_url}
+"""
+    return subject, html, text
+
+
+def render_balance_reminder_email(
+    *,
+    trip_name: str,
+    main_traveler: str,
+    total_eur: float,
+    paid_eur: float,
+    remaining_eur: float,
+    trip_start_date: str,
+    balance_due_date: str,
+    days_left: int,
+    itinerary_url: str,
+) -> tuple[str, str, str]:
+    """Reminder to the agent 5 days before the client must complete the
+    full payment (i.e. `trip_start_date - 45 days`)."""
+    subject = f"[Recordatorio] En {days_left} días vence el saldo de {trip_name} · {remaining_eur:.2f} €"
+    html = f"""\
+<!doctype html>
+<html>
+  <body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#f4ebd7;padding:24px;color:#121b28">
+    <table cellpadding="0" cellspacing="0" width="100%" style="max-width:600px;margin:0 auto;background:#fff;border:1px solid #ead9b8">
+      <tr><td style="padding:24px 28px;border-bottom:1px solid #ead9b8">
+        <div style="font-size:11px;letter-spacing:.25em;text-transform:uppercase;color:#e37e5e">Aviso · saldo próximo a vencer</div>
+        <div style="font-family:Georgia,serif;font-size:24px;margin-top:8px;line-height:1.15">{trip_name}</div>
+        {f'<div style="color:#666;margin-top:4px;font-size:13px">Cliente: {main_traveler}</div>' if main_traveler else ''}
+      </td></tr>
+      <tr><td style="padding:0 28px">
+        <div style="background:#f4ebd7;padding:20px;border-left:4px solid #e37e5e;margin-top:20px">
+          <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:#B08749">Saldo restante</div>
+          <div style="font-family:Georgia,serif;font-size:36px;color:#c94433;margin-top:4px">{remaining_eur:.2f} €</div>
+          <div style="font-size:13px;color:#666;margin-top:8px">Cobrado hasta ahora: {paid_eur:.2f} € de {total_eur:.2f} €</div>
+        </div>
+      </td></tr>
+      <tr><td style="padding:16px 28px 8px">
+        <table cellpadding="0" cellspacing="0" width="100%" style="font-size:14px;border:1px solid #eee">
+          <tr><td style="padding:8px 12px;color:#666">Salida del viaje</td><td style="padding:8px 12px">{trip_start_date}</td></tr>
+          <tr><td style="padding:8px 12px;color:#666">Vencimiento del saldo</td><td style="padding:8px 12px"><strong>{balance_due_date}</strong> (en {days_left} días)</td></tr>
+        </table>
+      </td></tr>
+      <tr><td style="padding:16px 28px 8px">
+        <p style="font-size:14px;line-height:1.65;margin:0 0 12px">Contacta con el cliente y envíale el enlace de pago para que abone el saldo antes de la fecha límite.</p>
+      </td></tr>
+      <tr><td style="padding:8px 28px 8px">
+        <a href="{itinerary_url}" style="display:inline-block;background:#121b28;color:#fff;padding:14px 28px;text-decoration:none;font-size:13px;letter-spacing:.15em;text-transform:uppercase;font-weight:700">Abrir itinerario →</a>
+      </td></tr>
+      <tr><td style="padding:12px 28px 24px;font-size:12px;color:#666">Espíritu Travel · recordatorio automático</td></tr>
+    </table>
+  </body>
+</html>
+"""
+    text = f"""\
+Aviso · saldo próximo a vencer
+{trip_name}
+{f'Cliente: {main_traveler}' if main_traveler else ''}
+
+Saldo restante: {remaining_eur:.2f} €
+Cobrado hasta ahora: {paid_eur:.2f} € de {total_eur:.2f} €
+
+Salida del viaje: {trip_start_date}
+Vencimiento del saldo: {balance_due_date} (en {days_left} días)
+
+Contacta con el cliente y envíale el enlace de pago para que abone el saldo antes de la fecha límite.
+
+Abrir itinerario: {itinerary_url}
+"""
+    return subject, html, text
+
+
 def render_refund_request_email(
     *,
     trip_name: str,

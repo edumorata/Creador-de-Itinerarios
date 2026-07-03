@@ -280,6 +280,90 @@ async def auto_resume_interrupted_jobs():
     asyncio.create_task(_watcher())
 
 
+@app.on_event("startup")
+async def balance_reminder_loop():
+    """Every hour, look for itineraries whose full-payment deadline is in
+    exactly 5 days (i.e. `start_date - 50 days == today`) and where a
+    deposit has been captured but the balance is still owed. Send a
+    reminder email to `created_by` and mark the itinerary as reminded so
+    we don't double-notify. The check runs hourly; the same-day dedup
+    field `balance_reminder_sent_on` (ISO date) keeps it idempotent."""
+    from datetime import date, timedelta
+    REMINDER_DAYS_BEFORE_DUE = 5
+    FULL_PAYMENT_DUE_DAYS_BEFORE_TRIP = 45
+    OFFSET_DAYS = REMINDER_DAYS_BEFORE_DUE + FULL_PAYMENT_DUE_DAYS_BEFORE_TRIP  # 50
+
+    async def _tick():
+        today = date.today()
+        target_start_date = today + timedelta(days=OFFSET_DAYS)  # trips starting in 50d
+        # Fetch candidates cheaply. We only need itineraries whose
+        # start_date falls on the target window.
+        cursor = db.itineraries.find(
+            {
+                "start_date": target_start_date.isoformat(),
+                "balance_reminder_sent_on": {"$ne": today.isoformat()},
+                "created_by": {"$exists": True, "$ne": ""},
+            },
+            {"_id": 0},
+        )
+        async for itn in cursor:
+            payments = itn.get("payments") or []
+            captured = [p for p in payments if p.get("status") == "captured"]
+            if not captured:
+                continue  # No deposit → nothing to remind about
+            totals = _compute_pricing_totals(itn)
+            opts = _compute_payment_options(itn, totals)
+            remaining = float(opts.get("remaining_eur") or 0)
+            if remaining < 0.01:
+                continue  # Already fully paid
+            try:
+                from email_service import send_email, render_balance_reminder_email
+                base_url = os.environ.get("FRONTEND_PUBLIC_URL") or _frontend_base_url()
+                itinerary_url = f"{base_url.rstrip('/')}/itineraries/{itn['itinerary_id']}"
+                due_date = target_start_date - timedelta(days=FULL_PAYMENT_DUE_DAYS_BEFORE_TRIP)
+                subj, html_body, txt = render_balance_reminder_email(
+                    trip_name=itn.get("name") or "Viaje",
+                    main_traveler=itn.get("main_traveler") or "",
+                    total_eur=float(opts.get("total_eur") or 0),
+                    paid_eur=float(opts.get("paid_eur") or 0),
+                    remaining_eur=remaining,
+                    trip_start_date=target_start_date.isoformat(),
+                    balance_due_date=due_date.isoformat(),
+                    days_left=REMINDER_DAYS_BEFORE_DUE,
+                    itinerary_url=itinerary_url,
+                )
+                ok = await send_email(
+                    to=itn["created_by"], subject=subj, html=html_body, text=txt,
+                )
+                if ok:
+                    await db.itineraries.update_one(
+                        {"itinerary_id": itn["itinerary_id"]},
+                        {"$set": {
+                            "balance_reminder_sent_on": today.isoformat(),
+                            "updated_at": now_iso(),
+                        }},
+                    )
+                    logger.info(
+                        "balance reminder sent to %s for itn=%s remaining=%.2f",
+                        itn["created_by"], itn["itinerary_id"], remaining,
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("balance reminder failed for itn=%s: %s",
+                               itn.get("itinerary_id"), e)
+
+    async def _loop():
+        await asyncio.sleep(20)  # Let the rest of startup finish first
+        while True:
+            try:
+                await _tick()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("balance_reminder_loop tick failed: %s", e)
+            await asyncio.sleep(3600)  # every hour
+
+    asyncio.create_task(_loop())
+
+
+
 # ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
@@ -2364,6 +2448,37 @@ async def payment_return_handler(token: str, payment_id: str, request: Request):
         }},
     )
     if new_status == "captured":
+        # Notify the agent who owns the itinerary (created_by). Fire-and-
+        # forget — a failed email must not break the redirect back to PayPal.
+        try:
+            fresh = await db.itineraries.find_one({"payment_token": token}, {"_id": 0})
+            if fresh and fresh.get("created_by"):
+                from email_service import send_email, render_payment_captured_email
+                totals = _compute_pricing_totals(fresh)
+                opts = _compute_payment_options(fresh, totals)
+                base_url = os.environ.get("FRONTEND_PUBLIC_URL") or _frontend_base_url()
+                itinerary_url = f"{base_url.rstrip('/')}/itineraries/{fresh['itinerary_id']}"
+                subj, html_body, txt = render_payment_captured_email(
+                    trip_name=fresh.get("name") or "Viaje",
+                    main_traveler=fresh.get("main_traveler") or "",
+                    kind=payment.get("kind") or "",
+                    share_label=payment.get("share_label") or "",
+                    payer_name=payment.get("payer_name") or "",
+                    amount_eur=paid_amount or 0,
+                    currency=paid_currency or "EUR",
+                    paid_eur_total=float(opts.get("paid_eur") or 0),
+                    total_eur=float(opts.get("total_eur") or 0),
+                    remaining_eur=float(opts.get("remaining_eur") or 0),
+                    booking_secured=bool(opts.get("booking_secured")),
+                    paypal_capture_id=capture_id or "",
+                    itinerary_url=itinerary_url,
+                )
+                asyncio.create_task(send_email(
+                    to=fresh["created_by"], subject=subj, html=html_body, text=txt,
+                ))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("payment captured email dispatch failed: %s", e)
+
         from urllib.parse import urlencode
         qs = "?" + urlencode({
             "success": 1,
@@ -2788,6 +2903,40 @@ async def extra_return_handler(token: str, payment_id: str, request: Request):
             }},
         )
     if new_status == "captured":
+        # Notify the agent who owns the itinerary. Fire-and-forget.
+        try:
+            fresh = await db.itineraries.find_one(
+                {"payments.payment_id": payment_id}, {"_id": 0}
+            )
+            if fresh and fresh.get("created_by"):
+                from email_service import send_email, render_payment_captured_email
+                totals = _compute_pricing_totals(fresh)
+                opts = _compute_payment_options(fresh, totals)
+                extra = next((e for e in (fresh.get("extras") or [])
+                              if e.get("extra_id") == extra_id), None) if extra_id else None
+                base_url = os.environ.get("FRONTEND_PUBLIC_URL") or _frontend_base_url()
+                itinerary_url = f"{base_url.rstrip('/')}/itineraries/{fresh['itinerary_id']}"
+                subj, html_body, txt = render_payment_captured_email(
+                    trip_name=fresh.get("name") or "Viaje",
+                    main_traveler=fresh.get("main_traveler") or "",
+                    kind="extra",
+                    share_label=(extra.get("title") if extra else "") or "",
+                    payer_name=payment.get("payer_name") or "",
+                    amount_eur=paid_amount or 0,
+                    currency=paid_currency or "EUR",
+                    paid_eur_total=float(opts.get("paid_eur") or 0),
+                    total_eur=float(opts.get("total_eur") or 0),
+                    remaining_eur=float(opts.get("remaining_eur") or 0),
+                    booking_secured=bool(opts.get("booking_secured")),
+                    paypal_capture_id=capture_id or "",
+                    itinerary_url=itinerary_url,
+                )
+                asyncio.create_task(send_email(
+                    to=fresh["created_by"], subject=subj, html=html_body, text=txt,
+                ))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("extra payment captured email dispatch failed: %s", e)
+
         from urllib.parse import urlencode
         qs = "?" + urlencode({
             "success": 1,
