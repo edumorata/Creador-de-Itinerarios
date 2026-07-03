@@ -118,6 +118,22 @@ export default function PublicPayment() {
   const [payerName, setPayerName] = useState("");
   const [payerEmail, setPayerEmail] = useState("");
 
+  // Auto-detect split-count from the ledger of captured payments: if
+  // someone already paid a share labelled "1 of 4", subsequent travelers
+  // land with split.count=4 pre-filled and split.enabled=true.
+  useEffect(() => {
+    const list = data?.captured_payments || [];
+    if (!list.length) return;
+    let detectedN = 0;
+    for (const p of list) {
+      const m = /(\d+)\s*of\s*(\d+)/i.exec(p?.share_label || "");
+      if (m) detectedN = Math.max(detectedN, parseInt(m[2]));
+    }
+    if (detectedN >= 2) {
+      setSplit((s) => (s.enabled ? s : { enabled: true, count: detectedN }));
+    }
+  }, [data?.captured_payments]);
+
   const onPay = async (kind, customAmount, meta = {}) => {
     setSubmittingKind(kind);
     try {
@@ -414,10 +430,17 @@ export default function PublicPayment() {
             )}
           <div className={`grid gap-5 ${options.length > 1 ? "sm:grid-cols-2" : ""}`}>
             {options.map((o) => {
+              // Auto-increment share position based on how many split
+              // shares have already been captured under this same
+              // invoice — so Ana=1of3, Beatriz=2of3, Carla=3of3.
+              const alreadySplit = (data?.captured_payments || []).filter(
+                (p) => /\d+\s*of\s*\d+/i.test(p?.share_label || "")
+              ).length;
+              const sharePos = Math.min(alreadySplit + 1, split.count);
               const shareMeta = split.enabled ? {
                 payer_name: payerName || undefined,
                 payer_email: payerEmail || undefined,
-                share_label: `1 of ${split.count}`,
+                share_label: `${sharePos} of ${split.count}`,
               } : {};
               const perShare = split.enabled && o.amount_eur
                 ? Math.round((o.amount_eur / split.count) * 100) / 100
@@ -455,7 +478,7 @@ export default function PublicPayment() {
                         {fmtEUR(perShare)}
                       </div>
                       <div className="mt-1.5 font-raleway text-[11px] text-espiritu-deep/60">
-                        Your share (1 of {split.count}) · Full amount {fmtEUR(o.amount_eur)}
+                        Your share ({sharePos} of {split.count}) · Full amount {fmtEUR(o.amount_eur)}
                       </div>
                     </>
                   ) : (

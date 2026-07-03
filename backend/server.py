@@ -1720,7 +1720,16 @@ def _compute_payment_options(itn: dict, totals: dict) -> dict:
                 else "Pago total del viaje en un solo plazo."
             ),
         })
-        partial_bounds = None  # not offered before any payment
+        # Partial-bounds still returned so the split-payment flow can send
+        # per-share amounts even from the initial state. We don't list it
+        # as a dedicated card (to keep the default UX with just 2 options)
+        # but the create-order endpoint accepts kind="partial" whenever a
+        # payer_name is provided (see accept_partial_from_initial).
+        partial_min = min(min_partial, remaining)
+        partial_bounds = {
+            "min_eur": round(partial_min, 2),
+            "max_eur": remaining,
+        }
         monthly = None
     else:
         # Some captured already → offer the full remaining as 'balance', and
@@ -2125,6 +2134,17 @@ async def create_payment_order(
     # currently allowed (prevents a malicious client from POSTing
     # `kind=deposit` for a <60-day trip).
     chosen = next((o for o in options["options"] if o["kind"] == payload.kind), None)
+    # Split-payment escape hatch: `partial` is always accepted when a
+    # `payer_name` is provided, even from the initial state (no captured
+    # payment yet). The bounds still apply (10% floor, remaining ceiling),
+    # so this doesn't unlock arbitrary sub-payments — it only lets a
+    # traveler pay their share of the deposit/full up-front.
+    if not chosen and payload.kind == "partial" and (payload.payer_name or "").strip():
+        chosen = {
+            "kind": "partial", "amount_eur": None,
+            "label": "Pago parcial (split)",
+            "description": "Pago parcial iniciado desde el flujo de split.",
+        }
     if not chosen:
         raise HTTPException(
             status_code=400,
