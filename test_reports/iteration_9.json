@@ -1,0 +1,51 @@
+{
+  "summary": "Iteration 22 (Cashflow avanzado) — all 4 new features tested and passing. 19/19 backend pytest cases pass (test_iteration22_cashflow.py). Frontend flows verified via Playwright: (1) TravelerInfo popup hidden on clean itinerary, auto-opens on paid itinerary; (2) split-payment toggle reveals payer_name/payer_email + shows captured payments list; (3) /pay/extra/:token public page renders trip + amount + payer form; (4) ItineraryBuilder header buttons (Enlace de pago / Extras / Reembolsos) open their respective modals; extras create+delete + refunds list working. Non-manager approver correctly shown 'not approver' banner.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "ItineraryBuilder + ExtrasModal",
+        "issues": [
+          "React hydration warning in the browser console: <span> cannot be a child of <option> in ExtrasModal.jsx line 250 (new-extra-day select). Not a functional bug — likely caused by Emergent dev tooling injecting instrumentation spans, but it does log an error every render. Consider ensuring the option contents are pure text."
+        ]
+      },
+      {
+        "screen": "PublicPayment.jsx TravelerInfoDialog",
+        "issues": [
+          "When the modal auto-opens on paid itineraries, its 'X Close' button is positioned absolute top-3/right-3 inside a scrollable dialog container. On tall modals the button can be scrolled out of view. Users can still close, but the affordance is not always visible. Consider making the close button sticky."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration22_cashflow.py",
+    "/app/test_reports/pytest/iteration22_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Sticky close button on TravelerInfoDialog so it's always reachable without scrolling.",
+    "(Optional) Investigate React <span> child of <option> hydration warning inside ExtrasModal day select — likely dev tooling but worth confirming."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 6325 lines — well over the 700-line threshold. Split into modules (payments, extras, refunds, itineraries, admin) to keep future changes local.",
+    "Reject-refund endpoint updates the row using a match filter of {refund_requests.status: 'pending'}, but always returns {ok:true} even when nothing matched (e.g. already-rejected). Consider surfacing 400/404 when the update matched 0 documents so the UI can differentiate 'noop' from 'success'.",
+    "Public /api/payments/{token} exposes captured_payments[] including payer_name/share_label — good redaction of internal ids; consider also excluding paid_at down to date-only for privacy, currently full ISO timestamp is leaked."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration22_cashflow.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "100%"
+  },
+  "test_credentials": "Session eduardo@viajadverdad.com (non-approver). Refund approvers hardcoded: beatriz@viajadverdad.com, marina@viajadverdad.com. Could not test manager-approver path without seeding a session for one of those emails; non-approver 403 verified.",
+  "seed_data_creation": "Two 'TEST refund reason' pending refund requests on itn_708e44718bc6 (100 EUR each) still exist because there's no delete endpoint for pending refund requests. Manual mongo cleanup recommended if these bother the UI.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All 4 iteration 22 features are green. If you re-run the backend suite it will create additional pending refund rows on itn_708e44718bc6 (they're safe — non-approvers can't execute them and PayPal is only touched on approve). Manager-approver flow (Bea/Marina) was not exercised end-to-end because we don't have a session cookie for either email; the 403 gating on non-approvers is confirmed. The paid itinerary token YSW7wHOT8RRGyyNGPE9SdScFYdo has a real captured deposit — do not run destructive tests against it.",
+  "rca of the issue": "N/A — no bugs found."
+}

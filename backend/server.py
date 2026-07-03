@@ -1874,6 +1874,8 @@ async def create_payment_link(
         "options": options,
         "payments": doc.get("payments") or [],
         "traveler_info": doc.get("traveler_info"),
+        "extras": doc.get("extras") or [],
+        "refund_requests": doc.get("refund_requests") or [],
     }
 
 
@@ -1994,6 +1996,23 @@ async def get_payment_landing(token: str):
         raise HTTPException(status_code=404, detail="Enlace de pago no válido")
     totals = _compute_pricing_totals(doc)
     options = _compute_payment_options(doc, totals)
+    # Expose the captured payment history publicly (only kind, amount and
+    # payer identity — no internal ids, no capture ids, no origin) so the
+    # split-payment flow can show "Ana already paid €X" to the next
+    # traveler landing on the same link. Anyone with the token could
+    # already see the aggregate paid_eur, so surfacing per-payer amounts
+    # doesn't leak more data than we already do.
+    public_payments = []
+    for p in (doc.get("payments") or []):
+        if p.get("status") != "captured":
+            continue
+        public_payments.append({
+            "kind": p.get("kind"),
+            "amount_eur": p.get("paid_amount") or p.get("amount_eur"),
+            "paid_at": p.get("paid_at"),
+            "payer_name": p.get("payer_name"),
+            "share_label": p.get("share_label"),
+        })
     return {
         "trip_name": doc.get("name"),
         "main_traveler": doc.get("main_traveler"),
@@ -2005,6 +2024,7 @@ async def get_payment_landing(token: str):
         "num_children": doc.get("num_children"),
         "currency": "EUR",
         "traveler_info": doc.get("traveler_info"),
+        "captured_payments": public_payments,
         **options,
     }
 
@@ -2079,6 +2099,12 @@ class CreatePayPalOrderBody(BaseModel):
     # header (which the ingress can rewrite to an internal cluster URL,
     # producing 403s post-payment), then to FRONTEND_PUBLIC_URL.
     origin: Optional[str] = None
+    # Split-payment metadata: who is paying this share. Same payment_token,
+    # multiple travelers each pay their part with their own identity so the
+    # agent can reconcile the invoice.
+    payer_name: Optional[str] = None
+    payer_email: Optional[str] = None
+    share_label: Optional[str] = None
 
 
 @api.post("/payments/{token}/create-order")
@@ -2128,6 +2154,8 @@ async def create_payment_order(
     return_url = f"{origin}/api/payments/{token}/return?payment_id={payment_id}"
     cancel_url = f"{origin}/pay/{token}?cancelled=1"
     label_for_paypal = chosen["label"] if payload.kind != "partial" else f"Pago parcial ({amount:.2f} €)"
+    if payload.share_label:
+        label_for_paypal = f"{label_for_paypal} · {payload.share_label}"
     description = f"{doc.get('name', 'Viaje')} · {label_for_paypal}"
     try:
         order = await _paypal_create_order(
@@ -2136,6 +2164,7 @@ async def create_payment_order(
             cancel_url=cancel_url,
             reference=payment_id,
             description=description,
+            payer_email=(payload.payer_email or None),
         )
     except httpx.HTTPStatusError as e:
         logger.warning("paypal create_order failed: %s", e.response.text[:300])
@@ -2156,6 +2185,11 @@ async def create_payment_order(
         # client back to the SAME host they came from — solves the preview/
         # cluster URL mismatch (#403 after PayPal capture).
         "client_origin": origin,
+        # Split-payment identity (optional). Kept per-Payment so multiple
+        # travelers can pay the SAME invoice with distinct names.
+        "payer_name": (payload.payer_name or "").strip() or None,
+        "payer_email": (payload.payer_email or "").strip() or None,
+        "share_label": (payload.share_label or "").strip() or None,
     }
     await db.itineraries.update_one(
         {"payment_token": token},
@@ -2346,6 +2380,519 @@ async def mark_payment_manually(
         {"$set": update},
     )
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Post-sale extras (separate payment link per extra)
+# ---------------------------------------------------------------------------
+# When a client adds a new activity/service AFTER paying (partial or full),
+# creating a delta in the main invoice would break already-captured PayPal
+# orders. We instead expose a small "PostSaleExtra" doc with its own token,
+# its own single-purpose payment link (/pay/extra/:token), and its own
+# PayPal Order. Refunds are also isolated per extra.
+
+# Refund approvers — hardcoded email whitelist per user request. Only these
+# accounts can approve/reject a refund request.
+REFUND_APPROVERS: set = {
+    "beatriz@viajadverdad.com",
+    "marina@viajadverdad.com",
+}
+
+
+def _is_refund_approver(user: User) -> bool:
+    return (user.email or "").strip().lower() in REFUND_APPROVERS
+
+
+class CreateExtraBody(BaseModel):
+    title: str
+    description: str = ""
+    amount_eur: float
+    day_id: Optional[str] = None
+    date: Optional[str] = None
+    service_id: Optional[str] = None
+
+
+@api.post("/itineraries/{itinerary_id}/extras")
+async def create_post_sale_extra(
+    itinerary_id: str,
+    payload: CreateExtraBody,
+    user: Annotated[User, Depends(current_user)],
+):
+    """Add an extra activity to a sold itinerary. Generates its own
+    payment_token so the client can settle just this delta via PayPal at
+    /pay/extra/{token}."""
+    doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Itinerario no encontrado")
+    if not _can_access(doc, user):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este itinerario")
+    if payload.amount_eur is None or float(payload.amount_eur) <= 0:
+        raise HTTPException(status_code=400, detail="La cantidad debe ser mayor que 0")
+    extra = {
+        "extra_id": new_id("ext"),
+        "title": payload.title.strip() or "Actividad extra",
+        "description": (payload.description or "").strip(),
+        "amount_eur": round(float(payload.amount_eur), 2),
+        "currency": "EUR",
+        "day_id": payload.day_id,
+        "date": payload.date,
+        "service_id": payload.service_id,
+        "payment_token": secrets.token_urlsafe(20),
+        "status": "sent",
+        "created_by": user.email,
+        "created_at": now_iso(),
+        "paid_at": None,
+        "paid_amount": None,
+        "paypal_order_id": None,
+        "paypal_capture_id": None,
+    }
+    await db.itineraries.update_one(
+        {"itinerary_id": itinerary_id},
+        {"$push": {"extras": extra}, "$set": {"updated_at": now_iso()}},
+    )
+    return extra
+
+
+@api.get("/itineraries/{itinerary_id}/extras")
+async def list_post_sale_extras(
+    itinerary_id: str,
+    user: Annotated[User, Depends(current_user)],
+):
+    doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Itinerario no encontrado")
+    if not _can_access(doc, user):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este itinerario")
+    return {"extras": doc.get("extras") or []}
+
+
+@api.delete("/itineraries/{itinerary_id}/extras/{extra_id}")
+async def delete_post_sale_extra(
+    itinerary_id: str,
+    extra_id: str,
+    user: Annotated[User, Depends(current_user)],
+):
+    """Remove an extra. If it was already paid we mark it as cancelled
+    (the money is still in PayPal); the agent should follow with a refund
+    request instead."""
+    doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Itinerario no encontrado")
+    if not _can_access(doc, user):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este itinerario")
+    extra = next((e for e in (doc.get("extras") or []) if e.get("extra_id") == extra_id), None)
+    if not extra:
+        raise HTTPException(status_code=404, detail="Extra no encontrado")
+    if extra.get("status") == "paid":
+        # Do not pop a paid extra — mark cancelled so the audit trail
+        # survives. Agent must issue a refund via the refund workflow.
+        await db.itineraries.update_one(
+            {"itinerary_id": itinerary_id, "extras.extra_id": extra_id},
+            {"$set": {"extras.$.status": "cancelled", "updated_at": now_iso()}},
+        )
+        return {"ok": True, "status": "cancelled",
+                "hint": "El extra ya estaba pagado. Solicita un reembolso para devolver el dinero."}
+    await db.itineraries.update_one(
+        {"itinerary_id": itinerary_id},
+        {"$pull": {"extras": {"extra_id": extra_id}}, "$set": {"updated_at": now_iso()}},
+    )
+    return {"ok": True, "status": "deleted"}
+
+
+@api.get("/payments/extra/{token}")
+async def get_extra_landing(token: str):
+    """Public — what the client sees at /pay/extra/:token. Loads the extra
+    row, no auth needed."""
+    doc = await db.itineraries.find_one(
+        {"extras.payment_token": token}, {"_id": 0},
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Enlace de extra no válido")
+    extra = next((e for e in (doc.get("extras") or [])
+                  if e.get("payment_token") == token), None)
+    if not extra:
+        raise HTTPException(status_code=404, detail="Enlace de extra no válido")
+    return {
+        "trip_name": doc.get("name"),
+        "main_traveler": doc.get("main_traveler"),
+        "start_date": doc.get("start_date"),
+        "end_date": doc.get("end_date"),
+        "extra_id": extra.get("extra_id"),
+        "title": extra.get("title"),
+        "description": extra.get("description"),
+        "amount_eur": extra.get("amount_eur"),
+        "currency": extra.get("currency") or "EUR",
+        "date": extra.get("date"),
+        "status": extra.get("status"),
+        "paid_at": extra.get("paid_at"),
+    }
+
+
+class CreateExtraOrderBody(BaseModel):
+    origin: Optional[str] = None
+    payer_name: Optional[str] = None
+    payer_email: Optional[str] = None
+
+
+@api.post("/payments/extra/{token}/create-order")
+async def create_extra_order(
+    token: str,
+    payload: CreateExtraOrderBody,
+    request: Request,
+):
+    """Public — client picked "Pay extra"; create a PayPal Order and return
+    the approval URL."""
+    doc = await db.itineraries.find_one(
+        {"extras.payment_token": token}, {"_id": 0},
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Enlace de extra no válido")
+    extra = next((e for e in (doc.get("extras") or [])
+                  if e.get("payment_token") == token), None)
+    if not extra:
+        raise HTTPException(status_code=404, detail="Enlace de extra no válido")
+    if extra.get("status") == "paid":
+        raise HTTPException(status_code=400, detail="Este extra ya está pagado")
+    if extra.get("status") == "cancelled":
+        raise HTTPException(status_code=400, detail="Este extra fue cancelado")
+    amount = round(float(extra.get("amount_eur") or 0), 2)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Importe inválido")
+
+    payment_id = new_id("pmt")
+    origin = (payload.origin or request.headers.get("origin") or _frontend_base_url()).rstrip("/")
+    return_url = f"{origin}/api/payments/extra/{token}/return?payment_id={payment_id}"
+    cancel_url = f"{origin}/pay/extra/{token}?cancelled=1"
+    description = f"{doc.get('name', 'Viaje')} · Extra: {extra.get('title')}"
+    try:
+        order = await _paypal_create_order(
+            amount_eur=amount,
+            return_url=return_url,
+            cancel_url=cancel_url,
+            reference=payment_id,
+            description=description,
+            payer_email=(payload.payer_email or None),
+        )
+    except httpx.HTTPStatusError as e:
+        logger.warning("paypal create_order (extra) failed: %s", e.response.text[:300])
+        raise HTTPException(status_code=502, detail="No se pudo crear la orden en PayPal")
+
+    payment = {
+        "payment_id": payment_id,
+        "kind": "extra",
+        "amount_eur": amount,
+        "paypal_order_id": order["id"],
+        "paypal_capture_id": None,
+        "status": "created",
+        "created_at": now_iso(),
+        "paid_at": None,
+        "paid_amount": None,
+        "paid_currency": None,
+        "client_origin": origin,
+        "payer_name": (payload.payer_name or "").strip() or None,
+        "payer_email": (payload.payer_email or "").strip() or None,
+        "share_label": None,
+        "extra_id": extra.get("extra_id"),
+    }
+    await db.itineraries.update_one(
+        {"itinerary_id": doc["itinerary_id"]},
+        {"$push": {"payments": payment},
+         "$set": {"extras.$[e].paypal_order_id": order["id"],
+                  "updated_at": now_iso()}},
+        array_filters=[{"e.extra_id": extra.get("extra_id")}],
+    )
+    return {
+        "payment_id": payment_id,
+        "paypal_order_id": order["id"],
+        "approval_url": _paypal_approval_url(order),
+    }
+
+
+@api.get("/payments/extra/{token}/return")
+async def extra_return_handler(token: str, payment_id: str, request: Request):
+    """PayPal redirects here after the client approves an extra payment.
+    Capture the order, mark the extra as paid, then redirect back to the
+    /pay/extra/:token page with a success flag."""
+    doc = await db.itineraries.find_one(
+        {"extras.payment_token": token}, {"_id": 0},
+    )
+    if not doc:
+        return _redirect_to_extra_page(token, "?error=invalid")
+    payment = next((p for p in (doc.get("payments") or [])
+                    if p.get("payment_id") == payment_id), None)
+    if not payment or not payment.get("paypal_order_id"):
+        return _redirect_to_extra_page(token, "?error=not_found",
+                                        client_origin=(payment or {}).get("client_origin"))
+    extra_id = payment.get("extra_id")
+    order_id = payment["paypal_order_id"]
+    try:
+        capture = await _paypal_capture_order(order_id)
+    except httpx.HTTPStatusError as e:
+        try:
+            capture = await _paypal_get_order(order_id)
+        except Exception:
+            logger.warning("paypal capture (extra) failed: %s", e.response.text[:200])
+            return _redirect_to_extra_page(token, "?error=capture_failed",
+                                            client_origin=payment.get("client_origin"))
+    paypal_status = (capture.get("status") or "").upper()
+    capture_id = None
+    paid_amount = None
+    paid_currency = None
+    pus = capture.get("purchase_units") or []
+    if pus:
+        captures_list = (pus[0].get("payments") or {}).get("captures") or []
+        if captures_list:
+            cap0 = captures_list[0]
+            capture_id = cap0.get("id")
+            amt = cap0.get("amount") or {}
+            paid_amount = float(amt.get("value") or 0) if amt.get("value") else None
+            paid_currency = amt.get("currency_code")
+            if (cap0.get("status") or "").upper() == "COMPLETED":
+                paypal_status = "COMPLETED"
+
+    new_status = ("captured" if paypal_status == "COMPLETED"
+                  else "approved" if paypal_status == "APPROVED"
+                  else "created")
+    # Update the payment row.
+    await db.itineraries.update_one(
+        {"payments.payment_id": payment_id},
+        {"$set": {
+            "payments.$.status": new_status,
+            "payments.$.paypal_capture_id": capture_id,
+            "payments.$.paid_at": now_iso() if new_status == "captured" else None,
+            "payments.$.paid_amount": paid_amount,
+            "payments.$.paid_currency": paid_currency,
+            "updated_at": now_iso(),
+        }},
+    )
+    # Update the extra row.
+    if new_status == "captured" and extra_id:
+        await db.itineraries.update_one(
+            {"extras.extra_id": extra_id},
+            {"$set": {
+                "extras.$.status": "paid",
+                "extras.$.paid_at": now_iso(),
+                "extras.$.paid_amount": paid_amount,
+                "extras.$.paypal_capture_id": capture_id,
+                "updated_at": now_iso(),
+            }},
+        )
+    if new_status == "captured":
+        from urllib.parse import urlencode
+        qs = "?" + urlencode({
+            "success": 1,
+            "amount": f"{paid_amount:.2f}" if paid_amount is not None else "",
+        })
+        return _redirect_to_extra_page(token, qs, client_origin=payment.get("client_origin"))
+    return _redirect_to_extra_page(token, "?error=not_completed",
+                                    client_origin=payment.get("client_origin"))
+
+
+def _redirect_to_extra_page(token: str, qs: str = "", client_origin: Optional[str] = None):
+    from fastapi.responses import RedirectResponse
+    base = (client_origin or _frontend_base_url()).rstrip("/")
+    return RedirectResponse(url=f"{base}/pay/extra/{token}{qs}", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Refund workflow (agent files a request, manager approves, PayPal refunds)
+# ---------------------------------------------------------------------------
+class CreateRefundBody(BaseModel):
+    payment_id: str
+    amount_eur: float
+    reason: str = ""
+    service_id: Optional[str] = None
+
+
+@api.post("/itineraries/{itinerary_id}/refund-requests")
+async def create_refund_request(
+    itinerary_id: str,
+    payload: CreateRefundBody,
+    user: Annotated[User, Depends(current_user)],
+):
+    """Any agent files a refund request. The money is NOT returned yet —
+    it needs a manager to explicitly approve."""
+    doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Itinerario no encontrado")
+    if not _can_access(doc, user):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este itinerario")
+    payment = next((p for p in (doc.get("payments") or [])
+                    if p.get("payment_id") == payload.payment_id), None)
+    if not payment:
+        raise HTTPException(status_code=404, detail="Pago no encontrado")
+    if payment.get("status") != "captured":
+        raise HTTPException(status_code=400,
+                            detail="Sólo se pueden reembolsar pagos capturados")
+    captured_amount = float(payment.get("paid_amount") or payment.get("amount_eur") or 0)
+    # Reduce by any already-executed refund from the same payment.
+    already_refunded = 0.0
+    for r in (doc.get("refund_requests") or []):
+        if r.get("payment_id") == payload.payment_id and r.get("status") == "executed":
+            already_refunded += float(r.get("amount_eur") or 0)
+    refundable = round(captured_amount - already_refunded, 2)
+    if payload.amount_eur <= 0 or payload.amount_eur > refundable + 0.01:
+        raise HTTPException(
+            status_code=400,
+            detail=f"La cantidad debe estar entre 0 y {refundable:.2f} € (importe reembolsable).",
+        )
+    refund = {
+        "refund_id": new_id("rfd"),
+        "payment_id": payload.payment_id,
+        "service_id": payload.service_id,
+        "amount_eur": round(float(payload.amount_eur), 2),
+        "reason": (payload.reason or "").strip(),
+        "requested_by": user.email,
+        "requested_at": now_iso(),
+        "approved_by": None,
+        "decided_at": None,
+        "status": "pending",
+        "paypal_refund_id": None,
+        "error_message": None,
+    }
+    await db.itineraries.update_one(
+        {"itinerary_id": itinerary_id},
+        {"$push": {"refund_requests": refund}, "$set": {"updated_at": now_iso()}},
+    )
+    return refund
+
+
+@api.get("/itineraries/{itinerary_id}/refund-requests")
+async def list_refund_requests(
+    itinerary_id: str,
+    user: Annotated[User, Depends(current_user)],
+):
+    doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Itinerario no encontrado")
+    if not _can_access(doc, user):
+        raise HTTPException(status_code=403, detail="No tienes acceso a este itinerario")
+    return {
+        "refund_requests": doc.get("refund_requests") or [],
+        "is_approver": _is_refund_approver(user),
+        "approver_emails": sorted(REFUND_APPROVERS),
+    }
+
+
+class ApproveRefundBody(BaseModel):
+    # Optional override — approver can trim the amount before executing.
+    amount_eur: Optional[float] = None
+    note_to_payer: Optional[str] = None
+
+
+@api.post("/itineraries/{itinerary_id}/refund-requests/{refund_id}/approve")
+async def approve_refund(
+    itinerary_id: str,
+    refund_id: str,
+    payload: ApproveRefundBody,
+    user: Annotated[User, Depends(current_user)],
+):
+    """Manager-only: approve and execute a refund via the PayPal Refund
+    API. Only `beatriz@viajadverdad.com` and `marina@viajadverdad.com` are
+    accepted; anyone else gets 403."""
+    if not _is_refund_approver(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Sólo Beatriz o Marina pueden aprobar reembolsos.",
+        )
+    doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Itinerario no encontrado")
+    refund = next((r for r in (doc.get("refund_requests") or [])
+                   if r.get("refund_id") == refund_id), None)
+    if not refund:
+        raise HTTPException(status_code=404, detail="Reembolso no encontrado")
+    if refund.get("status") not in ("pending", "failed"):
+        raise HTTPException(status_code=400,
+                            detail=f"Este reembolso ya está en estado '{refund.get('status')}'.")
+    payment = next((p for p in (doc.get("payments") or [])
+                    if p.get("payment_id") == refund["payment_id"]), None)
+    if not payment or not payment.get("paypal_capture_id"):
+        raise HTTPException(status_code=400,
+                            detail="El pago original no tiene un capture_id de PayPal (¿se marcó manualmente?). No se puede reembolsar automáticamente.")
+    amount = float(payload.amount_eur or refund["amount_eur"])
+    try:
+        from paypal import refund_capture as _paypal_refund
+        result = await _paypal_refund(
+            payment["paypal_capture_id"],
+            amount_eur=amount,
+            note=payload.note_to_payer or f"Refund: {refund.get('reason') or 'trip adjustment'}",
+            invoice_id=refund_id,
+        )
+    except httpx.HTTPStatusError as e:
+        err = e.response.text[:400]
+        logger.warning("paypal refund failed: %s", err)
+        await db.itineraries.update_one(
+            {"itinerary_id": itinerary_id, "refund_requests.refund_id": refund_id},
+            {"$set": {
+                "refund_requests.$.status": "failed",
+                "refund_requests.$.error_message": err,
+                "refund_requests.$.decided_at": now_iso(),
+                "refund_requests.$.approved_by": user.email,
+                "updated_at": now_iso(),
+            }},
+        )
+        raise HTTPException(status_code=502,
+                            detail=f"PayPal rechazó el reembolso: {err[:200]}")
+    paypal_refund_id = result.get("id")
+    paypal_status = (result.get("status") or "").upper()
+    new_status = "executed" if paypal_status in ("COMPLETED", "PENDING") else "failed"
+    await db.itineraries.update_one(
+        {"itinerary_id": itinerary_id, "refund_requests.refund_id": refund_id},
+        {"$set": {
+            "refund_requests.$.status": new_status,
+            "refund_requests.$.paypal_refund_id": paypal_refund_id,
+            "refund_requests.$.amount_eur": round(amount, 2),
+            "refund_requests.$.approved_by": user.email,
+            "refund_requests.$.decided_at": now_iso(),
+            "refund_requests.$.error_message": None if new_status == "executed" else result.get("status"),
+            "updated_at": now_iso(),
+        }},
+    )
+    # Mirror onto the payment row: if the full amount was refunded, mark
+    # the source payment as refunded. Partial refunds keep the payment
+    # as `captured` (we track the delta via refund_requests).
+    captured_amount = float(payment.get("paid_amount") or payment.get("amount_eur") or 0)
+    total_refunded = amount
+    for r in (doc.get("refund_requests") or []):
+        if (r.get("payment_id") == refund["payment_id"] and
+                r.get("status") == "executed" and r.get("refund_id") != refund_id):
+            total_refunded += float(r.get("amount_eur") or 0)
+    if total_refunded >= captured_amount - 0.01:
+        await db.itineraries.update_one(
+            {"itinerary_id": itinerary_id, "payments.payment_id": refund["payment_id"]},
+            {"$set": {"payments.$.status": "refunded", "updated_at": now_iso()}},
+        )
+    return {"ok": True, "status": new_status, "paypal_refund_id": paypal_refund_id}
+
+
+class RejectRefundBody(BaseModel):
+    reason: Optional[str] = None
+
+
+@api.post("/itineraries/{itinerary_id}/refund-requests/{refund_id}/reject")
+async def reject_refund(
+    itinerary_id: str,
+    refund_id: str,
+    payload: RejectRefundBody,
+    user: Annotated[User, Depends(current_user)],
+):
+    """Manager-only: reject a refund request. No PayPal call."""
+    if not _is_refund_approver(user):
+        raise HTTPException(status_code=403,
+                            detail="Sólo Beatriz o Marina pueden rechazar reembolsos.")
+    await db.itineraries.update_one(
+        {"itinerary_id": itinerary_id, "refund_requests.refund_id": refund_id,
+         "refund_requests.status": "pending"},
+        {"$set": {
+            "refund_requests.$.status": "rejected",
+            "refund_requests.$.approved_by": user.email,
+            "refund_requests.$.decided_at": now_iso(),
+            "refund_requests.$.error_message": (payload.reason or "").strip() or None,
+            "updated_at": now_iso(),
+        }},
+    )
+    return {"ok": True, "status": "rejected"}
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,9 @@ import { PartnerSelector } from "./builder/PartnerSelector";
 import { SofiPushModal } from "./builder/SofiPushModal";
 import { ShareItineraryModal } from "./builder/ShareItineraryModal";
 import { PaymentLinkModal } from "./builder/PaymentLinkModal";
-import { RotateCw, ExternalLink, Eye, Send, Users, Moon, CreditCard } from "lucide-react";
+import { ExtrasModal } from "./builder/ExtrasModal";
+import { RefundsModal } from "./builder/RefundsModal";
+import { RotateCw, ExternalLink, Eye, Send, Users, Moon, CreditCard, Sparkles, Undo2 } from "lucide-react";
 
 export default function ItineraryBuilder() {
   const { id } = useParams();
@@ -40,6 +42,11 @@ export default function ItineraryBuilder() {
   // PayPal payment-link modal state. Lazy-generates / refreshes the public
   // /pay/:token link the agent sends to the client.
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  // Post-sale extras + refund workflow modals — always available (not
+  // gated on itinerary.status="sold") so agents can start capturing
+  // add-ons and cancellations at any time.
+  const [extrasModalOpen, setExtrasModalOpen] = useState(false);
+  const [refundsModalOpen, setRefundsModalOpen] = useState(false);
 
   // FX rate for EUR↔USD conversion. Starts from the daily ECB feed, but if
   // the itinerary already has a `fx_rate` value saved on the doc, that value
@@ -505,6 +512,18 @@ export default function ItineraryBuilder() {
                     className="inline-flex items-center gap-2 px-4 py-2 border border-clay-300 hover:bg-clay-100 text-sm">
               <CreditCard size={14} /> Enlace de pago
             </button>
+            <button onClick={() => setExtrasModalOpen(true)}
+                    data-testid="extras-btn"
+                    title="Añadir actividades extra post-venta (nuevo enlace de pago)"
+                    className="inline-flex items-center gap-2 px-4 py-2 border border-clay-300 hover:bg-clay-100 text-sm">
+              <Sparkles size={14} /> Extras
+            </button>
+            <button onClick={() => setRefundsModalOpen(true)}
+                    data-testid="refunds-btn"
+                    title="Solicitar reembolsos (aprobación requerida)"
+                    className="inline-flex items-center gap-2 px-4 py-2 border border-clay-300 hover:bg-clay-100 text-sm">
+              <Undo2 size={14} /> Reembolsos
+            </button>
             {/* "Exportar Excel" + "Vista previa Sofi" are hidden for now — the
                 team works directly off Sofi's UI. Keep the handlers/imports
                 wired so we can re-enable them with a single line if needed.
@@ -794,6 +813,19 @@ export default function ItineraryBuilder() {
         open={paymentModalOpen}
         itineraryId={id}
         onClose={() => setPaymentModalOpen(false)}
+      />
+
+      <ExtrasModal
+        open={extrasModalOpen}
+        itineraryId={id}
+        days={itn.days || []}
+        onClose={() => setExtrasModalOpen(false)}
+      />
+
+      <RefundsModal
+        open={refundsModalOpen}
+        itineraryId={id}
+        onClose={() => setRefundsModalOpen(false)}
       />
     </div>
   );

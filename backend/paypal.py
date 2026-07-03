@@ -215,6 +215,48 @@ async def verify_webhook(headers: dict, body_raw: str) -> bool:
         return r.json().get("verification_status") == "SUCCESS"
 
 
+async def refund_capture(
+    capture_id: str,
+    *,
+    amount_eur: Optional[float] = None,
+    note: Optional[str] = None,
+    invoice_id: Optional[str] = None,
+) -> dict:
+    """Refund all or part of a previously-captured payment.
+
+    PayPal endpoint: POST /v2/payments/captures/{capture_id}/refund.
+    Sends an empty JSON body to refund the FULL captured amount, or
+    an explicit `{amount: {value, currency_code}}` for a partial refund.
+
+    Returns the parsed JSON response containing the refund `id` and
+    `status` ("COMPLETED" / "PENDING" / "FAILED"). Raises for HTTP
+    errors so the caller can inspect PayPal's error object.
+    """
+    token = await get_access_token()
+    body: dict = {}
+    if amount_eur is not None:
+        body["amount"] = {
+            "currency_code": "EUR",
+            "value": f"{round(amount_eur, 2):.2f}",
+        }
+    if note:
+        body["note_to_payer"] = note[:255]
+    if invoice_id:
+        body["invoice_id"] = invoice_id[:127]
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(
+            f"{_base_url()}/v2/payments/captures/{capture_id}/refund",
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/json",
+                     "Prefer": "return=representation"},
+            json=body,
+        )
+        if r.status_code >= 400:
+            logger.warning("paypal refund_capture %d: %s", r.status_code, r.text[:400])
+            r.raise_for_status()
+        return r.json()
+
+
 def approval_url(order: dict) -> Optional[str]:
     """Pull the `rel="approve"` link out of a create_order response."""
     for link in order.get("links") or []:

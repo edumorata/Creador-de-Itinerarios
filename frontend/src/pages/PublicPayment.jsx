@@ -76,6 +76,9 @@ export default function PublicPayment() {
       // Pre-populate the form from any previous submission, or size `people`
       // to match num_travelers (default to 1 row).
       const prev = d?.traveler_info;
+      const paid = d?.paid_eur || 0;
+      // Post-payment surprise from PayPal capture return
+      const justPaid = !!(new URLSearchParams(window.location.search).get("success"));
       if (prev) {
         setForm({
           people: prev.people?.length ? prev.people : [emptyPerson()],
@@ -90,10 +93,12 @@ export default function PublicPayment() {
       } else {
         const count = Math.max(1, Math.min(10, d?.num_travelers || 1));
         setForm((f) => ({ ...f, people: Array.from({ length: count }, emptyPerson) }));
-        // Auto-open the popup whenever the client visits without having
-        // submitted the form yet — including right after a successful
-        // PayPal capture (?success=1 in the URL).
-        setShowInfoDialog(true);
+        // Traveler-info popup: ONLY auto-open after the client actually
+        // paid something (deposit / full / partial captured, or just
+        // came back from PayPal with ?success=1). Pre-payment we don't
+        // want to block the client with a form — the goal is conversion,
+        // not paperwork. They can still open it manually below.
+        setShowInfoDialog(paid > 0 || justPaid);
       }
     } catch (e) {
       setError(e?.response?.data?.detail || "We couldn't load this payment link. It may have expired.");
@@ -105,11 +110,22 @@ export default function PublicPayment() {
   // payment when the API returns one (otherwise the partial minimum).
   const [partialAmount, setPartialAmount] = useState("");
 
-  const onPay = async (kind, customAmount) => {
+  // Split-payment state. When the client toggles this on we compute a
+  // per-share amount so each traveler can pay their part with their name.
+  // All shares land on the SAME payment_token/invoice — the total stays
+  // the same, just multiple PayPal orders contribute to the same balance.
+  const [split, setSplit] = useState({ enabled: false, count: 2 });
+  const [payerName, setPayerName] = useState("");
+  const [payerEmail, setPayerEmail] = useState("");
+
+  const onPay = async (kind, customAmount, meta = {}) => {
     setSubmittingKind(kind);
     try {
       const body = { kind, origin: window.location.origin };
       if (kind === "partial") body.amount_eur = customAmount;
+      if (meta.payer_name) body.payer_name = meta.payer_name;
+      if (meta.payer_email) body.payer_email = meta.payer_email;
+      if (meta.share_label) body.share_label = meta.share_label;
       const { data: res } = await axios.post(`${API_BASE}/payments/${token}/create-order`, body);
       if (res?.approval_url) { window.location.href = res.approval_url; return; }
       throw new Error("PayPal didn't return an approval URL");
@@ -291,6 +307,72 @@ export default function PublicPayment() {
         </div>
       </section>
 
+      {/* Split-payment section — always visible when there's remaining
+          balance. If enabled, replaces the standard cards with per-share
+          cards each carrying the payer's name so the invoice can be
+          reconciled traveler-by-traveler. */}
+      {!fullyPaid && (options.length > 0) && (
+        <section className="mt-12">
+          <SectionTitle icon={<Users size={14}/>}>Splitting with fellow travelers?</SectionTitle>
+          <div className="bg-white border border-espiritu-sand-deep px-5 py-5">
+            <label className="inline-flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={split.enabled}
+                onChange={(e) => setSplit({ ...split, enabled: e.target.checked })}
+                data-testid="toggle-split"
+                className="w-4 h-4 accent-espiritu-terra"
+              />
+              <span className="font-raleway text-sm text-espiritu-deep">
+                Yes — several of us will each pay our own share (single invoice, one link).
+              </span>
+            </label>
+            {split.enabled && (
+              <div className="mt-4 grid gap-3 sm:grid-cols-[auto_1fr] items-end">
+                <Field label="Number of travelers paying">
+                  <input
+                    type="number" min={2} max={20}
+                    value={split.count}
+                    onChange={(e) => setSplit({ ...split, count: Math.max(2, Math.min(20, parseInt(e.target.value || 2))) })}
+                    data-testid="split-count"
+                    className="brand-input tabular w-24 text-center"
+                  />
+                </Field>
+                <div className="font-raleway text-xs text-espiritu-deep/70 leading-relaxed">
+                  Everyone pays into the same invoice. Each traveler enters their name below,
+                  picks their share, and pays with credit/debit card via PayPal.
+                  <br/>You&apos;ll see who has paid what as it happens.
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Captured-so-far ledger — visible only in split mode, once at
+              least one share has been paid. */}
+          {split.enabled && (data?.captured_payments || []).length > 0 && (
+            <div className="mt-4 bg-white border border-espiritu-sand-deep">
+              <div className="px-5 py-3 border-b border-espiritu-sand-deep kicker inline-flex items-center gap-2">
+                <CheckCircle2 size={12} className="text-espiritu-olive normal-case"/> Paid so far
+              </div>
+              <div className="divide-y divide-espiritu-sand-deep">
+                {(data.captured_payments || []).map((p, i) => (
+                  <div key={i} className="px-5 py-2.5 flex items-center justify-between text-sm"
+                       data-testid={`captured-payment-${i}`}>
+                    <div className="font-raleway text-espiritu-deep">
+                      {p.payer_name || <em className="text-espiritu-deep/50">Anonymous</em>}
+                      {p.share_label && <span className="text-espiritu-deep/60 ml-2">· {p.share_label}</span>}
+                    </div>
+                    <div className="font-serif tabular text-espiritu-olive text-lg">
+                      {fmtEUR(p.amount_eur)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
       {/* Payment cards */}
       <section className="mt-12">
         <SectionTitle icon={<CreditCard size={14}/>}>Choose how to pay</SectionTitle>
@@ -306,8 +388,40 @@ export default function PublicPayment() {
           </div>
         )}
         {!fullyPaid && options.length > 0 && (
+          <div>
+            {split.enabled && (
+              <div className="bg-white border border-espiritu-sand-deep px-5 py-5 mb-5 grid gap-3 md:grid-cols-2">
+                <Field label="Your full name (for this share)">
+                  <input
+                    value={payerName}
+                    onChange={(e) => setPayerName(e.target.value)}
+                    data-testid="payer-name"
+                    className="brand-input"
+                    placeholder="e.g. Alice Rodriguez"
+                  />
+                </Field>
+                <Field label="Your email (optional, receipt)">
+                  <input
+                    value={payerEmail}
+                    onChange={(e) => setPayerEmail(e.target.value)}
+                    data-testid="payer-email"
+                    type="email"
+                    className="brand-input"
+                    placeholder="alice@example.com"
+                  />
+                </Field>
+              </div>
+            )}
           <div className={`grid gap-5 ${options.length > 1 ? "sm:grid-cols-2" : ""}`}>
             {options.map((o) => {
+              const shareMeta = split.enabled ? {
+                payer_name: payerName || undefined,
+                payer_email: payerEmail || undefined,
+                share_label: `1 of ${split.count}`,
+              } : {};
+              const perShare = split.enabled && o.amount_eur
+                ? Math.round((o.amount_eur / split.count) * 100) / 100
+                : null;
               if (o.kind === "partial") {
                 return (
                   <PartialPaymentCard
@@ -317,9 +431,10 @@ export default function PublicPayment() {
                     remaining={remaining}
                     amount={partialAmount}
                     onAmountChange={setPartialAmount}
-                    onPay={(amt) => onPay("partial", amt)}
+                    onPay={(amt) => onPay("partial", amt, shareMeta)}
                     isSubmitting={submittingKind === "partial"}
-                    submitDisabled={submittingKind !== null}
+                    submitDisabled={submittingKind !== null || (split.enabled && !payerName.trim())}
+                    splitCount={split.enabled ? split.count : 0}
                   />
                 );
               }
@@ -334,24 +449,53 @@ export default function PublicPayment() {
                       <div className="font-serif italic text-espiritu-terra text-2xl leading-none">{d.pct}</div>
                     )}
                   </div>
-                  <div className="font-serif tabular text-5xl mt-3 text-espiritu-deep">{fmtEUR(o.amount_eur)}</div>
+                  {split.enabled && perShare ? (
+                    <>
+                      <div className="font-serif tabular text-5xl mt-3 text-espiritu-deep">
+                        {fmtEUR(perShare)}
+                      </div>
+                      <div className="mt-1.5 font-raleway text-[11px] text-espiritu-deep/60">
+                        Your share (1 of {split.count}) · Full amount {fmtEUR(o.amount_eur)}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="font-serif tabular text-5xl mt-3 text-espiritu-deep">{fmtEUR(o.amount_eur)}</div>
+                  )}
                   <div className="font-raleway text-sm text-espiritu-deep/70 mt-3 flex-1 leading-relaxed">
                     {d.helper}
+                    {split.enabled && (
+                      <> Each of the {split.count} travelers pays this amount separately.</>
+                    )}
                   </div>
                   <button
-                    onClick={() => onPay(o.kind)}
-                    disabled={submittingKind !== null}
+                    onClick={() => {
+                      if (split.enabled) {
+                        // Emit a partial for the per-share amount so multiple
+                        // travelers can each pay ~ (total × ratio) / N.
+                        onPay("partial", perShare, shareMeta);
+                      } else {
+                        onPay(o.kind, undefined, shareMeta);
+                      }
+                    }}
+                    disabled={submittingKind !== null || (split.enabled && !payerName.trim())}
                     data-testid={`pay-btn-${o.kind}`}
-                    className="mt-6 inline-flex items-center justify-center gap-2 bg-espiritu-deep hover:bg-black disabled:opacity-60 text-white px-5 py-3.5 rounded-full text-sm font-medium transition-colors">
-                    {submittingKind === o.kind ? (
+                    className="mt-6 inline-flex items-center justify-center gap-2 bg-espiritu-deep hover:bg-black disabled:opacity-60 disabled:cursor-not-allowed text-white px-5 py-3.5 rounded-full text-sm font-medium transition-colors">
+                    {submittingKind === o.kind || (split.enabled && submittingKind === "partial") ? (
                       <><Loader2 size={14} className="animate-spin"/> Redirecting to PayPal…</>
                     ) : (
-                      <><CreditCard size={14}/> Pay {fmtEUR(o.amount_eur)}</>
+                      <><CreditCard size={14}/> Pay {fmtEUR(split.enabled && perShare ? perShare : o.amount_eur)}</>
                     )}
                   </button>
                 </div>
               );
             })}
+          </div>
+          {split.enabled && !payerName.trim() && (
+            <div className="mt-3 font-raleway text-xs text-espiritu-magenta"
+                 data-testid="payer-name-required">
+              Enter your full name above so we can log your share.
+            </div>
+          )}
           </div>
         )}
 
@@ -738,13 +882,23 @@ function TravelerInfoDialog({ onClose, ...formProps }) {
 /** Card for custom-amount payments. The client either types an amount or
  *  picks one of the suggested chips. CTA disabled until the amount is
  *  within the bounds returned by the API. */
-function PartialPaymentCard({ bounds, monthly, remaining, amount, onAmountChange, onPay, isSubmitting, submitDisabled }) {
+function PartialPaymentCard({ bounds, monthly, remaining, amount, onAmountChange, onPay, isSubmitting, submitDisabled, splitCount = 0 }) {
   const min = parseFloat(bounds?.min_eur || 0);
   const max = parseFloat(bounds?.max_eur || remaining || 0);
   const num = parseFloat(amount);
   const valid = !isNaN(num) && num >= min - 0.01 && num <= max + 0.01;
 
   const chips = [];
+  if (splitCount >= 2 && remaining > 0) {
+    const share = Math.round((remaining / splitCount) * 100) / 100;
+    if (share >= min - 0.01 && share <= max + 0.01) {
+      chips.push({
+        label: `Your share · ${fmtEUR(share)}`,
+        sublabel: `${fmtEUR(remaining)} split ${splitCount} ways`,
+        value: share,
+      });
+    }
+  }
   if (monthly?.amount_eur) {
     chips.push({
       label: `Monthly · ${fmtEUR(monthly.amount_eur)}`,

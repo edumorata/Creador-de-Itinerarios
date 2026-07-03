@@ -14,6 +14,7 @@ import AITrainer from "@/pages/AITrainer";
 import AIGenerate from "@/pages/AIGenerate";
 import AdminUsers from "@/pages/AdminUsers";
 import PublicPayment from "@/pages/PublicPayment";
+import PublicExtraPayment from "@/pages/PublicExtraPayment";
 import TripView from "@/pages/TripView";
 import "@/App.css";
 
@@ -23,6 +24,7 @@ function HashRouter() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/pay/extra/:token" element={<PublicExtraPayment />} />
       <Route path="/pay/:token" element={<PublicPayment />} />
       <Route path="/trip/:token" element={<TripView />} />
       <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>

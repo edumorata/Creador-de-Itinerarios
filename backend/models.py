@@ -308,8 +308,10 @@ class Payment(BaseModel):
     # "deposit" → 30% of total when >60 days to trip; "balance" → remaining
     # after deposit; "full" → 100% (always allowed, mandatory when
     # ≤60 days); "partial" → custom amount chosen by the client (between 10%
-    # of total and the remaining balance) — multiple partials allowed.
-    kind: Literal["deposit", "balance", "full", "partial"]
+    # of total and the remaining balance) — multiple partials allowed;
+    # "extra" → standalone payment for a PostSaleExtra (separate invoice
+    # from the main trip so refunds are isolated).
+    kind: Literal["deposit", "balance", "full", "partial", "extra"]
     amount_eur: float
     paypal_order_id: Optional[str] = None
     paypal_capture_id: Optional[str] = None
@@ -333,6 +335,83 @@ class Payment(BaseModel):
     # (preview vs prod vs custom domain), instead of relying on the static
     # FRONTEND_PUBLIC_URL fallback.
     client_origin: Optional[str] = None
+    # Split-payment support: when several travelers pay the same invoice in
+    # separate PayPal transactions, each Payment row carries the payer's
+    # identity so the agent can reconcile who paid what. All rows still
+    # belong to the SAME itinerary + payment_token = one invoice.
+    payer_name: Optional[str] = None
+    payer_email: Optional[str] = None
+    # Optional label shown in the UI + Sofi notes ("Cuota 1/4", "Familia
+    # García", "Extra: safari"). Free text.
+    share_label: Optional[str] = None
+    # Backlink to a PostSaleExtra when this payment is settling an extra
+    # activity charge (kind="extra"). None for regular deposit/balance/full
+    # payments against the main invoice.
+    extra_id: Optional[str] = None
+
+
+class RefundRequest(BaseModel):
+    """A cancellation request the agent files against a captured payment.
+    Requires explicit approval from a manager (Bea or Marina) before the
+    money is actually refunded via the PayPal Refund API."""
+    refund_id: str = Field(default_factory=lambda: new_id("rfd"))
+    # Which captured Payment row this refund is drawn from. Refund amount
+    # cannot exceed the captured amount of that specific payment (PayPal's
+    # own rule too).
+    payment_id: str
+    # Optional pointer to the itinerary service that was cancelled, so the
+    # audit trail links "extra removed" ↔ "money back".
+    service_id: Optional[str] = None
+    amount_eur: float
+    reason: str = ""
+    requested_by: str = ""       # agent email
+    requested_at: str = Field(default_factory=now_iso)
+    # Approver — must match one of the whitelisted manager emails.
+    approved_by: Optional[str] = None
+    decided_at: Optional[str] = None
+    # State machine: pending → approved → executed (PayPal refund captured)
+    #                        → rejected (manager said no)
+    #                        → failed (PayPal refused the refund)
+    status: Literal["pending", "approved", "executed", "rejected", "failed"] = "pending"
+    # PayPal refund id (returned by POST /v2/payments/captures/{id}/refund).
+    paypal_refund_id: Optional[str] = None
+    # If PayPal or the manager rejected the refund, capture the reason so
+    # the agent can retry with a corrected amount / message.
+    error_message: Optional[str] = None
+
+
+class PostSaleExtra(BaseModel):
+    """An extra activity/service added AFTER the trip was sold and paid.
+    Gets its own payment link so the client pays the delta separately —
+    the main invoice stays untouched (avoids splitting a captured PayPal
+    order across two prices)."""
+    extra_id: str = Field(default_factory=lambda: new_id("ext"))
+    title: str
+    description: str = ""
+    amount_eur: float
+    currency: str = "EUR"
+    # Optional day/date the extra is tied to for the client's own reference.
+    day_id: Optional[str] = None
+    date: Optional[str] = None
+    # Public token for the standalone payment page /pay/extra/:token.
+    # Distinct from Itinerary.payment_token so the extra can be shared /
+    # revoked independently.
+    payment_token: str = Field(default_factory=lambda: new_id("etok"))
+    # Which itinerary service row this extra maps to (so the builder can
+    # highlight the same row and delete the extra together with the row).
+    service_id: Optional[str] = None
+    # Status: draft (agent still editing) → sent (link shared) → paid
+    #        (client completed a captured payment) → cancelled (agent
+    #        removed the extra before payment).
+    status: Literal["draft", "sent", "paid", "cancelled"] = "sent"
+    created_by: str = ""
+    created_at: str = Field(default_factory=now_iso)
+    paid_at: Optional[str] = None
+    paid_amount: Optional[float] = None
+    # PayPal traces: order + capture ids so the refund flow can reference
+    # them without another lookup.
+    paypal_order_id: Optional[str] = None
+    paypal_capture_id: Optional[str] = None
 
 
 class TravelerInfoPerson(BaseModel):
@@ -424,6 +503,12 @@ class Itinerary(BaseModel):
     # public URL (https://itinerarios.viajadverdad.com/pay/{token}).
     payment_token: Optional[str] = None
     payments: List["Payment"] = Field(default_factory=list)
+    # Post-sale extra activities. Each carries its own payment link so the
+    # client settles the delta without touching the main invoice.
+    extras: List["PostSaleExtra"] = Field(default_factory=list)
+    # Refund requests logged by agents; require explicit manager approval
+    # (Bea or Marina) before the money is actually returned via PayPal.
+    refund_requests: List["RefundRequest"] = Field(default_factory=list)
     # Traveler info submitted by the client through the public /pay/:token
     # page (passports, flights, allergies). One per itinerary, last submit
     # wins.
