@@ -805,12 +805,6 @@ export default function ItineraryBuilder() {
                   <div className="smallcaps text-white/70">PVP final</div>
                   <div className="font-serif text-2xl tabular">{fmtEUR(totals.pvp)}</div>
                 </div>
-                <CashflowStatus
-                  startDate={itn.start_date}
-                  total={totals.pvp_adjusted || totals.pvp}
-                  payments={itn.payments || []}
-                  onOpenLinkModal={() => setPaymentModalOpen(true)}
-                />
                 {/* Post-sale accounting — only render when there's actually
                     an extra paid or a refund executed. Keeps the summary
                     clean for draft trips. */}
@@ -844,6 +838,12 @@ export default function ItineraryBuilder() {
                   setFx={setFx}
                   totals={totals}
                   onPersist={(rate) => setField("fx_rate", rate)}
+                />
+                <CashflowStatus
+                  startDate={itn.start_date}
+                  total={totals.pvp_adjusted || totals.pvp}
+                  payments={itn.payments || []}
+                  onOpenLinkModal={() => setPaymentModalOpen(true)}
                 />
               </div>
             </div>
