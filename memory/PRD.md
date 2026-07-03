@@ -853,6 +853,61 @@ Files touched (iter-22):
 - `frontend/src/App.js` — `/pay/extra/:token` route.
 
 
+### Iteration 22.1 — Booking-threshold + share-with-next-traveler (2026-07-03)
+
+Follow-up after Eduardo tested split payments end-to-end (1 of 2 paid in
+sandbox for 1210,32 €). Two feedback items addressed:
+
+1. **Communication path to the 2nd/3rd payer** — previously the first
+   payer had to manually forward the same `/pay/:token` link. Now:
+   - After a successful capture (return from PayPal), a
+     "Share with the next traveler" card appears on the public page
+     with **3 built-in channels**:
+     - WhatsApp deeplink (`wa.me/?text=…`) with the trip name, share
+       amount and payment URL pre-filled.
+     - Copy-to-clipboard button.
+     - Send-directly-by-email form (Resend transactional email with
+       "Your share of {trip}" — subject, hero, share amount, deposit
+       progress line, big "Pay my share" CTA).
+   - New endpoint `POST /api/payments/{token}/invite-share` (public)
+     that renders + sends via Resend. Body:
+     `{email, name?, share_eur?, from_name?}`. The recipient lands on
+     the SAME payment_token, so the smart-detect logic added earlier
+     auto-populates split.enabled + split.count from the ledger.
+   - New template `email_service.render_split_invite_email()` produces
+     a Fora-styled HTML+text email (cream background, serif hero,
+     terra accent).
+
+2. **"Booking is only reserved at 30%"** — regardless of how many
+   travelers split the payment. Made this the single source of truth:
+   - Public API now returns `deposit_threshold_eur` and
+     `booking_secured: bool` in every `GET /api/payments/{token}`
+     response.
+   - The `_compute_payment_options` helper computes threshold =
+     `full_amount` when trip ≤ 60 days away (deposit isn't offered) or
+     `deposit_amount` (30%) otherwise, and secured = paid ≥ threshold.
+   - New `BookingProgress` component on the public page renders a
+     progress bar (`paid / threshold`) with two states:
+     - `secured=false`: terra accent, "Booking reserved when
+       {threshold} is collected — {gap} to go · {paid} paid so far"
+       plus a small caption explaining that split payments still need
+       to cross the threshold together.
+     - `secured=true`: olive accent, "Booking reserved · deposit
+       collected ({threshold})".
+   - The success banner post-capture now also references the
+     threshold: "Booking is confirmed once {threshold} of the deposit
+     is collected" until the threshold is crossed.
+
+**Files touched** (iter-22.1):
+- `backend/server.py` — 2 new fields on the public payment response;
+  `POST /api/payments/{token}/invite-share` endpoint + Pydantic body.
+- `backend/email_service.py` — `render_split_invite_email()` template.
+- `frontend/src/pages/PublicPayment.jsx` — `BookingProgress` component;
+  `ShareWithNextTravelerCard` component; conditional rendering after a
+  ?success=1 capture; lucide `MessageCircle`, `Copy`, `Mail` icons
+  imported.
+
+
 - Migrate Preview DB → Production DB (mongodump/mongorestore, coordinated
   with the owner).
 

@@ -149,3 +149,96 @@ Alergias / notas:
 Enviado: {info.get('submitted_at')}
 """
     return subject, html, text
+
+
+def render_split_invite_email(
+    *,
+    trip_name: str,
+    payer_name: Optional[str],
+    from_name: Optional[str],
+    share_eur: float,
+    remaining_eur: float,
+    booking_secured: bool,
+    deposit_threshold_eur: float,
+    paid_eur: float,
+    public_url: str,
+) -> tuple[str, str, str]:
+    """Compose the transactional email a traveler sends to the NEXT
+    payer in a split invoice. Includes the trip name, how much has been
+    paid so far, the recipient's suggested share, and a big CTA to the
+    same /pay/:token link (they'll land in split-mode auto-detected)."""
+    subject = f"Your share of {trip_name} · pay securely"
+    who_name = (payer_name or "there").strip() or "there"
+    from_line = (
+        f"{from_name.strip()} just paid their share of the trip and asked us to send you this link."
+        if (from_name or "").strip()
+        else "You're being invited to pay your share of this trip."
+    )
+    if booking_secured:
+        booking_line = (
+            f"The booking is <strong>confirmed</strong> — enough of the "
+            f"{deposit_threshold_eur:.2f} € deposit has already been collected."
+        )
+        booking_line_text = (
+            f"The booking is confirmed — enough of the {deposit_threshold_eur:.2f} € "
+            f"deposit has already been collected."
+        )
+    else:
+        gap = max(0.0, deposit_threshold_eur - paid_eur)
+        booking_line = (
+            f"So far <strong>{paid_eur:.2f} €</strong> has been paid. "
+            f"Booking is confirmed once we reach <strong>{deposit_threshold_eur:.2f} €</strong> "
+            f"(deposit) — {gap:.2f} € to go."
+        )
+        booking_line_text = (
+            f"So far {paid_eur:.2f} € has been paid. Booking is confirmed once we "
+            f"reach {deposit_threshold_eur:.2f} € (deposit) — {gap:.2f} € to go."
+        )
+    html = f"""\
+<!doctype html>
+<html>
+  <body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#f4ebd7;padding:24px;color:#121b28">
+    <table cellpadding="0" cellspacing="0" width="100%" style="max-width:600px;margin:0 auto;background:#fff;border:1px solid #ead9b8">
+      <tr><td style="padding:24px 28px;border-bottom:1px solid #ead9b8">
+        <div style="font-size:11px;letter-spacing:.25em;text-transform:uppercase;color:#B08749">Espíritu Travel · payment invite</div>
+        <div style="font-family:Georgia,serif;font-size:26px;margin-top:8px;line-height:1.15">{trip_name}</div>
+      </td></tr>
+      <tr><td style="padding:20px 28px">
+        <p style="font-size:15px;line-height:1.65;margin:0 0 12px">Hi {who_name},</p>
+        <p style="font-size:15px;line-height:1.65;margin:0 0 12px">{from_line}</p>
+        <p style="font-size:15px;line-height:1.65;margin:0 0 12px">{booking_line}</p>
+      </td></tr>
+      <tr><td style="padding:0 28px 8px">
+        <div style="background:#f4ebd7;padding:20px;border-left:4px solid #e37e5e">
+          <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:#B08749">Your share</div>
+          <div style="font-family:Georgia,serif;font-size:36px;color:#121b28;margin-top:4px">{share_eur:.2f} €</div>
+          <div style="font-size:12px;color:#666;margin-top:4px">Remaining balance in the invoice: {remaining_eur:.2f} €</div>
+        </div>
+      </td></tr>
+      <tr><td style="padding:20px 28px 8px">
+        <a href="{public_url}" style="display:inline-block;background:#121b28;color:#fff;padding:14px 28px;text-decoration:none;font-size:13px;letter-spacing:.15em;text-transform:uppercase;font-weight:700">Pay my share →</a>
+      </td></tr>
+      <tr><td style="padding:12px 28px 24px;font-size:12px;color:#666">
+        Secure checkout via PayPal — credit/debit cards accepted, no account needed.
+        The link is unique to this trip; open it on any device and use the
+        <em>Splitting with fellow travelers?</em> toggle if you'd like to change the split.
+      </td></tr>
+    </table>
+  </body>
+</html>
+"""
+    text = f"""\
+Hi {who_name},
+
+{from_line}
+
+{booking_line_text}
+
+Your share: {share_eur:.2f} €
+Remaining balance in the invoice: {remaining_eur:.2f} €
+
+Pay securely here: {public_url}
+
+Espíritu Travel · payment invite
+"""
+    return subject, html, text

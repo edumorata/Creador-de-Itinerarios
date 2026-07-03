@@ -5,6 +5,7 @@ import {
   CreditCard, ShieldCheck, Sun, CheckCircle2,
   AlertCircle, Loader2, MapPin, Plane, FileText,
   Users, Plus, Trash2, Send, X, Edit3,
+  MessageCircle, Copy, Mail as MailIcon,
 } from "lucide-react";
 
 const API_BASE = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -242,10 +243,30 @@ export default function PublicPayment() {
                 <div className="text-sm mt-2 font-raleway text-espiritu-deep/80 leading-relaxed">
                   We&apos;ve captured {successAmount ? fmtEUR(parseFloat(successAmount)) : "your payment"}
                   {KIND_DESCRIPTOR[successKind] ? ` (${KIND_DESCRIPTOR[successKind].tag.toLowerCase()})` : ""}.
-                  Our team will be in touch shortly with the next steps to finalise your trip.
+                  {data?.booking_secured
+                    ? " The booking is now confirmed — our team will be in touch shortly with the next steps."
+                    : data?.deposit_threshold_eur > 0
+                      ? ` Booking is confirmed once ${fmtEUR(data.deposit_threshold_eur)} of the deposit is collected.`
+                      : " Our team will be in touch shortly with the next steps."}
                 </div>
               </div>
             </div>
+          )}
+          {/* Post-payment: prompt to invite the next split-payer. Only
+              shown right after a successful capture (return from PayPal)
+              when there's still remaining balance AND the ledger has at
+              least one entry with a "X of N" label (i.e. we're clearly
+              in a split flow). */}
+          {successKind && remaining > 0.5 && (data?.captured_payments || []).some((p) => /\d+\s*of\s*\d+/i.test(p?.share_label || "")) && (
+            <ShareWithNextTravelerCard
+              token={token}
+              trip_name={data?.trip_name}
+              remaining={remaining}
+              paidByMe={successAmount ? parseFloat(successAmount) : 0}
+              captured={data?.captured_payments || []}
+              deposit_threshold={data?.deposit_threshold_eur || 0}
+              booking_secured={!!data?.booking_secured}
+            />
           )}
           {cancelled && !successKind && (
             <div className="border-l-4 border-espiritu-terra bg-white px-5 py-4 font-raleway text-espiritu-deep/80 text-sm"
@@ -321,6 +342,17 @@ export default function PublicPayment() {
           <Total label="Already paid" value={fmtEUR(paid)} accent="olive" testid="paid-eur"/>
           <Total label="Remaining" value={fmtEUR(remaining)} accent="terra" testid="remaining-eur"/>
         </div>
+        {/* Booking-secured progress bar. The trip is only considered
+            reserved (booking confirmed) once the cumulative captured
+            payments reach the 30% deposit threshold — regardless of how
+            many travelers are splitting the payment. */}
+        {!fullyPaid && (data?.deposit_threshold_eur || 0) > 0 && (
+          <BookingProgress
+            paid={paid}
+            threshold={data.deposit_threshold_eur}
+            secured={!!data.booking_secured}
+          />
+        )}
       </section>
 
       {/* Split-payment section — always visible when there's remaining
@@ -722,12 +754,207 @@ function Total({ label, value, accent, testid }) {
   );
 }
 
+/**
+ * Post-payment card offering the client three ways to hand the same
+ * `/pay/:token` link to the NEXT split-payer: WhatsApp share, copy link,
+ * or send by email through Resend. Only rendered after a successful
+ * capture when the ledger already carries at least one "X of N" share.
+ */
+function ShareWithNextTravelerCard({
+  token, trip_name, remaining, paidByMe, captured,
+  deposit_threshold, booking_secured,
+}) {
+  const publicUrl = `${window.location.origin}/pay/${token}`;
+  // Derive the next share amount: same size as the last "X of N" pattern.
+  const lastLabel = [...captured].reverse().find((p) => /\d+\s*of\s*\d+/i.test(p?.share_label || ""));
+  const m = lastLabel ? /(\d+)\s*of\s*(\d+)/i.exec(lastLabel.share_label) : null;
+  const totalShares = m ? parseInt(m[2]) : 2;
+  const alreadyPaidCount = captured.filter((p) => /\d+\s*of\s*\d+/i.test(p?.share_label || "")).length;
+  const remainingShares = Math.max(1, totalShares - alreadyPaidCount);
+  const suggestedShare = Math.max(0, Math.round((remaining / remainingShares) * 100) / 100);
+  const nextPos = Math.min(totalShares, alreadyPaidCount + 1);
+  const myName = captured[captured.length - 1]?.payer_name || "your fellow traveler";
+
+  const [nextEmail, setNextEmail] = useState("");
+  const [nextName, setNextName] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [emailError, setEmailError] = useState(null);
+
+  const gapText = !booking_secured && deposit_threshold > 0
+    ? ` So far ${fmtEUR(deposit_threshold - (remaining))} paid — booking confirms at ${fmtEUR(deposit_threshold)}.`
+    : "";
+  const waText = encodeURIComponent(
+    `Hi! I just paid my share (${fmtEUR(paidByMe)}) of our trip "${trip_name || ""}". `
+    + `Here's the link to pay your share (${fmtEUR(suggestedShare)}). `
+    + `It's a secure PayPal checkout, no account needed:\n\n${publicUrl}`
+    + gapText
+  );
+  const waHref = `https://wa.me/?text=${waText}`;
+
+  const copy = () => {
+    navigator.clipboard.writeText(publicUrl).then(
+      () => { setCopied(true); setTimeout(() => setCopied(false), 2000); },
+      () => setEmailError("Couldn't copy — long-press the link and copy manually.")
+    );
+  };
+
+  const sendEmail = async () => {
+    if (!nextEmail.trim() || !nextEmail.includes("@")) {
+      setEmailError("Enter a valid email."); return;
+    }
+    setSending(true); setEmailError(null);
+    try {
+      const { data: res } = await axios.post(
+        `${API_BASE}/payments/${token}/invite-share`,
+        {
+          email: nextEmail.trim(),
+          name: nextName.trim() || undefined,
+          share_eur: suggestedShare,
+          from_name: myName,
+        },
+      );
+      if (res?.ok) setSent(true);
+      else setEmailError("Couldn't send the email — try WhatsApp or copy the link instead.");
+    } catch (e) {
+      setEmailError(e?.response?.data?.detail || "Couldn't send the email.");
+    } finally { setSending(false); }
+  };
+
+  return (
+    <div className="mt-3 border-l-4 border-espiritu-terra bg-white px-6 py-6"
+         data-testid="share-next-traveler-card">
+      <div className="kicker mb-2 inline-flex items-center gap-2">
+        <Users size={12}/> Share with the next traveler
+      </div>
+      <div className="font-serif text-espiritu-deep text-2xl leading-tight">
+        {alreadyPaidCount} of {totalShares} shares paid — {fmtEUR(suggestedShare)} to go per person
+      </div>
+      <div className="mt-2 font-raleway text-sm text-espiritu-deep/75 leading-relaxed">
+        Great — your share is in! Now let the next traveler (share {nextPos} of {totalShares})
+        finish their part. They&apos;ll land on the same secure link with the split pre-filled.
+      </div>
+
+      <div className="mt-5 grid gap-3 sm:grid-cols-3">
+        <a href={waHref} target="_blank" rel="noreferrer"
+           data-testid="share-whatsapp-btn"
+           className="inline-flex items-center justify-center gap-2 bg-espiritu-olive hover:bg-espiritu-olive/90 text-white px-4 py-2.5 text-sm font-medium rounded-full transition-colors">
+          <MessageCircle size={14}/> WhatsApp
+        </a>
+        <button onClick={copy}
+                data-testid="share-copy-btn"
+                className="inline-flex items-center justify-center gap-2 bg-espiritu-deep hover:bg-black text-white px-4 py-2.5 text-sm font-medium rounded-full transition-colors">
+          <Copy size={14}/> {copied ? "Copied!" : "Copy link"}
+        </button>
+        <a href={`mailto:?subject=${encodeURIComponent(`Your share of ${trip_name || "our trip"}`)}&body=${waText}`}
+           data-testid="share-mailto-btn"
+           className="inline-flex items-center justify-center gap-2 border border-espiritu-deep hover:bg-espiritu-sand-deep/30 text-espiritu-deep px-4 py-2.5 text-sm font-medium rounded-full transition-colors">
+          <MailIcon size={14}/> Open mail app
+        </a>
+      </div>
+
+      {/* Send directly via Resend */}
+      <div className="mt-6 pt-5 border-t border-espiritu-sand-deep">
+        <div className="kicker mb-2">Or send it directly</div>
+        {sent ? (
+          <div className="text-sm text-espiritu-olive font-raleway inline-flex items-center gap-2"
+               data-testid="invite-sent">
+            <CheckCircle2 size={14}/> Email sent to {nextEmail}
+          </div>
+        ) : (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Next traveler's email">
+                <input
+                  type="email"
+                  value={nextEmail}
+                  onChange={(e) => setNextEmail(e.target.value)}
+                  data-testid="next-payer-email"
+                  className="brand-input"
+                  placeholder="e.g. beatriz@example.com"
+                />
+              </Field>
+              <Field label="Their name (optional)">
+                <input
+                  value={nextName}
+                  onChange={(e) => setNextName(e.target.value)}
+                  data-testid="next-payer-name"
+                  className="brand-input"
+                  placeholder="Beatriz"
+                />
+              </Field>
+            </div>
+            <button onClick={sendEmail}
+                    disabled={sending}
+                    data-testid="send-invite-btn"
+                    className="mt-4 inline-flex items-center gap-2 bg-espiritu-deep hover:bg-black text-white disabled:opacity-60 px-4 py-2.5 text-sm font-medium rounded-full transition-colors">
+              {sending ? <><Loader2 size={14} className="animate-spin"/> Sending…</> : <><Send size={14}/> Send invite</>}
+            </button>
+            {emailError && (
+              <div className="mt-2 text-xs text-espiritu-magenta font-raleway" data-testid="invite-error">{emailError}</div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Field({ label, children }) {
   return (
     <label className="block">
       <span className="font-raleway text-[10px] uppercase tracking-[0.22em] text-espiritu-deep/60 block mb-1.5">{label}</span>
       {children}
     </label>
+  );
+}
+
+/**
+ * Progress bar tying every share-payment back to the 30% deposit
+ * threshold. The booking is only "confirmed / reserved" when cumulative
+ * captures cross that line — regardless of how many travelers split the
+ * payment. This is the single source of truth surfaced to the client.
+ */
+function BookingProgress({ paid, threshold, secured }) {
+  const pct = Math.min(100, Math.max(0, threshold > 0 ? (paid / threshold) * 100 : 0));
+  const gap = Math.max(0, threshold - paid);
+  return (
+    <div className={`mt-3 border-l-4 ${secured ? "border-espiritu-olive" : "border-espiritu-terra"} bg-white px-5 py-4`}
+         data-testid="booking-progress">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <div className="font-raleway text-sm text-espiritu-deep">
+          {secured ? (
+            <span className="inline-flex items-center gap-2 text-espiritu-olive font-medium">
+              <CheckCircle2 size={14}/> Booking reserved · deposit collected ({fmtEUR(threshold)})
+            </span>
+          ) : (
+            <>
+              <strong>Booking reserved when {fmtEUR(threshold)} is collected</strong>
+              <span className="text-espiritu-deep/70">
+                {" — "}{fmtEUR(gap)} to go
+                {paid > 0 && <> · {fmtEUR(paid)} paid so far</>}
+              </span>
+            </>
+          )}
+        </div>
+        <div className="font-raleway tabular text-[11px] text-espiritu-deep/60">
+          {Math.round(pct)}% of deposit
+        </div>
+      </div>
+      <div className="mt-2.5 h-2 bg-espiritu-sand-deep/60 overflow-hidden">
+        <div
+          className={`h-full transition-all duration-500 ${secured ? "bg-espiritu-olive" : "bg-espiritu-terra"}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      {!secured && (
+        <div className="mt-2 font-raleway text-[11px] text-espiritu-deep/60 leading-relaxed">
+          Whether one traveler pays the full deposit or several travelers split it,
+          the booking is only confirmed once the {fmtEUR(threshold)} threshold is crossed.
+        </div>
+      )}
+    </div>
   );
 }
 

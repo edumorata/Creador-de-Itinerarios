@@ -1698,6 +1698,10 @@ def _compute_payment_options(itn: dict, totals: dict) -> dict:
             "remaining_eur": 0.0, "days_to_trip": days,
             "fully_paid": True, "options": [],
             "partial_bounds": None, "monthly_suggested_eur": None,
+            "deposit_threshold_eur": round(
+                full_amount if (days is not None and days <= 60) else deposit_amount, 2
+            ),
+            "booking_secured": True,
         }
 
     options: List[dict] = []
@@ -1780,6 +1784,16 @@ def _compute_payment_options(itn: dict, totals: dict) -> dict:
         "options": options,
         "partial_bounds": partial_bounds,
         "monthly_suggested_eur": monthly,
+        # Booking threshold — the trip is considered "reserved" only when
+        # cumulative captured payments reach at least this amount (30% of
+        # the total, or 100% for last-minute trips). Split payments still
+        # apply: the invoice is not confirmed until enough shares are in.
+        "deposit_threshold_eur": round(
+            full_amount if (days is not None and days <= 60) else deposit_amount, 2
+        ),
+        "booking_secured": round(paid_eur, 2) >= round(
+            (full_amount if (days is not None and days <= 60) else deposit_amount) - 0.01, 2
+        ),
     }
 
 
@@ -1994,6 +2008,62 @@ async def _agent_public_info_from_db(email: str) -> dict:
         "avatar_url": u.get("avatar_url"),
         "email": u.get("email") or email,
     }
+
+
+class SplitInviteBody(BaseModel):
+    email: str
+    name: Optional[str] = None
+    share_eur: Optional[float] = None
+    from_name: Optional[str] = None
+
+
+@api.post("/payments/{token}/invite-share")
+async def invite_next_split_payer(
+    token: str,
+    payload: SplitInviteBody,
+    request: Request,
+):
+    """Public — after paying a share, the client can invite the next
+    traveler by email. We reuse the same payment_token so all splits
+    land on the same invoice; the recipient's page auto-detects the
+    split context from the captured_payments ledger."""
+    doc = await db.itineraries.find_one({"payment_token": token}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Enlace de pago no válido")
+    email = (payload.email or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Introduce un email válido.")
+    totals = _compute_pricing_totals(doc)
+    opts = _compute_payment_options(doc, totals)
+    origin = (request.headers.get("origin") or _frontend_base_url()).rstrip("/")
+    public_url = f"{origin}/pay/{token}"
+    share_eur = round(float(payload.share_eur), 2) if payload.share_eur else round(
+        float(opts.get("remaining_eur") or 0) / 2, 2
+    )
+    try:
+        from email_service import send_email, render_split_invite_email
+        subject, html, text = render_split_invite_email(
+            trip_name=doc.get("name", "Your trip"),
+            payer_name=payload.name,
+            from_name=payload.from_name,
+            share_eur=share_eur,
+            remaining_eur=float(opts.get("remaining_eur") or 0),
+            booking_secured=bool(opts.get("booking_secured")),
+            deposit_threshold_eur=float(opts.get("deposit_threshold_eur") or 0),
+            paid_eur=float(opts.get("paid_eur") or 0),
+            public_url=public_url,
+        )
+        ok = await send_email(
+            to=email,
+            subject=subject,
+            html=html,
+            text=text,
+            reply_to=(doc.get("created_by") or None),
+        )
+    except Exception:
+        logger.exception("invite-share email failed")
+        ok = False
+    return {"ok": bool(ok), "email": email, "share_eur": share_eur, "public_url": public_url}
 
 
 @api.get("/payments/{token}")
