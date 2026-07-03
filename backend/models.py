@@ -364,6 +364,10 @@ class Itinerary(BaseModel):
     end_date: Optional[str] = None
     duration_days: int = 0
     num_travelers: int = 1
+    # Ordered list of top-level destinations for this trip. Populated from
+    # the day list on Travefy import; can be manually curated later. Used
+    # by the public trip view for the hero city pill and by filters.
+    cities: List[str] = Field(default_factory=list)
     # Breakdown for accurate quoting + Sofi push. `num_adults` defaults to
     # `num_travelers` for legacy itineraries that pre-date this field; the
     # builder writes the explicit value on next save.

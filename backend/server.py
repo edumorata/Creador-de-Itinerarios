@@ -3434,6 +3434,14 @@ async def _build_itinerary_from_travefy_preview(payload: dict, user: User) -> It
         except (TypeError, ValueError):
             duration = 0
 
+    # Derive `cities[]` from the day list preserving first-seen order.
+    # Handy for the trip view's hero + destination pills, and for the
+    # cotizador filters later.
+    cities_seen: list = []
+    for d in days_out:
+        if d.city and d.city not in cities_seen:
+            cities_seen.append(d.city)
+
     itn = Itinerary(
         name=payload.get("trip_name") or "Itinerario importado de Travefy",
         main_traveler=main,
@@ -3441,6 +3449,7 @@ async def _build_itinerary_from_travefy_preview(payload: dict, user: User) -> It
         end_date=payload.get("end_date"),
         duration_days=duration,
         num_travelers=num_travelers,
+        cities=cities_seen,
         days=days_out,
         accommodations=acc_out,
         created_by=user.email,
