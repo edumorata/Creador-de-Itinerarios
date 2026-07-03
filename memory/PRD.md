@@ -1074,3 +1074,20 @@ Files touched (iter-22.4):
 - `frontend/src/pages/builder/CashflowStatus.jsx` (nuevo).
 - `frontend/src/pages/ItineraryBuilder.jsx` — import + render.
 
+
+### Iteration 22.5 — Pre-deploy cleanup (2026-07-03)
+
+**Ready for Monday deploy**:
+- `eduardo@viajadverdad.com` **removed** from `REFUND_APPROVERS` (only Beatriz & Marina remain).
+- `test.admin@example.com`'s TEST_Trip (John Doe) itinerary deleted from Mongo.
+- 3 refund_requests marcadas como "Prueba…" limpiadas del itinerario `itn_19663b2186ae`.
+- `backend/.env` values with special chars quoted (`GESTION_VIAJADVERDAD_PASS`, `RESEND_SENDER_EMAIL`).
+- deployment_agent scan: **PASS** — no blockers.
+- Sticky cotizador con scroll interno para muchos pagos, orden PVP € → PVP $ → Cobros.
+
+**Post-deploy checklist for the owner**:
+1. Cambiar `PAYPAL_MODE=live` + credenciales reales (guía abajo).
+2. Actualizar `FRONTEND_PUBLIC_URL` al dominio real de producción.
+3. Registrar el webhook PayPal en producción y rellenar `PAYPAL_WEBHOOK_ID`.
+4. Migrar datos de preview a producción si aplica (mongodump/mongorestore).
+

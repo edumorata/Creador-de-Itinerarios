@@ -2614,13 +2614,9 @@ async def mark_payment_manually(
 
 # Refund approvers — hardcoded email whitelist per user request. Only these
 # accounts can approve/reject a refund request.
-# NOTE: eduardo@ is a TEMPORARY entry so the owner can test the refund
-# workflow end-to-end before Bea/Marina log in for real. Remove it once
-# testing is complete.
 REFUND_APPROVERS: set = {
     "beatriz@viajadverdad.com",
     "marina@viajadverdad.com",
-    "eduardo@viajadverdad.com",  # TEMP — for E2E testing of refunds
 }
 
 
