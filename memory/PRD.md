@@ -745,6 +745,114 @@ Files touched (iter-19):
 - `backend/tests/test_booking_form_data.py` — 3 new test cases.
 
 
+### Iteration 22 — Cashflow avanzado (2026-07-03)
+
+**User request (Eduardo)**: 4 new cashflow features on top of the Fora-style
+public payment page + Resend notifications from iteration 21:
+ 1. Hide the traveler-info popup until AFTER the client has paid.
+ 2. Split payments — several travelers pay their share, ONE invoice.
+ 3. Sell EXTRA activities post-sale with a separate payment link.
+ 4. Refund workflow with manager approval (Bea / Marina).
+
+**Implemented**
+
+1. **Traveler-info popup timing** (`frontend/src/pages/PublicPayment.jsx`)
+   - `showInfoDialog = paid > 0 || justPaid` — the dialog only auto-opens
+     when there is at least one captured payment OR the user just came
+     back from PayPal with `?success=1`. Pre-payment the page is a clean
+     conversion funnel; the "Complete my details" button is still there
+     if the client wants to fill it early.
+
+2. **Split payments** (single invoice, multiple payers)
+   - `Payment` model got `payer_name`, `payer_email`, `share_label`,
+     `extra_id`. Same `payment_token` = same invoice; multiple Payment
+     rows contribute independently.
+   - `POST /api/payments/{token}/create-order` accepts the payer fields
+     and stores them (also passed to PayPal as payer_email).
+   - `GET /api/payments/{token}` exposes a redacted
+     `captured_payments[]` list (kind, amount, payer_name, share_label,
+     paid_at) so late-arriving travelers see who already paid.
+   - `PublicPayment.jsx` — new toggle "Splitting with fellow travelers?"
+     (`data-testid=toggle-split`) with `payer-name` + `payer-email`
+     inputs. Payment cards recompute the per-share amount (`o.amount /
+     N`) and emit `kind="partial"` for the share so multiple PayPal
+     orders build up to the same balance. Pay button disabled until
+     `payer_name` is filled.
+
+3. **Post-sale extras** (separate payment link per extra)
+   - New `PostSaleExtra` model with its own `payment_token` and status
+     machine (`draft` → `sent` → `paid` / `cancelled`).
+   - `Itinerary.extras: List[PostSaleExtra]` added.
+   - `Payment.kind` extended with `"extra"` for standalone captures.
+   - Endpoints (all `/api`-prefixed):
+     - `POST/GET/DELETE /itineraries/{id}/extras`
+     - `GET /payments/extra/{token}` (public)
+     - `POST /payments/extra/{token}/create-order` (public)
+     - `GET /payments/extra/{token}/return` (public PayPal return)
+   - New public page `frontend/src/pages/PublicExtraPayment.jsx` mounted
+     at `/pay/extra/:token` (route order matters — placed before
+     `/pay/:token`).
+   - Builder gets a new `ExtrasModal.jsx` (data-testid=`extras-modal`)
+     with title/description/amount/day/date inputs; copy-link button.
+   - Deletes of a paid extra are soft-cancelled (audit trail preserved),
+     the agent is nudged to file a refund via the Refunds modal.
+
+4. **Refund workflow with manager approval**
+   - New `RefundRequest` model (payment_id, service_id, amount_eur,
+     reason, requested_by, requested_at, approved_by, decided_at,
+     status ∈ {pending, approved, executed, rejected, failed},
+     paypal_refund_id, error_message).
+   - Approver whitelist hardcoded in `server.py`:
+     `REFUND_APPROVERS = {"beatriz@viajadverdad.com",
+     "marina@viajadverdad.com"}`.
+   - Endpoints:
+     - `POST /itineraries/{id}/refund-requests` (any agent) — validates
+       amount ≤ captured − already_refunded.
+     - `GET  /itineraries/{id}/refund-requests` — returns list +
+       `is_approver` flag + `approver_emails`.
+     - `POST .../refund-requests/{rid}/approve` — manager-only, calls
+       new `paypal.refund_capture()` → hits
+       `POST /v2/payments/captures/{cap}/refund`. Marks source Payment
+       as `refunded` if fully refunded.
+     - `POST .../refund-requests/{rid}/reject` — manager-only, 404 if
+       target refund isn't in `pending` state.
+   - PayPal client (`paypal.py`) got a new `refund_capture(capture_id,
+     amount_eur, note, invoice_id)` helper — supports partial refunds by
+     including `amount.value` in the body.
+   - Builder gets a new `RefundsModal.jsx` (data-testid=`refunds-modal`)
+     that shows the approver-status banner (green if the current user is
+     Bea or Marina), lists all refunds with status badges, and only
+     renders Approve/Reject buttons for approvers.
+
+**Testing** — `/app/test_reports/iteration_9.json`
+- Backend: 19/19 pytest cases pass
+  (`backend/tests/test_iteration22_cashflow.py`).
+- Frontend: all 4 features verified via Playwright (popup hidden on
+  clean itinerary, auto-opens on paid; split toggle reveals payer
+  fields and per-share amounts; extras CRUD + copy-link works; refunds
+  modal shows approver banner correctly; non-approver → 403).
+- Design polish applied post-report: sticky close button on
+  TravelerInfoDialog; reject-refund now returns 404 when nothing
+  matches.
+
+Files touched (iter-22):
+- `backend/models.py` — new `PostSaleExtra`, `RefundRequest`; extended
+  `Payment` (payer_name/email/share_label/extra_id, kind="extra");
+  `Itinerary` got `extras` and `refund_requests` lists.
+- `backend/paypal.py` — new `refund_capture()` helper.
+- `backend/server.py` — 10 new endpoints (extras CRUD + public extra
+  landing + refund CRUD + manager approve/reject); `captured_payments`
+  in the public payment landing; payer_email forwarded to PayPal.
+- `frontend/src/pages/PublicPayment.jsx` — popup timing fix; split
+  payment section (toggle + payer_name/email + per-share amounts);
+  captured_payments ledger.
+- `frontend/src/pages/PublicExtraPayment.jsx` — NEW.
+- `frontend/src/pages/builder/ExtrasModal.jsx` — NEW.
+- `frontend/src/pages/builder/RefundsModal.jsx` — NEW.
+- `frontend/src/pages/ItineraryBuilder.jsx` — 3 header buttons wired.
+- `frontend/src/App.js` — `/pay/extra/:token` route.
+
+
 - Migrate Preview DB → Production DB (mongodump/mongorestore, coordinated
   with the owner).
 

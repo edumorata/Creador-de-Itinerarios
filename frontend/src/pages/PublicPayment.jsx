@@ -845,7 +845,7 @@ function TravelerInfoDialog({ onClose, ...formProps }) {
           type="button"
           aria-label="Close"
           title="Close — you can complete this later, we'll remind you next time you visit"
-          className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 inline-flex items-center gap-1.5 px-3 py-2 bg-espiritu-deep text-white hover:bg-black font-raleway text-xs font-bold uppercase tracking-wider"
+          className="sticky top-3 sm:top-4 float-right mr-3 sm:mr-4 z-20 inline-flex items-center gap-1.5 px-3 py-2 bg-espiritu-deep text-white hover:bg-black font-raleway text-xs font-bold uppercase tracking-wider shadow-lg"
         >
           <X size={14}/> Close
         </button>

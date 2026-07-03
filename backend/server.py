@@ -2881,7 +2881,7 @@ async def reject_refund(
     if not _is_refund_approver(user):
         raise HTTPException(status_code=403,
                             detail="Sólo Beatriz o Marina pueden rechazar reembolsos.")
-    await db.itineraries.update_one(
+    r = await db.itineraries.update_one(
         {"itinerary_id": itinerary_id, "refund_requests.refund_id": refund_id,
          "refund_requests.status": "pending"},
         {"$set": {
@@ -2892,6 +2892,14 @@ async def reject_refund(
             "updated_at": now_iso(),
         }},
     )
+    if r.matched_count == 0:
+        # Either the refund doesn't exist or it's no longer in a pending
+        # state (already rejected / executed / failed). Surface the
+        # ambiguity so the UI can differentiate "noop" from "success".
+        raise HTTPException(
+            status_code=404,
+            detail="Reembolso no encontrado o ya decidido.",
+        )
     return {"ok": True, "status": "rejected"}
 
 
