@@ -1403,7 +1403,11 @@ async def _push_one_booking_fast(page, b: dict, hidden: dict,
     booking_id: Optional[int] = None
     location = resp.headers.get("location") or resp.headers.get("Location") or ""
     # Sofi redirects post-save to /trips/details/1/{trip_id} or /reservas/list/3
-    # and sometimes leaves the new booking id in the Location.
+    # and sometimes leaves the new booking id in the Location. For extras
+    # posted from our push_extra_to_sofi_as_booking helper Sofi redirects to
+    # /reservas/list/3?app_bookings___trip_id_raw=… (the filtered list), so
+    # the id isn't parseable here — 303 alone means success, the caller can
+    # look up the actual row later if it needs the id.
     m = _re_mod.search(r"/reservas/(?:details|form)/\d+/(\d+)", location)
     if m:
         booking_id = int(m.group(1))
