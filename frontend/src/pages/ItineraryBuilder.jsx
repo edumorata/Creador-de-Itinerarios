@@ -757,11 +757,12 @@ export default function ItineraryBuilder() {
           )}
         </div>
 
-        {/* Right: cost summary — flows naturally with page scroll so the
-            agent can scroll past the pricing block to see the full payment
-            history in "Estado de cobros" below. No sticky behavior. */}
+        {/* Right: cost summary — sticky container with internal overflow
+            so the pricing stays visible while scrolling the days AND the
+            long payment history / cashflow block below is reachable via
+            an internal scrollbar when its content exceeds the viewport. */}
         <aside className="bg-clay-50/60">
-          <div className="flex flex-col">
+          <div className="sticky top-2 max-h-[95vh] overflow-y-auto flex flex-col">
             <div className="border-b border-clay-300 p-5 bg-white">
               <button type="button"
                       onClick={toggleCost}
