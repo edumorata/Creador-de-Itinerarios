@@ -722,14 +722,12 @@ export default function ItineraryBuilder() {
               audit trail. */}
           {((itn.extras || []).length > 0 || (itn.refund_requests || []).length > 0) && (
             <PostSaleSection
-              itineraryId={id}
               extras={itn.extras || []}
               refunds={itn.refund_requests || []}
               payments={itn.payments || []}
               onOpenExtras={() => setExtrasModalOpen(true)}
               onOpenRefunds={() => setRefundsModalOpen(true)}
               sofiTripId={itn.sofi_trip_id}
-              onChange={load}
             />
           )}
         </div>

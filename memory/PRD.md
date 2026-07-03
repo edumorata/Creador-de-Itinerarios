@@ -920,3 +920,44 @@ sandbox for 1210,32 €). Two feedback items addressed:
   rules.
 - `server.py` carve-out: routers/sofi.py + services/sofi_push.py before
   adding more integrations (file is 4866 lines).
+
+
+### Iteration 22.2 — Manual Sofi bookkeeping for post-sale movements (2026-07-03)
+
+**Owner decision**: automation of extras/refunds sync to Sofi is REMOVED.
+The trip header + initial bookings push (`POST /api/itineraries/{id}/push-to-sofi`)
+stays as-is — that flow is battle-tested and saves the biggest amount of
+copy-paste. Post-sale movements (new extras, refund line edits) will be
+entered manually by the agent inside Sofi.
+
+**Removed**
+- Backend `sofi.py`: `push_extra_to_sofi_as_booking()` +
+  `push_refund_to_sofi_as_booking()` helpers (≈240 LOC).
+- Backend `server.py`: `POST /api/itineraries/{id}/extras/{extra_id}/push-to-sofi`
+  and `POST /api/itineraries/{id}/refund-requests/{refund_id}/push-to-sofi`
+  endpoints.
+- Frontend `PostSaleSection.jsx`: "Push a Sofi" buttons per extra/refund row,
+  "Sofi ✓" green pill, and the `pushToSofi` handlers. Also dropped the
+  `itineraryId` and `onChange` props from the component's signature
+  (no longer needed since the component is now read-only).
+
+**Kept for audit**
+- `extras[].sofi_booking_id` and `refund_requests[].sofi_booking_id` fields
+  on the Itinerary doc still exist (never referenced from the UI now).
+  Harmless — the DB schema is not migrated so historical rows keep their
+  legacy `synced_to_sofi=true` markers.
+
+**Caption update**
+- The post-sale section header now reads: "Extras cobrados suman al PVP ·
+  reembolsos ejecutados restan del total. Estos movimientos se introducen
+  **manualmente** en Sofi (trip #NNNN)."
+
+Files touched (iter-22.2):
+- `backend/sofi.py` — deleted 240 LOC (both helpers).
+- `backend/server.py` — deleted 2 endpoints (≈95 LOC).
+- `frontend/src/pages/builder/PostSaleSection.jsx` — rewrite: removed
+  `pushToSofi` handlers, buttons, "Sofi ✓" badges, `useState`, `api`,
+  `Send`, `ArrowUpRight`, `CheckCircle2` (kept for status badges).
+- `frontend/src/pages/ItineraryBuilder.jsx` — dropped `itineraryId` +
+  `onChange` props from `<PostSaleSection>`.
+

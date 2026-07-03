@@ -1,10 +1,9 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo } from "react";
 import {
-  Sparkles, Undo2, ExternalLink, Copy, Send, CheckCircle2, Clock,
-  AlertCircle, XCircle, Plus, ArrowUpRight,
+  Sparkles, Undo2, ExternalLink, Copy, CheckCircle2, Clock,
+  AlertCircle, XCircle, Plus,
 } from "lucide-react";
 import { toast } from "sonner";
-import api from "@/lib/api";
 
 const fmtEUR = (n) => new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" }).format(n || 0);
 
@@ -28,12 +27,12 @@ const REFUND_BADGE = {
  * ItineraryBuilder — under Days + Accommodations. Renders two lists
  * (extras / refunds) with totals so the agent can see the audit trail
  * without opening a modal. All CRUD lives in the modals; this is
- * read-mostly with a "sync to Sofi" action per row when the trip has
- * already been pushed.
+ * read-mostly. Sofi bookkeeping for post-sale movements is handled
+ * MANUALLY by the agent inside Sofi (no automation).
  */
 export function PostSaleSection({
-  itineraryId, extras, refunds, payments, sofiTripId,
-  onOpenExtras, onOpenRefunds, onChange,
+  extras, refunds, payments, sofiTripId,
+  onOpenExtras, onOpenRefunds,
 }) {
   const paidExtras = useMemo(
     () => extras.filter((e) => e.status === "paid"),
@@ -71,8 +70,9 @@ export function PostSaleSection({
           </div>
           <div className="font-serif text-2xl mt-1">Ajustes tras la venta</div>
           <div className="text-xs text-clay-500 mt-1">
-            Extras cobrados suman al PVP · reembolsos ejecutados restan · ambos se sincronizan a Sofi{" "}
-            {sofiTripId ? <>(trip <code className="font-mono">#{sofiTripId}</code>)</> : "cuando el viaje esté pusheado"}.
+            Extras cobrados suman al PVP · reembolsos ejecutados restan del total.{" "}
+            Estos movimientos se introducen <strong>manualmente</strong> en Sofi
+            {sofiTripId ? <> (trip <code className="font-mono">#{sofiTripId}</code>)</> : ""}.
           </div>
         </div>
       </div>
@@ -97,11 +97,7 @@ export function PostSaleSection({
           ) : (
             <div className="divide-y divide-clay-200">
               {extras.map((e) => (
-                <ExtraRow key={e.extra_id}
-                          itineraryId={itineraryId}
-                          extra={e}
-                          sofiTripId={sofiTripId}
-                          onChange={onChange}/>
+                <ExtraRow key={e.extra_id} extra={e}/>
               ))}
             </div>
           )}
@@ -136,12 +132,7 @@ export function PostSaleSection({
           ) : (
             <div className="divide-y divide-clay-200">
               {refunds.map((r) => (
-                <RefundRow key={r.refund_id}
-                           itineraryId={itineraryId}
-                           refund={r}
-                           payments={payments}
-                           sofiTripId={sofiTripId}
-                           onChange={onChange}/>
+                <RefundRow key={r.refund_id} refund={r} payments={payments}/>
               ))}
             </div>
           )}
@@ -161,30 +152,16 @@ export function PostSaleSection({
   );
 }
 
-function ExtraRow({ itineraryId, extra, sofiTripId, onChange }) {
+function ExtraRow({ extra }) {
   const badge = EXTRA_BADGE[extra.status] || EXTRA_BADGE.sent;
   const Icon = badge.Icon;
   const publicUrl = `${window.location.origin}/pay/extra/${extra.payment_token}`;
-  const [pushing, setPushing] = useState(false);
 
   const copy = () => {
     navigator.clipboard.writeText(publicUrl).then(
       () => toast.success("Enlace copiado"),
       () => toast.error("No se pudo copiar")
     );
-  };
-
-  const pushToSofi = async () => {
-    if (!sofiTripId) { toast.error("El viaje aún no está en Sofi — publícalo primero."); return; }
-    if (!window.confirm(`¿Añadir "${extra.title}" (${fmtEUR(extra.paid_amount ?? extra.amount_eur)}) como reserva extra en Sofi #${sofiTripId}?`)) return;
-    setPushing(true);
-    try {
-      await api.post(`/itineraries/${itineraryId}/extras/${extra.extra_id}/push-to-sofi`);
-      toast.success("Extra sincronizado a Sofi");
-      if (onChange) await onChange();
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "No se pudo sincronizar");
-    } finally { setPushing(false); }
   };
 
   return (
@@ -196,12 +173,6 @@ function ExtraRow({ itineraryId, extra, sofiTripId, onChange }) {
             <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] uppercase tracking-widest ${badge.cls}`}>
               <Icon size={10}/> {badge.text}
             </span>
-            {extra.synced_to_sofi && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] uppercase tracking-widest bg-blue-50 text-blue-700"
-                    title="Ya está en Sofi">
-                <CheckCircle2 size={10}/> Sofi ✓
-              </span>
-            )}
           </div>
           {extra.date && (
             <div className="text-[11px] text-clay-500 mt-1">Fecha: {extra.date}</div>
@@ -216,52 +187,28 @@ function ExtraRow({ itineraryId, extra, sofiTripId, onChange }) {
           </div>
         </div>
       </div>
-      <div className="mt-2 flex items-center gap-1.5 flex-wrap">
-        {extra.status !== "cancelled" && (
-          <>
-            <button onClick={copy}
-                    data-testid={`post-sale-extra-copy-${extra.extra_id}`}
-                    className="inline-flex items-center gap-1 px-2 py-1 border border-clay-300 hover:bg-clay-100 text-[11px]">
-              <Copy size={10}/> Copiar enlace
-            </button>
-            <a href={publicUrl} target="_blank" rel="noreferrer"
-               data-testid={`post-sale-extra-open-${extra.extra_id}`}
-               className="inline-flex items-center gap-1 px-2 py-1 border border-clay-300 hover:bg-clay-100 text-[11px]">
-              <ExternalLink size={10}/> Abrir
-            </a>
-          </>
-        )}
-        {extra.status === "paid" && sofiTripId && !extra.synced_to_sofi && (
-          <button onClick={pushToSofi}
-                  disabled={pushing}
-                  data-testid={`post-sale-extra-push-sofi-${extra.extra_id}`}
-                  className="inline-flex items-center gap-1 px-2 py-1 border border-clay-300 hover:bg-clay-100 text-[11px] text-blue-700 disabled:opacity-60">
-            <ArrowUpRight size={10}/> {pushing ? "Enviando…" : "Push a Sofi"}
+      {extra.status !== "cancelled" && (
+        <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+          <button onClick={copy}
+                  data-testid={`post-sale-extra-copy-${extra.extra_id}`}
+                  className="inline-flex items-center gap-1 px-2 py-1 border border-clay-300 hover:bg-clay-100 text-[11px]">
+            <Copy size={10}/> Copiar enlace
           </button>
-        )}
-      </div>
+          <a href={publicUrl} target="_blank" rel="noreferrer"
+             data-testid={`post-sale-extra-open-${extra.extra_id}`}
+             className="inline-flex items-center gap-1 px-2 py-1 border border-clay-300 hover:bg-clay-100 text-[11px]">
+            <ExternalLink size={10}/> Abrir
+          </a>
+        </div>
+      )}
     </div>
   );
 }
 
-function RefundRow({ itineraryId, refund, payments, sofiTripId, onChange }) {
+function RefundRow({ refund, payments }) {
   const badge = REFUND_BADGE[refund.status] || REFUND_BADGE.pending;
   const Icon = badge.Icon;
-  const [pushing, setPushing] = useState(false);
   const sourcePayment = payments.find((p) => p.payment_id === refund.payment_id);
-
-  const pushToSofi = async () => {
-    if (!sofiTripId) { toast.error("El viaje aún no está en Sofi — publícalo primero."); return; }
-    if (!window.confirm(`¿Registrar reembolso de ${fmtEUR(refund.amount_eur)} en Sofi #${sofiTripId}?`)) return;
-    setPushing(true);
-    try {
-      await api.post(`/itineraries/${itineraryId}/refund-requests/${refund.refund_id}/push-to-sofi`);
-      toast.success("Reembolso registrado en Sofi");
-      if (onChange) await onChange();
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "No se pudo sincronizar");
-    } finally { setPushing(false); }
-  };
 
   return (
     <div className="px-4 py-3" data-testid={`post-sale-refund-${refund.refund_id}`}>
@@ -272,12 +219,6 @@ function RefundRow({ itineraryId, refund, payments, sofiTripId, onChange }) {
             <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] uppercase tracking-widest ${badge.cls}`}>
               <Icon size={10}/> {badge.text}
             </span>
-            {refund.synced_to_sofi && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] uppercase tracking-widest bg-blue-50 text-blue-700"
-                    title="Ya está en Sofi">
-                <CheckCircle2 size={10}/> Sofi ✓
-              </span>
-            )}
           </div>
           {refund.reason && (
             <div className="text-xs text-clay-700 mt-1 line-clamp-2">{refund.reason}</div>
@@ -293,19 +234,9 @@ function RefundRow({ itineraryId, refund, payments, sofiTripId, onChange }) {
           )}
         </div>
       </div>
-      <div className="mt-2 flex items-center gap-1.5 flex-wrap">
-        {refund.paypal_refund_id && (
-          <span className="text-[10px] font-mono text-clay-500">PayPal: {refund.paypal_refund_id}</span>
-        )}
-        {refund.status === "executed" && sofiTripId && !refund.synced_to_sofi && (
-          <button onClick={pushToSofi}
-                  disabled={pushing}
-                  data-testid={`post-sale-refund-push-sofi-${refund.refund_id}`}
-                  className="inline-flex items-center gap-1 px-2 py-1 border border-clay-300 hover:bg-clay-100 text-[11px] text-blue-700 disabled:opacity-60">
-            <ArrowUpRight size={10}/> {pushing ? "Enviando…" : "Push a Sofi"}
-          </button>
-        )}
-      </div>
+      {refund.paypal_refund_id && (
+        <div className="mt-2 text-[10px] font-mono text-clay-500">PayPal: {refund.paypal_refund_id}</div>
+      )}
     </div>
   );
 }
