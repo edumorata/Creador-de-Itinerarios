@@ -2664,10 +2664,10 @@ async def push_refund_to_sofi(
     refund_id: str,
     user: Annotated[User, Depends(current_user)],
 ):
-    """Record that an executed refund has been reconciled in Sofi. For
-    now this is a manual gate — flag it as `synced_to_sofi=True` so the
-    UI stops nagging the agent. The Sofi refund/adjustment row is
-    entered by hand until we build the automation for it."""
+    """Register an executed refund as a negative booking on the trip's
+    Sofi record so the totals reflect it. Runs Playwright end-to-end just
+    like the extras push — logs into Sofi, opens a fresh booking form,
+    posts a booking with a negative amount and a "REEMBOLSO —" label."""
     doc = await db.itineraries.find_one({"itinerary_id": itinerary_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Itinerario no encontrado")
@@ -2682,18 +2682,26 @@ async def push_refund_to_sofi(
         raise HTTPException(status_code=404, detail="Reembolso no encontrado")
     if refund.get("status") != "executed":
         raise HTTPException(status_code=400,
-                            detail="Sólo se pueden marcar como sincronizados los reembolsos ejecutados.")
-    await db.itineraries.update_one(
-        {"itinerary_id": itinerary_id, "refund_requests.refund_id": refund_id},
-        {"$set": {
-            "refund_requests.$.synced_to_sofi": True,
-            "refund_requests.$.synced_to_sofi_at": now_iso(),
-            "updated_at": now_iso(),
-        }},
-    )
-    return {"ok": True, "manual": True,
-            "hint": "Marcado como sincronizado. Introduce el ajuste "
-                    "en la ficha de Sofi manualmente."}
+                            detail="Sólo se pueden sincronizar reembolsos ejecutados.")
+    if refund.get("synced_to_sofi"):
+        return {"ok": True, "already_synced": True,
+                "sofi_booking_id": refund.get("sofi_booking_id")}
+    from sofi import push_refund_to_sofi_as_booking
+    res = await push_refund_to_sofi_as_booking(doc, refund)
+    if res.get("ok"):
+        await db.itineraries.update_one(
+            {"itinerary_id": itinerary_id, "refund_requests.refund_id": refund_id},
+            {"$set": {
+                "refund_requests.$.synced_to_sofi": True,
+                "refund_requests.$.synced_to_sofi_at": now_iso(),
+                "refund_requests.$.sofi_booking_id": res.get("sofi_booking_id"),
+                "updated_at": now_iso(),
+            }},
+        )
+    else:
+        raise HTTPException(status_code=502,
+                            detail=res.get("error") or "Sofi rechazó el reembolso")
+    return res
 
 
 @api.get("/payments/extra/{token}")
