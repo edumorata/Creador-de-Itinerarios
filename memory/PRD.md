@@ -1,5 +1,14 @@
 # PRD — Travel Itinerary Builder
 
+## 🚀 Production status (2026-07-06)
+- **Live URL**: https://trips.espiritutravel.com
+- **Deploy unblocker (Jul 6, 2026)**: Added `/app/.dockerignore` excluding `/app/artifacts/` (580 MB of one-shot import files). Previous K8sDeployNotRetryable timeouts were caused by the oversized deploy package, not by application code. Backend was already fine (seed loader in background task, FastAPI starts in <1s).
+- **PayPal**: Live mode, brand_name="Espíritu Travel", Guest Checkout enabled, webhook configured.
+- **Auth**: Emergent Google Auth on custom domain (trips.espiritutravel.com) working.
+- **Client-facing UX**: 100% US English (emails, payment pages, T&C).
+- **Compliance**: Mandatory Terms & Conditions checkbox on every payment; IP + timestamp + version stored per payment row.
+- **Payment deadlines**: 60 days before trip start (deposit-or-full allowed >60d; full-only ≤60d).
+
 ## Original problem statement
 > Construir una herramienta para que mis travel specialists puedan diseñar de forma más rápida y ágil los itinerarios.
 > - BBDD ordenada de experiencias vinculadas a proveedores con precio
