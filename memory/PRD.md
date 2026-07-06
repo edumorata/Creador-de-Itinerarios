@@ -1178,3 +1178,28 @@ in the background. `HTTP 200 in 0.25 s` on `/api/`.
 Files touched (iter-22.8):
 - `backend/server.py::seed_database_if_empty` — non-blocking via `_spawn_bg`.
 
+
+### Iteration 22.9 — REAL root-cause of deploy timeout: CI build failing (2026-07-06)
+
+**Root cause finally identified**: Emergent's production build step runs
+`yarn build` with `CI=true`, which makes CRA treat ESLint warnings as
+errors. Six `react-hooks/exhaustive-deps` warnings across
+`AITrainer.jsx`, `PublicPayment.jsx`, `ExtrasModal.jsx`,
+`PaymentLinkModal.jsx`, `RefundsModal.jsx` were causing
+`yarn build` to fail with exit code 1 during production build. The pod
+never got the compiled frontend assets → readiness probe never passed
+→ k8s timeout → deploy failed.
+
+Symptoms hid this because:
+- `yarn build` without `CI=true` succeeded locally.
+- Emergent's deploy logs only reported the k8s timeout, not the build
+  failure that caused it.
+
+**Fix**: added `// eslint-disable-next-line react-hooks/exhaustive-deps`
+above each of the 6 affected `useEffect` calls. Adding `load` as a real
+dep would cause infinite render loops (the function is recreated on
+every render).
+
+**Verified**: `cd /app/frontend && CI=true yarn build` now completes in
+10 s with no errors. Bundle 184 KB gzipped.
+

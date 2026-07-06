@@ -69,6 +69,7 @@ export default function AITrainer() {
   useEffect(() => {
     load();
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // When a job is running or just resumed elsewhere, attach polling automatically.
@@ -76,6 +77,7 @@ export default function AITrainer() {
     if (!activeJob) return;
     const live = ["queued", "running"].includes(activeJob.status);
     if (live && !pollRef.current) startPolling(activeJob.job_id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeJob?.job_id, activeJob?.status]);
 
   const startPolling = (jobId) => {

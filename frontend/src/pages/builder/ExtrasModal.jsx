@@ -31,6 +31,7 @@ export function ExtrasModal({ open, itineraryId, days = [], onClose, onChange })
     } finally { setLoading(false); }
   };
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (open) load(); }, [open]);
 
   const totalExtras = useMemo(

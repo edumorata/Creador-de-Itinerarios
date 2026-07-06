@@ -107,6 +107,7 @@ export default function PublicPayment() {
       setError(e?.response?.data?.detail || "We couldn't load this payment link. It may have expired.");
     } finally { setLoading(false); }
   };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [token]);
 
   // Partial-amount input state. Initialised from the suggested monthly

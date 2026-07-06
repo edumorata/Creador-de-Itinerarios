@@ -47,6 +47,7 @@ export function RefundsModal({ open, itineraryId, onClose, onChange }) {
     } finally { setLoading(false); }
   };
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (open) load(); }, [open]);
 
   // Hook must run before any early return (React rules).
