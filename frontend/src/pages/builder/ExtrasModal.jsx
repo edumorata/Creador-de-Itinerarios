@@ -32,7 +32,7 @@ export function ExtrasModal({ open, itineraryId, days = [], onClose, onChange })
   };
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (open) load(); }, [open]);
+  useEffect(() => { if (open) load(); }, [open, itineraryId]);
 
   const totalExtras = useMemo(
     () => extras.filter((e) => e.status !== "cancelled").reduce((s, e) => s + (e.amount_eur || 0), 0),

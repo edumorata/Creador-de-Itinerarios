@@ -48,7 +48,7 @@ export function RefundsModal({ open, itineraryId, onClose, onChange }) {
   };
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (open) load(); }, [open]);
+  useEffect(() => { if (open) load(); }, [open, itineraryId]);
 
   // Hook must run before any early return (React rules).
   const selectedPayment = payments.find((p) => p.payment_id === draft.payment_id);

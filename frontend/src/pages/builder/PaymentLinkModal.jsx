@@ -57,7 +57,7 @@ export function PaymentLinkModal({ open, itineraryId, onClose }) {
   };
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (open) load(); }, [open]);
+  useEffect(() => { if (open) load(); }, [open, itineraryId]);
 
   if (!open) return null;
   const options = data?.options || {};
