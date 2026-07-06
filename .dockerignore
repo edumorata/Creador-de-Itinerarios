@@ -1,0 +1,7 @@
+# Exclude heavy artifacts (580MB) from the deployment package.
+# These files are only used by one-shot admin import scripts, not at runtime.
+# Both absolute and relative forms are included so it works regardless of
+# where the build context root is.
+/app/artifacts/
+app/artifacts/
+artifacts/
