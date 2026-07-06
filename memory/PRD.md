@@ -1203,3 +1203,47 @@ every render).
 **Verified**: `cd /app/frontend && CI=true yarn build` now completes in
 10 s with no errors. Bundle 184 KB gzipped.
 
+
+### Iteration 22.10 — All customer-facing communications in English (2026-07-06)
+
+**Owner request**: everything a client sees must be in English (US),
+since the target market is US travelers. Agents' internal tools + emails
+stay in Spanish.
+
+**Customer-facing pages** (frontend):
+- `PublicPayment.jsx` — was already 99% English; changed currency
+  format from `es-ES` (`€1.234,56`) to `en-US` (`€1,234.56`).
+- `PublicExtraPayment.jsx` — same currency format switch.
+- `TripView.jsx` — already 100% English, no changes.
+
+**Customer-facing errors** (backend HTTPException details translated):
+- "Enlace de itinerario no válido" → "Invalid itinerary link"
+- "Enlace de pago no válido" → "Invalid payment link" (4 occurrences)
+- "Enlace de extra no válido" → "Invalid extra link" (4 occurrences)
+- "Esta opción de pago no está disponible…" → "This payment option is
+  not available for this trip right now"
+- "Introduce un email válido." → "Please enter a valid email."
+- "Indica la cantidad a pagar" → "Please enter the amount to pay"
+- "No se pudo crear la orden en PayPal" → "Could not create the PayPal
+  order" (both `/payments` and `/payments/extra`)
+- "Importe inválido" → "Invalid amount"
+- "La cantidad debe estar entre X y Y €" → "Amount must be between X
+  and Y €"
+
+**Emails to CLIENTS**: only `render_split_invite_email()` sends to a
+client (the next traveler in a split invoice), and was already in
+English. Agent-facing emails (payment received, refund
+approval/decision, balance reminder, traveler info) stay in Spanish.
+
+**PayPal receipt**: client automatically receives PayPal's own receipt
+email in English because `application_context.locale = "en-US"` in
+`paypal.py::create_order`.
+
+Files touched (iter-22.10):
+- `backend/server.py` — 10 HTTPException detail strings translated.
+- `frontend/src/pages/PublicPayment.jsx` — `Intl.NumberFormat` locale.
+- `frontend/src/pages/PublicExtraPayment.jsx` — `Intl.NumberFormat` locale.
+
+**Verified**: backend restarts cleanly, `CI=true yarn build` compiles
+in 10.13s.
+

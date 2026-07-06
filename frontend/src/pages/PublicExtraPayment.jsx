@@ -10,7 +10,7 @@ import { TermsAcceptance, TOS_VERSION } from "./public/TermsAcceptance";
 const API_BASE = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 const fmtEUR = (n) =>
-  new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" }).format(n || 0);
+  new Intl.NumberFormat("en-US", { style: "currency", currency: "EUR" }).format(n || 0);
 
 const fmtDate = (iso) => {
   if (!iso) return "";

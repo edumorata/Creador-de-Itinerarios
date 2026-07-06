@@ -2024,7 +2024,7 @@ async def get_trip_view(token: str):
     from destinations import pick_hero, pick_day_image, gallery_for
     doc = await db.itineraries.find_one({"payment_token": token}, {"_id": 0})
     if not doc:
-        raise HTTPException(status_code=404, detail="Enlace de itinerario no válido")
+        raise HTTPException(status_code=404, detail="Invalid itinerary link")
 
     totals = _compute_pricing_totals(doc)
     total_eur = round(float(totals.get("pvp") or 0), 2)
@@ -2141,10 +2141,10 @@ async def invite_next_split_payer(
     split context from the captured_payments ledger."""
     doc = await db.itineraries.find_one({"payment_token": token}, {"_id": 0})
     if not doc:
-        raise HTTPException(status_code=404, detail="Enlace de pago no válido")
+        raise HTTPException(status_code=404, detail="Invalid payment link")
     email = (payload.email or "").strip().lower()
     if not email or "@" not in email:
-        raise HTTPException(status_code=400, detail="Introduce un email válido.")
+        raise HTTPException(status_code=400, detail="Please enter a valid email.")
     totals = _compute_pricing_totals(doc)
     opts = _compute_payment_options(doc, totals)
     origin = (request.headers.get("origin") or _frontend_base_url()).rstrip("/")
@@ -2184,7 +2184,7 @@ async def get_payment_landing(token: str):
     the trip name + dates + amounts (no internal IDs leaked)."""
     doc = await db.itineraries.find_one({"payment_token": token}, {"_id": 0})
     if not doc:
-        raise HTTPException(status_code=404, detail="Enlace de pago no válido")
+        raise HTTPException(status_code=404, detail="Invalid payment link")
     totals = _compute_pricing_totals(doc)
     options = _compute_payment_options(doc, totals)
     # Expose the captured payment history publicly (only kind, amount and
@@ -2245,7 +2245,7 @@ async def submit_traveler_info(token: str, payload: TravelerInfoBody, request: R
     the agent who owns the itinerary by email (Resend)."""
     doc = await db.itineraries.find_one({"payment_token": token}, {"_id": 0})
     if not doc:
-        raise HTTPException(status_code=404, detail="Enlace de pago no válido")
+        raise HTTPException(status_code=404, detail="Invalid payment link")
     traveler_info = {
         "people": [p.model_dump() for p in payload.people],
         "arrival_flight": payload.arrival_flight.strip(),
@@ -2314,7 +2314,7 @@ async def create_payment_order(
     visit to finish payment."""
     doc = await db.itineraries.find_one({"payment_token": token}, {"_id": 0})
     if not doc:
-        raise HTTPException(status_code=404, detail="Enlace de pago no válido")
+        raise HTTPException(status_code=404, detail="Invalid payment link")
     # T&C gate — enforce here (right after doc lookup) so the amount check
     # further down doesn't mask the TOS error when both fail. The client
     # MUST have ticked the Terms & Conditions checkbox on the public page.
@@ -2343,7 +2343,7 @@ async def create_payment_order(
     if not chosen:
         raise HTTPException(
             status_code=400,
-            detail="Esta opción de pago no está disponible para este viaje en este momento",
+            detail="This payment option is not available for this trip right now",
         )
 
     # Resolve the concrete amount. For 'partial' the client provides it and
@@ -2351,7 +2351,7 @@ async def create_payment_order(
     # backend dictates it.
     if payload.kind == "partial":
         if payload.amount_eur is None:
-            raise HTTPException(status_code=400, detail="Indica la cantidad a pagar")
+            raise HTTPException(status_code=400, detail="Please enter the amount to pay")
         amount = round(float(payload.amount_eur), 2)
         bounds = options.get("partial_bounds") or {}
         min_eur = float(bounds.get("min_eur") or 0)
@@ -2359,7 +2359,7 @@ async def create_payment_order(
         if amount < min_eur - 0.01 or amount > max_eur + 0.01:
             raise HTTPException(
                 status_code=400,
-                detail=f"La cantidad debe estar entre {min_eur:.2f} € y {max_eur:.2f} €.",
+                detail=f"Amount must be between {min_eur:.2f} € and {max_eur:.2f} €.",
             )
     else:
         amount = float(chosen["amount_eur"])
@@ -2391,7 +2391,7 @@ async def create_payment_order(
         )
     except httpx.HTTPStatusError as e:
         logger.warning("paypal create_order failed: %s", e.response.text[:300])
-        raise HTTPException(status_code=502, detail="No se pudo crear la orden en PayPal")
+        raise HTTPException(status_code=502, detail="Could not create the PayPal order")
 
     payment = {
         "payment_id": payment_id,
@@ -2762,11 +2762,11 @@ async def get_extra_landing(token: str):
         {"extras.payment_token": token}, {"_id": 0},
     )
     if not doc:
-        raise HTTPException(status_code=404, detail="Enlace de extra no válido")
+        raise HTTPException(status_code=404, detail="Invalid extra link")
     extra = next((e for e in (doc.get("extras") or [])
                   if e.get("payment_token") == token), None)
     if not extra:
-        raise HTTPException(status_code=404, detail="Enlace de extra no válido")
+        raise HTTPException(status_code=404, detail="Invalid extra link")
     return {
         "trip_name": doc.get("name"),
         "main_traveler": doc.get("main_traveler"),
@@ -2803,18 +2803,18 @@ async def create_extra_order(
         {"extras.payment_token": token}, {"_id": 0},
     )
     if not doc:
-        raise HTTPException(status_code=404, detail="Enlace de extra no válido")
+        raise HTTPException(status_code=404, detail="Invalid extra link")
     extra = next((e for e in (doc.get("extras") or [])
                   if e.get("payment_token") == token), None)
     if not extra:
-        raise HTTPException(status_code=404, detail="Enlace de extra no válido")
+        raise HTTPException(status_code=404, detail="Invalid extra link")
     if extra.get("status") == "paid":
         raise HTTPException(status_code=400, detail="Este extra ya está pagado")
     if extra.get("status") == "cancelled":
         raise HTTPException(status_code=400, detail="Este extra fue cancelado")
     amount = round(float(extra.get("amount_eur") or 0), 2)
     if amount <= 0:
-        raise HTTPException(status_code=400, detail="Importe inválido")
+        raise HTTPException(status_code=400, detail="Invalid amount")
 
     payment_id = new_id("pmt")
     origin = (payload.origin or request.headers.get("origin") or _frontend_base_url()).rstrip("/")
@@ -2844,7 +2844,7 @@ async def create_extra_order(
         )
     except httpx.HTTPStatusError as e:
         logger.warning("paypal create_order (extra) failed: %s", e.response.text[:300])
-        raise HTTPException(status_code=502, detail="No se pudo crear la orden en PayPal")
+        raise HTTPException(status_code=502, detail="Could not create the PayPal order")
 
     payment = {
         "payment_id": payment_id,
