@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { X, Copy, RefreshCw, ExternalLink, CheckCircle2, Clock, AlertCircle, Mail, MessageSquare } from "lucide-react";
+import { X, Copy, RefreshCw, ExternalLink, CheckCircle2, Clock, AlertCircle, Mail, MessageSquare, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
 
@@ -235,6 +235,15 @@ export function PaymentLinkModal({ open, itineraryId, onClose }) {
                             )}
                             {p.notes && (
                               <div className="text-[11px] text-clay-700 italic mt-0.5">{p.notes}</div>
+                            )}
+                            {p.tos_accepted_at && (
+                              <div className="text-[10px] text-pine mt-0.5"
+                                   data-testid={`payment-tos-${p.payment_id}`}
+                                   title={`T&C version: ${p.tos_version || "unknown"}${p.tos_accepted_ip ? " · IP " + p.tos_accepted_ip : ""}`}>
+                                <ShieldCheck size={9} className="inline mr-0.5"/>
+                                T&C aceptados {p.tos_accepted_at.slice(0, 10)}
+                                {p.tos_accepted_ip ? <span className="text-clay-500"> · IP {p.tos_accepted_ip}</span> : null}
+                              </div>
                             )}
                           </div>
                           <div className="tabular text-right">{fmtEUR(p.amount_eur)}</div>
