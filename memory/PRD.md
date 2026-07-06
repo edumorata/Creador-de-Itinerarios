@@ -1133,3 +1133,21 @@ Files touched (iter-22.6):
 - `frontend/src/pages/PublicPayment.jsx`, `frontend/src/pages/PublicExtraPayment.jsx`
 - `frontend/src/pages/builder/CashflowStatus.jsx`
 
+
+### Iteration 22.7 — TOS audit badge + deploy safety confirmed (2026-07-06)
+
+- `PaymentLinkModal.jsx`: each payment row now shows a small green
+  "T&C aceptados YYYY-MM-DD · IP X.X.X.X" indicator (with the version
+  in the tooltip) when the payment has `tos_accepted_at`. Legacy
+  payments (pre-TOS) omit the block cleanly — verified via screenshot
+  with 6 pre-existing payments (0 badges) and a manually stamped
+  payment (1 badge rendered correctly).
+- `deployment_agent`: full audit PASS. No blockers, no migration
+  needed. New TOS fields on Payment are `Optional[str] = None` so
+  existing docs deserialize cleanly. Backend rejects orders without
+  `tos_accepted=True` with a clean 400 error message (no crash on
+  cached old JS). CORS `*` is fine for Emergent deploy. `load_dotenv`
+  has no `override=True`. Supervisor config valid.
+
+**Ready for Monday deploy — no impact to production data.**
+
