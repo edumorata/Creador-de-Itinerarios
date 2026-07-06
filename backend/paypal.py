@@ -108,8 +108,8 @@ async def create_order(
             },
         }],
         "application_context": {
-            "brand_name": "Viajad Verdad",
-            "locale": "es-ES",
+            "brand_name": "Espíritu Travel",
+            "locale": "en-US",
             "landing_page": "BILLING",          # show CC fields first, not the PP login
             "shipping_preference": "NO_SHIPPING",
             "user_action": "PAY_NOW",
