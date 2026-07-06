@@ -346,7 +346,7 @@ def render_balance_reminder_email(
     itinerary_url: str,
 ) -> tuple[str, str, str]:
     """Reminder to the agent 5 days before the client must complete the
-    full payment (i.e. `trip_start_date - 45 days`)."""
+    full payment (i.e. `trip_start_date - 60 days`)."""
     subject = f"[Recordatorio] En {days_left} días vence el saldo de {trip_name} · {remaining_eur:.2f} €"
     html = f"""\
 <!doctype html>

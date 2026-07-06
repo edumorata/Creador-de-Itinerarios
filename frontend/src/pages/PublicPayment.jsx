@@ -7,6 +7,7 @@ import {
   Users, Plus, Trash2, Send, X, Edit3,
   MessageCircle, Copy, Mail as MailIcon,
 } from "lucide-react";
+import { TermsAcceptance, TOS_VERSION } from "./public/TermsAcceptance";
 
 const API_BASE = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -119,6 +120,16 @@ export default function PublicPayment() {
   const [split, setSplit] = useState({ enabled: false, count: 2 });
   const [payerName, setPayerName] = useState("");
   const [payerEmail, setPayerEmail] = useState("");
+  // Terms & Conditions acceptance — the client must tick this before the
+  // pay buttons can be clicked. Stored per-session so a returning payer
+  // (e.g. coming back for a balance payment) is asked once.
+  const [tosAccepted, setTosAccepted] = useState(() => {
+    try { return sessionStorage.getItem("vdv_tos_accepted") === "1"; } catch { return false; }
+  });
+  const handleTosChange = (v) => {
+    setTosAccepted(v);
+    try { sessionStorage.setItem("vdv_tos_accepted", v ? "1" : "0"); } catch { /* ignore */ }
+  };
 
   // Auto-detect split-count from the ledger of captured payments: if
   // someone already paid a share labelled "1 of 4", subsequent travelers
@@ -137,9 +148,17 @@ export default function PublicPayment() {
   }, [data?.captured_payments]);
 
   const onPay = async (kind, customAmount, meta = {}) => {
+    if (!tosAccepted) {
+      setError("Please accept the Terms & Conditions to proceed.");
+      return;
+    }
     setSubmittingKind(kind);
     try {
-      const body = { kind, origin: window.location.origin };
+      const body = {
+        kind, origin: window.location.origin,
+        tos_accepted: true,
+        tos_version: TOS_VERSION,
+      };
       if (kind === "partial") body.amount_eur = customAmount;
       if (meta.payer_name) body.payer_name = meta.payer_name;
       if (meta.payer_email) body.payer_email = meta.payer_email;
@@ -508,7 +527,7 @@ export default function PublicPayment() {
                     onAmountChange={setPartialAmount}
                     onPay={(amt) => onPay("partial", amt, shareMeta)}
                     isSubmitting={submittingKind === "partial"}
-                    submitDisabled={submittingKind !== null || (split.enabled && !payerName.trim())}
+                    submitDisabled={submittingKind !== null || !tosAccepted || (split.enabled && !payerName.trim())}
                     splitCount={split.enabled ? split.count : 0}
                     remainingPayers={split.enabled ? Math.max(1, split.count - alreadySplit) : 0}
                   />
@@ -573,7 +592,7 @@ export default function PublicPayment() {
                         onPay(o.kind, undefined, shareMeta);
                       }
                     }}
-                    disabled={submittingKind !== null || (split.enabled && !payerName.trim())}
+                    disabled={submittingKind !== null || !tosAccepted || (split.enabled && !payerName.trim())}
                     data-testid={`pay-btn-${o.kind}`}
                     className="mt-6 inline-flex items-center justify-center gap-2 bg-espiritu-deep hover:bg-black disabled:opacity-60 disabled:cursor-not-allowed text-white px-5 py-3.5 rounded-full text-sm font-medium transition-colors">
                     {submittingKind === o.kind || (split.enabled && submittingKind === "partial") ? (
@@ -590,6 +609,13 @@ export default function PublicPayment() {
             <div className="mt-3 font-raleway text-xs text-espiritu-magenta"
                  data-testid="payer-name-required">
               Enter your full name above so we can log your share.
+            </div>
+          )}
+          <TermsAcceptance accepted={tosAccepted} onChange={handleTosChange}/>
+          {!tosAccepted && (
+            <div className="mt-2 font-raleway text-xs text-espiritu-deep/60 flex items-center gap-1"
+                 data-testid="tos-required-hint">
+              <AlertCircle size={12} className="text-espiritu-magenta"/> Please accept the Terms & Conditions to continue.
             </div>
           )}
           </div>

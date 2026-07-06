@@ -5,6 +5,7 @@ import {
   CreditCard, ShieldCheck, CheckCircle2, AlertCircle, Loader2,
   MapPin, Sparkles, ArrowRight,
 } from "lucide-react";
+import { TermsAcceptance, TOS_VERSION } from "./public/TermsAcceptance";
 
 const API_BASE = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -33,6 +34,13 @@ export default function PublicExtraPayment() {
   const [submitting, setSubmitting] = useState(false);
   const [payerName, setPayerName] = useState("");
   const [payerEmail, setPayerEmail] = useState("");
+  const [tosAccepted, setTosAccepted] = useState(() => {
+    try { return sessionStorage.getItem("vdv_tos_accepted") === "1"; } catch { return false; }
+  });
+  const handleTosChange = (v) => {
+    setTosAccepted(v);
+    try { sessionStorage.setItem("vdv_tos_accepted", v ? "1" : "0"); } catch { /* ignore */ }
+  };
 
   const successAmount = search.get("success") ? search.get("amount") : null;
   const cancelled = search.get("cancelled");
@@ -51,9 +59,17 @@ export default function PublicExtraPayment() {
   }, [token]);
 
   const onPay = async () => {
+    if (!tosAccepted) {
+      setError("Please accept the Terms & Conditions to proceed.");
+      return;
+    }
     setSubmitting(true);
     try {
-      const body = { origin: window.location.origin };
+      const body = {
+        origin: window.location.origin,
+        tos_accepted: true,
+        tos_version: TOS_VERSION,
+      };
       if (payerName.trim()) body.payer_name = payerName.trim();
       if (payerEmail.trim()) body.payer_email = payerEmail.trim();
       const { data: res } = await axios.post(`${API_BASE}/payments/extra/${token}/create-order`, body);
@@ -176,17 +192,24 @@ export default function PublicExtraPayment() {
               />
             </Field>
           </div>
+          <TermsAcceptance accepted={tosAccepted} onChange={handleTosChange}/>
           <button
             onClick={onPay}
-            disabled={submitting}
+            disabled={submitting || !tosAccepted}
             data-testid="extra-pay-btn"
-            className="w-full inline-flex items-center justify-center gap-2 bg-espiritu-deep hover:bg-black disabled:opacity-60 text-white px-5 py-3.5 rounded-full text-sm font-medium transition-colors">
+            className="w-full mt-5 inline-flex items-center justify-center gap-2 bg-espiritu-deep hover:bg-black disabled:opacity-60 disabled:cursor-not-allowed text-white px-5 py-3.5 rounded-full text-sm font-medium transition-colors">
             {submitting ? (
               <><Loader2 size={14} className="animate-spin"/> Redirecting to PayPal…</>
             ) : (
               <><CreditCard size={14}/> Pay {fmtEUR(data?.amount_eur)} <ArrowRight size={14}/></>
             )}
           </button>
+          {!tosAccepted && (
+            <div className="mt-2 font-raleway text-xs text-espiritu-deep/60 flex items-center gap-1"
+                 data-testid="extra-tos-required-hint">
+              <AlertCircle size={12} className="text-espiritu-magenta"/> Please accept the Terms & Conditions to continue.
+            </div>
+          )}
           <div className="mt-4 font-raleway text-xs text-espiritu-deep/60 inline-flex items-center gap-2">
             <ShieldCheck size={14}/> Secure checkout via PayPal — credit/debit cards accepted, no PayPal account required.
           </div>

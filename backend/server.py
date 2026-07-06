@@ -290,8 +290,8 @@ async def balance_reminder_loop():
     field `balance_reminder_sent_on` (ISO date) keeps it idempotent."""
     from datetime import date, timedelta
     REMINDER_DAYS_BEFORE_DUE = 5
-    FULL_PAYMENT_DUE_DAYS_BEFORE_TRIP = 45
-    OFFSET_DAYS = REMINDER_DAYS_BEFORE_DUE + FULL_PAYMENT_DUE_DAYS_BEFORE_TRIP  # 50
+    FULL_PAYMENT_DUE_DAYS_BEFORE_TRIP = 60
+    OFFSET_DAYS = REMINDER_DAYS_BEFORE_DUE + FULL_PAYMENT_DUE_DAYS_BEFORE_TRIP  # 65
 
     async def _tick():
         today = date.today()
@@ -1713,7 +1713,7 @@ async def unshare_itinerary(
 # ---------------------------------------------------------------------------
 # Rules per agency policy:
 #   • If >60 days until trip start → client may pay a 30% deposit to confirm,
-#     and must pay the remaining 70% no later than 45 days before the trip.
+#     and must pay the remaining 70% no later than 60 days before the trip.
 #   • If ≤60 days until trip start → only the full 100% is allowed (the trip
 #     must be paid in full to confirm).
 # Implementation:
@@ -1796,7 +1796,7 @@ def _compute_payment_options(itn: dict, totals: dict) -> dict:
                 "kind": "deposit",
                 "amount_eur": deposit_amount,
                 "label": "Pagar reserva (30%)",
-                "description": "Confirma el viaje. El resto se paga antes de 45 días del inicio del viaje.",
+                "description": "Confirma el viaje. El resto se paga al menos 60 días antes del inicio del viaje.",
             })
         options.append({
             "kind": "full",
@@ -2284,6 +2284,11 @@ class CreatePayPalOrderBody(BaseModel):
     payer_name: Optional[str] = None
     payer_email: Optional[str] = None
     share_label: Optional[str] = None
+    # Terms & Conditions acceptance — the client MUST tick the checkbox on
+    # the public page before we allow the PayPal order to be created. We
+    # record the fact + timestamp + IP as legal audit trail.
+    tos_accepted: Optional[bool] = None
+    tos_version: Optional[str] = None
 
 
 @api.post("/payments/{token}/create-order")
@@ -2298,6 +2303,14 @@ async def create_payment_order(
     doc = await db.itineraries.find_one({"payment_token": token}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Enlace de pago no válido")
+    # T&C gate — enforce here (right after doc lookup) so the amount check
+    # further down doesn't mask the TOS error when both fail. The client
+    # MUST have ticked the Terms & Conditions checkbox on the public page.
+    if not payload.tos_accepted:
+        raise HTTPException(
+            status_code=400,
+            detail="You must accept the Terms & Conditions before paying.",
+        )
     totals = _compute_pricing_totals(doc)
     options = _compute_payment_options(doc, totals)
     # Resolve the chosen option to a concrete amount and reject if it's not
@@ -2341,6 +2354,14 @@ async def create_payment_order(
 
     payment_id = new_id("pmt")
     origin = (payload.origin or request.headers.get("origin") or _frontend_base_url()).rstrip("/")
+
+    tos_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else None)
+    tos_meta = {
+        "tos_accepted_at": now_iso(),
+        "tos_version": (payload.tos_version or "espiritutravel-tos-v1"),
+        "tos_accepted_ip": tos_ip,
+    }
+
     return_url = f"{origin}/api/payments/{token}/return?payment_id={payment_id}"
     cancel_url = f"{origin}/pay/{token}?cancelled=1"
     label_for_paypal = chosen["label"] if payload.kind != "partial" else f"Pago parcial ({amount:.2f} €)"
@@ -2380,6 +2401,7 @@ async def create_payment_order(
         "payer_name": (payload.payer_name or "").strip() or None,
         "payer_email": (payload.payer_email or "").strip() or None,
         "share_label": (payload.share_label or "").strip() or None,
+        **tos_meta,
     }
     await db.itineraries.update_one(
         {"payment_token": token},
@@ -2753,6 +2775,8 @@ class CreateExtraOrderBody(BaseModel):
     origin: Optional[str] = None
     payer_name: Optional[str] = None
     payer_email: Optional[str] = None
+    tos_accepted: Optional[bool] = None
+    tos_version: Optional[str] = None
 
 
 @api.post("/payments/extra/{token}/create-order")
@@ -2782,6 +2806,18 @@ async def create_extra_order(
 
     payment_id = new_id("pmt")
     origin = (payload.origin or request.headers.get("origin") or _frontend_base_url()).rstrip("/")
+    # T&C gate — same as the main payment endpoint.
+    if not payload.tos_accepted:
+        raise HTTPException(
+            status_code=400,
+            detail="You must accept the Terms & Conditions before paying.",
+        )
+    tos_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else None)
+    tos_meta = {
+        "tos_accepted_at": now_iso(),
+        "tos_version": (payload.tos_version or "espiritutravel-tos-v1"),
+        "tos_accepted_ip": tos_ip,
+    }
     return_url = f"{origin}/api/payments/extra/{token}/return?payment_id={payment_id}"
     cancel_url = f"{origin}/pay/extra/{token}?cancelled=1"
     description = f"{doc.get('name', 'Viaje')} · Extra: {extra.get('title')}"
@@ -2814,6 +2850,7 @@ async def create_extra_order(
         "payer_email": (payload.payer_email or "").strip() or None,
         "share_label": None,
         "extra_id": extra.get("extra_id"),
+        **tos_meta,
     }
     await db.itineraries.update_one(
         {"itinerary_id": doc["itinerary_id"]},

@@ -350,6 +350,15 @@ class Payment(BaseModel):
     # activity charge (kind="extra"). None for regular deposit/balance/full
     # payments against the main invoice.
     extra_id: Optional[str] = None
+    # Terms & Conditions acceptance record — captured at create-order time
+    # so we have a legal audit trail of what the payer agreed to before
+    # authorizing the PayPal charge. `tos_version` is the SHA of the T&C
+    # doc / free-string version identifier (e.g. "2025-11-espiritutravel"),
+    # `tos_accepted_ip` is the client IP we saw. None when the payment
+    # predates this field.
+    tos_accepted_at: Optional[str] = None
+    tos_version: Optional[str] = None
+    tos_accepted_ip: Optional[str] = None
 
 
 class RefundRequest(BaseModel):

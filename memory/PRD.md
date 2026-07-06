@@ -1091,3 +1091,45 @@ Files touched (iter-22.4):
 3. Registrar el webhook PayPal en producción y rellenar `PAYPAL_WEBHOOK_ID`.
 4. Migrar datos de preview a producción si aplica (mongodump/mongorestore).
 
+
+### Iteration 22.6 — T&C on payment page + 45→60 day balance fix (2026-07-06)
+
+**Regulatory fix**: the public T&C on espiritutravel.com say "remaining
+payments must be paid at least **60 days prior to arrival**", not 45.
+Corrected everywhere:
+- `backend/server.py::balance_reminder_loop`: `FULL_PAYMENT_DUE_DAYS_BEFORE_TRIP = 60`, offset = 65.
+- `backend/server.py::_compute_payment_options`: deposit description now
+  reads "El resto se paga al menos 60 días antes del inicio del viaje."
+- `email_service.py::render_balance_reminder_email`: docstring 45→60.
+- `CashflowStatus.jsx`: `FULL_PAYMENT_DUE_DAYS_BEFORE = 60` + caption.
+
+**T&C block on public payment pages** (English, per owner request):
+- `frontend/src/pages/public/TermsAcceptance.jsx` (nuevo, 160 LOC):
+  reusable component with collapsible accordion (Proposals, Booking &
+  Payments 30% + 60d, Passport 48h, Cancellation, Insurance, Liability),
+  external link to `espiritutravel.com/terms-and-conditions/`, and
+  mandatory checkbox.
+- `PublicPayment.jsx` + `PublicExtraPayment.jsx`: hooked TermsAcceptance
+  before CTA. Pay buttons disabled while checkbox unchecked. Acceptance
+  stored per-tab in `sessionStorage` so returning payer isn't asked twice.
+- Backend legal audit trail: `CreatePayPalOrderBody` + `CreateExtraOrderBody`
+  now accept `tos_accepted` + `tos_version`. Endpoint rejects with 400
+  "You must accept the Terms & Conditions before paying" if unchecked.
+  On success, payment doc stores `tos_accepted_at`, `tos_version`,
+  `tos_accepted_ip` (X-Forwarded-For fallback). Added those 3 fields to
+  `models.Payment`.
+
+**Verified E2E**:
+- `curl -X POST create-order` w/o `tos_accepted` → HTTP 400 with English
+  error message.
+- `curl -X POST create-order` w/ `tos_accepted=true` → creates PayPal
+  order successfully.
+- Screenshot on live preview: accordion expands, checkbox toggles,
+  buttons enable correctly.
+
+Files touched (iter-22.6):
+- `backend/server.py`, `backend/models.py`, `backend/email_service.py`
+- `frontend/src/pages/public/TermsAcceptance.jsx` (new)
+- `frontend/src/pages/PublicPayment.jsx`, `frontend/src/pages/PublicExtraPayment.jsx`
+- `frontend/src/pages/builder/CashflowStatus.jsx`
+

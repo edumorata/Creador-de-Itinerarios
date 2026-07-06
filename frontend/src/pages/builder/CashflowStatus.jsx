@@ -11,8 +11,8 @@ const KIND_LABEL = {
   extra:   "Extra",
 };
 
-// Full-payment deadline is 45 days before the trip start.
-const FULL_PAYMENT_DUE_DAYS_BEFORE = 45;
+// Full-payment deadline is 60 days before the trip start.
+const FULL_PAYMENT_DUE_DAYS_BEFORE = 60;
 // Below this window from trip start, the deposit option is NOT offered
 // and the client must pay the full amount up-front (see backend rule).
 const DEPOSIT_WINDOW_DAYS = 60;
@@ -139,7 +139,7 @@ export function CashflowStatus({ startDate, total, payments = [], onOpenLinkModa
             </span>
           </div>
           <div className="text-[10px] text-clay-500 mt-1">
-            45 días antes de la salida. Recordatorio automático 5 días antes.
+            60 días antes de la salida. Recordatorio automático 5 días antes.
           </div>
         </div>
       )}
