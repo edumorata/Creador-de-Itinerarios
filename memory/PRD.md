@@ -1151,3 +1151,30 @@ Files touched (iter-22.6):
 
 **Ready for Monday deploy — no impact to production data.**
 
+
+### Iteration 22.8 — Root-cause fix for k8s deploy timeout (2026-07-06)
+
+**Root cause identified**: `@app.on_event("startup") seed_database_if_empty()`
+was blocking startup. Seed contains ~4 MB of JSON (568 providers, 2430
+experiences, 848 hotels, 167 training_examples, 10 allowed_emails, 5
+fx_rates). On production MongoDB Atlas (network round-trip per
+`insert_many`) the seed took >30-60 s on a fresh DB — longer than the
+k8s readiness probe timeout, so the pod never became "ready" and both
+deploys (Jul 6 11:20 and 12:21 UTC) failed.
+
+**Fix**: Wrap `seed_if_empty` in an `asyncio.create_task` via the
+existing `_spawn_bg()` helper so it runs in the background. Backend now
+answers `/api/*` in <1 s. Bootstrap-first-admin logic in
+`/auth/session` covers the (brief) window where `allowed_emails` is
+still empty; the catalog collections (hotels/experiences/providers)
+populate in the seconds while the agent completes the Google OAuth
+flow and reaches the dashboard — so the "empty DB visible to user" gap
+is effectively zero.
+
+**Verified**: local backend restart with the fix now shows
+`Application startup complete` in <1 s while the seed continues to log
+in the background. `HTTP 200 in 0.25 s` on `/api/`.
+
+Files touched (iter-22.8):
+- `backend/server.py::seed_database_if_empty` — non-blocking via `_spawn_bg`.
+

@@ -165,15 +165,27 @@ def _spawn_bg(coro):
 async def seed_database_if_empty():
     """First-deploy seeding: if any operational collection is empty, restore
     it from /app/backend/data/seed.json.gz. Idempotent on re-deploys (skips
-    any collection that already has rows)."""
-    try:
-        from tools.seed_loader import seed_if_empty
-        summary = await seed_if_empty(db)
-        non_zero = {k: v for k, v in summary.items() if v > 0}
-        if non_zero:
-            logger.warning("seed: bootstrapped collections: %s", non_zero)
-    except Exception as e:
-        logger.warning("seed: failed (continuing without it): %s", e)
+    any collection that already has rows).
+
+    Runs in the BACKGROUND so the FastAPI app can start answering /api/*
+    requests in <1s. On production (MongoDB Atlas over the network) the
+    seed inserts ~4k docs which can take 30-60s — blocking startup here
+    causes the Kubernetes readiness probe to time out and the deploy to
+    fail. The bootstrap-first-admin logic in `/auth/session` handles the
+    (brief) window where `allowed_emails` may still be empty, and the
+    catalog collections (hotels/experiences/providers) populate before
+    the agent finishes their first login flow anyway.
+    """
+    async def _run_seed():
+        try:
+            from tools.seed_loader import seed_if_empty
+            summary = await seed_if_empty(db)
+            non_zero = {k: v for k, v in summary.items() if v > 0}
+            if non_zero:
+                logger.warning("seed: bootstrapped collections: %s", non_zero)
+        except Exception as e:
+            logger.warning("seed: failed (continuing without it): %s", e)
+    _spawn_bg(_run_seed())
 
 
 @app.on_event("startup")
