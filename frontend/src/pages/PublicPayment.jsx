@@ -121,6 +121,13 @@ export default function PublicPayment() {
   const [split, setSplit] = useState({ enabled: false, count: 2 });
   const [payerName, setPayerName] = useState("");
   const [payerEmail, setPayerEmail] = useState("");
+  // Email is REQUIRED for every payment so we can send the client a
+  // per-payer receipt. Basic RFC-ish check — good enough to catch typos
+  // like "alice@" without blocking legitimate addresses.
+  const emailValid = useMemo(
+    () => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((payerEmail || "").trim()),
+    [payerEmail]
+  );
   // Terms & Conditions acceptance — the client must tick this before the
   // pay buttons can be clicked. Stored per-session so a returning payer
   // (e.g. coming back for a balance payment) is asked once.
@@ -151,6 +158,10 @@ export default function PublicPayment() {
   const onPay = async (kind, customAmount, meta = {}) => {
     if (!tosAccepted) {
       setError("Please accept the Terms & Conditions to proceed.");
+      return;
+    }
+    if (!emailValid) {
+      setError("Please enter a valid email — we'll send your receipt there.");
       return;
     }
     setSubmittingKind(kind);
@@ -445,29 +456,28 @@ export default function PublicPayment() {
         )}
         {!fullyPaid && options.length > 0 && (
           <div>
-            {split.enabled && (
-              <div className="bg-white border border-espiritu-sand-deep px-5 py-5 mb-5 grid gap-3 md:grid-cols-2">
-                <Field label="Your full name (for this share)">
-                  <input
-                    value={payerName}
-                    onChange={(e) => setPayerName(e.target.value)}
-                    data-testid="payer-name"
-                    className="brand-input"
-                    placeholder="e.g. Alice Rodriguez"
-                  />
-                </Field>
-                <Field label="Your email (optional, receipt)">
-                  <input
-                    value={payerEmail}
-                    onChange={(e) => setPayerEmail(e.target.value)}
-                    data-testid="payer-email"
-                    type="email"
-                    className="brand-input"
-                    placeholder="alice@example.com"
-                  />
-                </Field>
-              </div>
-            )}
+            <div className="bg-white border border-espiritu-sand-deep px-5 py-5 mb-5 grid gap-3 md:grid-cols-2">
+              <Field label={split.enabled ? "Your full name (for this share)" : "Your full name (optional)"}>
+                <input
+                  value={payerName}
+                  onChange={(e) => setPayerName(e.target.value)}
+                  data-testid="payer-name"
+                  className="brand-input"
+                  placeholder="e.g. Alice Rodriguez"
+                />
+              </Field>
+              <Field label="Your email (required — for your receipt)">
+                <input
+                  value={payerEmail}
+                  onChange={(e) => setPayerEmail(e.target.value)}
+                  data-testid="payer-email"
+                  type="email"
+                  required
+                  className="brand-input"
+                  placeholder="alice@example.com"
+                />
+              </Field>
+            </div>
           <div className={`grid gap-5 ${options.length > 1 ? "sm:grid-cols-2" : ""}`}>
             {options.map((o) => {
               // Auto-increment share position based on how many split
@@ -477,11 +487,14 @@ export default function PublicPayment() {
                 (p) => /\d+\s*of\s*\d+/i.test(p?.share_label || "")
               ).length;
               const sharePos = Math.min(alreadySplit + 1, split.count);
-              const shareMeta = split.enabled ? {
-                payer_name: payerName || undefined,
-                payer_email: payerEmail || undefined,
-                share_label: `${sharePos} of ${split.count}`,
-              } : {};
+              // Always send payer_email + payer_name (email is required
+              // via the disabled-button logic below); share_label only
+              // makes sense in split mode where we number the shares.
+              const shareMeta = {
+                payer_name: payerName.trim() || undefined,
+                payer_email: payerEmail.trim() || undefined,
+                ...(split.enabled ? { share_label: `${sharePos} of ${split.count}` } : {}),
+              };
               // Per-share amount in split mode. Two phases apply:
               //  (1) Deposit phase (booking NOT secured yet):
               //      • complete_deposit → gap ÷ remaining payers
@@ -528,7 +541,7 @@ export default function PublicPayment() {
                     onAmountChange={setPartialAmount}
                     onPay={(amt) => onPay("partial", amt, shareMeta)}
                     isSubmitting={submittingKind === "partial"}
-                    submitDisabled={submittingKind !== null || !tosAccepted || (split.enabled && !payerName.trim())}
+                    submitDisabled={submittingKind !== null || !tosAccepted || !emailValid || (split.enabled && !payerName.trim())}
                     splitCount={split.enabled ? split.count : 0}
                     remainingPayers={split.enabled ? Math.max(1, split.count - alreadySplit) : 0}
                   />
@@ -593,7 +606,7 @@ export default function PublicPayment() {
                         onPay(o.kind, undefined, shareMeta);
                       }
                     }}
-                    disabled={submittingKind !== null || !tosAccepted || (split.enabled && !payerName.trim())}
+                    disabled={submittingKind !== null || !tosAccepted || !emailValid || (split.enabled && !payerName.trim())}
                     data-testid={`pay-btn-${o.kind}`}
                     className="mt-6 inline-flex items-center justify-center gap-2 bg-espiritu-deep hover:bg-black disabled:opacity-60 disabled:cursor-not-allowed text-white px-5 py-3.5 rounded-full text-sm font-medium transition-colors">
                     {submittingKind === o.kind || (split.enabled && submittingKind === "partial") ? (
@@ -610,6 +623,12 @@ export default function PublicPayment() {
             <div className="mt-3 font-raleway text-xs text-espiritu-magenta"
                  data-testid="payer-name-required">
               Enter your full name above so we can log your share.
+            </div>
+          )}
+          {!emailValid && (
+            <div className="mt-2 font-raleway text-xs text-espiritu-magenta"
+                 data-testid="payer-email-required">
+              Enter a valid email above — we&apos;ll send your receipt there.
             </div>
           )}
           <TermsAcceptance accepted={tosAccepted} onChange={handleTosChange}/>

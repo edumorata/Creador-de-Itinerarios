@@ -1466,11 +1466,12 @@ async def list_itineraries(
     traveler: Optional[str] = None,
 ):
     """Agents see their OWN itineraries + any itinerary EXPLICITLY shared with
-    them (via /itineraries/{id}/share). Admins see everything by default; they
-    can narrow down via the `agent` query parameter exposed in the UI filter.
+    them (via /itineraries/{id}/share). Admins AND managers (refund approvers
+    — Bea/Marina) see everything by default; they can narrow down via the
+    `agent` query parameter exposed in the UI filter.
     """
     flt: dict = {}
-    if user.role == "admin":
+    if user.role == "admin" or _is_refund_approver(user):
         if agent:
             flt["created_by"] = agent
         if traveler:
@@ -1494,9 +1495,11 @@ async def list_itineraries(
 
 @api.get("/itineraries/agents")
 async def list_itinerary_agents(user: Annotated[User, Depends(current_user)]):
-    """Distinct list of agents who have created itineraries (admin-only)."""
-    if user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin only")
+    """Distinct list of agents who have created itineraries. Available to
+    admins and managers (refund approvers — Bea/Marina) so they can filter
+    the dashboard by agent."""
+    if user.role != "admin" and not _is_refund_approver(user):
+        raise HTTPException(status_code=403, detail="Admin or manager only")
     emails = await db.itineraries.distinct("created_by")
     return {"agents": sorted([e for e in emails if e])}
 
@@ -1576,11 +1579,15 @@ async def duplicate_itinerary(
 def _can_access(itn_doc: dict, user: User) -> bool:
     """Read+write authorisation gate.
 
-    Returns True if the user is admin, the creator, or has been explicitly
-    shared into the itinerary via `shared_with`. Sharing carries full
-    read+write so colleagues can collaborate live.
+    Returns True if the user is admin, a manager (refund approver — Bea /
+    Marina), the creator, or has been explicitly shared into the itinerary
+    via `shared_with`. Managers see everything because they may need to
+    review payments and approve refunds on any trip in the agency, not
+    just the ones they created.
     """
     if user.role == "admin":
+        return True
+    if _is_refund_approver(user):
         return True
     if itn_doc.get("created_by") == user.email:
         return True
@@ -2487,7 +2494,7 @@ async def payment_return_handler(token: str, payment_id: str, request: Request):
         try:
             fresh = await db.itineraries.find_one({"payment_token": token}, {"_id": 0})
             if fresh and fresh.get("created_by"):
-                from email_service import send_email, render_payment_captured_email
+                from email_service import send_email, render_payment_captured_email, render_payment_receipt_client_email
                 totals = _compute_pricing_totals(fresh)
                 opts = _compute_payment_options(fresh, totals)
                 base_url = os.environ.get("FRONTEND_PUBLIC_URL") or _frontend_base_url()
@@ -2510,6 +2517,43 @@ async def payment_return_handler(token: str, payment_id: str, request: Request):
                 asyncio.create_task(send_email(
                     to=fresh["created_by"], subject=subj, html=html_body, text=txt,
                 ))
+                # Also send a client-facing receipt to the payer (if they
+                # provided an email at checkout). US English, friendlier tone,
+                # no internal margin data. One receipt per capture — since
+                # each split share creates its own Payment row with its own
+                # payer_email, every co-payer receives their own confirmation.
+                payer_email = (payment.get("payer_email") or "").strip()
+                if payer_email:
+                    balance_due_date = ""
+                    start_date = fresh.get("start_date") or ""
+                    if start_date:
+                        try:
+                            from datetime import date as _date, timedelta as _td
+                            _y, _m, _d = [int(x) for x in start_date.split("-")]
+                            balance_due_date = (_date(_y, _m, _d) - _td(days=60)).isoformat()
+                        except Exception:  # noqa: BLE001
+                            balance_due_date = ""
+                    trip_view_url = f"{base_url.rstrip('/')}/trip/{token}"
+                    c_subj, c_html, c_txt = render_payment_receipt_client_email(
+                        trip_name=fresh.get("name") or "Your trip",
+                        main_traveler=fresh.get("main_traveler") or "",
+                        kind=payment.get("kind") or "",
+                        share_label=payment.get("share_label") or "",
+                        payer_name=payment.get("payer_name") or "",
+                        amount_eur=paid_amount or 0,
+                        currency=paid_currency or "EUR",
+                        paid_eur_total=float(opts.get("paid_eur") or 0),
+                        total_eur=float(opts.get("total_eur") or 0),
+                        remaining_eur=float(opts.get("remaining_eur") or 0),
+                        booking_secured=bool(opts.get("booking_secured")),
+                        balance_due_date=balance_due_date,
+                        paypal_capture_id=capture_id or "",
+                        trip_view_url=trip_view_url,
+                    )
+                    asyncio.create_task(send_email(
+                        to=payer_email, subject=c_subj, html=c_html, text=c_txt,
+                        reply_to=fresh.get("created_by") or None,
+                    ))
         except Exception as e:  # noqa: BLE001
             logger.warning("payment captured email dispatch failed: %s", e)
 
@@ -2954,7 +2998,7 @@ async def extra_return_handler(token: str, payment_id: str, request: Request):
                 {"payments.payment_id": payment_id}, {"_id": 0}
             )
             if fresh and fresh.get("created_by"):
-                from email_service import send_email, render_payment_captured_email
+                from email_service import send_email, render_payment_captured_email, render_payment_receipt_client_email
                 totals = _compute_pricing_totals(fresh)
                 opts = _compute_payment_options(fresh, totals)
                 extra = next((e for e in (fresh.get("extras") or [])
@@ -2979,6 +3023,34 @@ async def extra_return_handler(token: str, payment_id: str, request: Request):
                 asyncio.create_task(send_email(
                     to=fresh["created_by"], subject=subj, html=html_body, text=txt,
                 ))
+                # Client-facing extra receipt (US English) when the payer left
+                # an email at checkout.
+                payer_email = (payment.get("payer_email") or "").strip()
+                if payer_email:
+                    main_trip_token = fresh.get("payment_token") or ""
+                    trip_view_url = (
+                        f"{base_url.rstrip('/')}/trip/{main_trip_token}" if main_trip_token else ""
+                    )
+                    c_subj, c_html, c_txt = render_payment_receipt_client_email(
+                        trip_name=fresh.get("name") or "Your trip",
+                        main_traveler=fresh.get("main_traveler") or "",
+                        kind="extra",
+                        share_label=(extra.get("title") if extra else "") or "",
+                        payer_name=payment.get("payer_name") or "",
+                        amount_eur=paid_amount or 0,
+                        currency=paid_currency or "EUR",
+                        paid_eur_total=float(opts.get("paid_eur") or 0),
+                        total_eur=float(opts.get("total_eur") or 0),
+                        remaining_eur=float(opts.get("remaining_eur") or 0),
+                        booking_secured=bool(opts.get("booking_secured")),
+                        balance_due_date="",
+                        paypal_capture_id=capture_id or "",
+                        trip_view_url=trip_view_url,
+                    )
+                    asyncio.create_task(send_email(
+                        to=payer_email, subject=c_subj, html=c_html, text=c_txt,
+                        reply_to=fresh.get("created_by") or None,
+                    ))
         except Exception as e:  # noqa: BLE001
             logger.warning("extra payment captured email dispatch failed: %s", e)
 

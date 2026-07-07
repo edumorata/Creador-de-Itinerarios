@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import {
@@ -34,6 +34,11 @@ export default function PublicExtraPayment() {
   const [submitting, setSubmitting] = useState(false);
   const [payerName, setPayerName] = useState("");
   const [payerEmail, setPayerEmail] = useState("");
+  // Email is REQUIRED so we can send the client a receipt for the extra.
+  const emailValid = useMemo(
+    () => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((payerEmail || "").trim()),
+    [payerEmail]
+  );
   const [tosAccepted, setTosAccepted] = useState(() => {
     try { return sessionStorage.getItem("vdv_tos_accepted") === "1"; } catch { return false; }
   });
@@ -61,6 +66,10 @@ export default function PublicExtraPayment() {
   const onPay = async () => {
     if (!tosAccepted) {
       setError("Please accept the Terms & Conditions to proceed.");
+      return;
+    }
+    if (!emailValid) {
+      setError("Please enter a valid email — we'll send your receipt there.");
       return;
     }
     setSubmitting(true);
@@ -181,11 +190,12 @@ export default function PublicExtraPayment() {
                 placeholder="e.g. Alice Rodriguez"
               />
             </Field>
-            <Field label="Your email (optional)">
+            <Field label="Your email (required — for your receipt)">
               <input
                 value={payerEmail}
                 onChange={(e) => setPayerEmail(e.target.value)}
                 type="email"
+                required
                 data-testid="extra-payer-email"
                 className="brand-input"
                 placeholder="alice@example.com"
@@ -195,7 +205,7 @@ export default function PublicExtraPayment() {
           <TermsAcceptance accepted={tosAccepted} onChange={handleTosChange}/>
           <button
             onClick={onPay}
-            disabled={submitting || !tosAccepted}
+            disabled={submitting || !tosAccepted || !emailValid}
             data-testid="extra-pay-btn"
             className="w-full mt-5 inline-flex items-center justify-center gap-2 bg-espiritu-deep hover:bg-black disabled:opacity-60 disabled:cursor-not-allowed text-white px-5 py-3.5 rounded-full text-sm font-medium transition-colors">
             {submitting ? (
@@ -208,6 +218,12 @@ export default function PublicExtraPayment() {
             <div className="mt-2 font-raleway text-xs text-espiritu-deep/60 flex items-center gap-1"
                  data-testid="extra-tos-required-hint">
               <AlertCircle size={12} className="text-espiritu-magenta"/> Please accept the Terms & Conditions to continue.
+            </div>
+          )}
+          {!emailValid && (
+            <div className="mt-2 font-raleway text-xs text-espiritu-deep/60 flex items-center gap-1"
+                 data-testid="extra-email-required-hint">
+              <AlertCircle size={12} className="text-espiritu-magenta"/> Please enter your email above — we&apos;ll send your receipt there.
             </div>
           )}
           <div className="mt-4 font-raleway text-xs text-espiritu-deep/60 inline-flex items-center gap-2">

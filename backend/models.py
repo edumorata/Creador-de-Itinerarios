@@ -492,8 +492,10 @@ class Itinerary(BaseModel):
     commission_pct: float = 15.0
     partner: Optional[PartnerKind] = "kimkim"
     # Optional PayPal processing fee (3%) added on top of the final PVP when
-    # the client is paying via PayPal. Toggleable per itinerary.
-    paypal_fee: bool = False
+    # the client is paying via PayPal. Enabled by default because all live
+    # trips go through PayPal — the agent can untick it manually if the fee
+    # is being absorbed by the agency for a specific booking.
+    paypal_fee: bool = True
     # Optional locked exchange rate (EUR → trip currency, typically USD). When
     # set, the builder honors this value across sessions instead of refreshing
     # from the daily ECB feed. Agents can override via the FX converter or

@@ -61,6 +61,128 @@ async def send_email(
         return False
 
 
+def render_payment_receipt_client_email(
+    *,
+    trip_name: str,
+    main_traveler: str,
+    kind: str,
+    share_label: str,
+    payer_name: str,
+    amount_eur: float,
+    currency: str,
+    paid_eur_total: float,
+    total_eur: float,
+    remaining_eur: float,
+    booking_secured: bool,
+    balance_due_date: str,
+    paypal_capture_id: str,
+    trip_view_url: str,
+) -> tuple[str, str, str]:
+    """Receipt email sent to the CLIENT (payer_email) after a successful
+    payment capture. Written in US English. Different from the internal
+    agent notification — friendlier tone, no PVP / margin data, focused
+    on reassurance + next steps.
+
+    `kind` is one of the payment kinds (deposit, balance, full, partial,
+    extra). `booking_secured` tells us whether the deposit threshold has
+    been reached — used to choose the "your booking is confirmed" copy
+    vs "your deposit is being processed" copy.
+    """
+    friendly_name = (payer_name or "").split()[0] if payer_name else ""
+    greeting = f"Thank you, {friendly_name}!" if friendly_name else "Thank you!"
+    kind_low = (kind or "").lower()
+    kicker_label = {
+        "deposit": "Deposit received",
+        "balance": "Final balance received",
+        "full":    "Full payment received",
+        "partial": "Payment received",
+        "extra":   "Add-on payment received",
+    }.get(kind_low, "Payment received")
+    if share_label:
+        kicker_label = f"{kicker_label} · {share_label}"
+    subject = f"Payment received — {trip_name} · {amount_eur:,.2f} {currency or 'EUR'}"
+
+    # Choose the reassurance line based on the payment stage.
+    # `next_step_html` keeps rich formatting; `next_step_text` mirrors it
+    # without any HTML tags so the plain-text variant stays clean.
+    if kind_low == "extra":
+        status_line = "We've captured this add-on payment and forwarded it to our operations team — you're all set."
+        next_step_html = "Nothing further is required from you for this extra."
+        next_step_text = next_step_html
+    elif booking_secured and remaining_eur <= 0.01:
+        status_line = "Your trip is now fully paid — thank you! We can't wait to welcome you."
+        next_step_html = "You'll receive your final travel documents (vouchers, contacts, day-by-day plan) in the run-up to your departure."
+        next_step_text = next_step_html
+    elif booking_secured:
+        due_txt = f" by {balance_due_date}" if balance_due_date else ""
+        status_line = "Your booking is confirmed — we've secured your reservations with our suppliers."
+        next_step_html = f"The remaining balance of <strong>{remaining_eur:,.2f} {currency or 'EUR'}</strong> is due{due_txt}. We'll send you a friendly reminder as the date approaches."
+        next_step_text = f"The remaining balance of {remaining_eur:,.2f} {currency or 'EUR'} is due{due_txt}. We'll send you a friendly reminder as the date approaches."
+    else:
+        status_line = "We've received your payment and are processing your reservation with our suppliers."
+        next_step_html = f"So far paid: <strong>{paid_eur_total:,.2f} {currency or 'EUR'}</strong> of {total_eur:,.2f} {currency or 'EUR'}. Remaining: <strong>{remaining_eur:,.2f} {currency or 'EUR'}</strong>."
+        next_step_text = f"So far paid: {paid_eur_total:,.2f} {currency or 'EUR'} of {total_eur:,.2f} {currency or 'EUR'}. Remaining: {remaining_eur:,.2f} {currency or 'EUR'}."
+
+    trip_link_html = (
+        f'<tr><td style="padding:8px 28px 8px"><a href="{trip_view_url}" '
+        f'style="display:inline-block;background:#121b28;color:#fff;padding:14px 28px;'
+        f'text-decoration:none;font-size:13px;letter-spacing:.15em;text-transform:uppercase;font-weight:700">'
+        f'View your trip →</a></td></tr>'
+        if trip_view_url else ""
+    )
+    trip_link_text = f"\nView your trip: {trip_view_url}\n" if trip_view_url else ""
+
+    html = f"""\
+<!doctype html>
+<html>
+  <body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#f4ebd7;padding:24px;color:#121b28">
+    <table cellpadding="0" cellspacing="0" width="100%" style="max-width:600px;margin:0 auto;background:#fff;border:1px solid #ead9b8">
+      <tr><td style="padding:28px 28px 20px;border-bottom:1px solid #ead9b8">
+        <div style="font-size:11px;letter-spacing:.25em;text-transform:uppercase;color:#3d7d5b">{kicker_label}</div>
+        <div style="font-family:Georgia,serif;font-size:26px;margin-top:10px;line-height:1.15">{greeting}</div>
+        <div style="color:#666;margin-top:6px;font-size:14px">Trip: <strong>{trip_name}</strong>{f" · {main_traveler}" if main_traveler and main_traveler != payer_name else ""}</div>
+      </td></tr>
+      <tr><td style="padding:0 28px">
+        <div style="background:#f4ebd7;padding:22px;border-left:4px solid #3d7d5b;margin-top:20px">
+          <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:#B08749">Amount received</div>
+          <div style="font-family:Georgia,serif;font-size:38px;color:#3d7d5b;margin-top:4px">+ {amount_eur:,.2f} {currency or 'EUR'}</div>
+          <div style="font-size:12px;color:#666;margin-top:10px;font-family:monospace">PayPal reference: {paypal_capture_id or 'processing'}</div>
+        </div>
+      </td></tr>
+      <tr><td style="padding:20px 28px 8px">
+        <p style="font-size:15px;line-height:1.65;margin:0 0 12px">{status_line}</p>
+        <p style="font-size:14px;line-height:1.65;margin:0 0 12px;color:#333">{next_step_html}</p>
+      </td></tr>
+      {trip_link_html}
+      <tr><td style="padding:20px 28px 28px;font-size:12px;color:#666;line-height:1.55;border-top:1px solid #ead9b8;margin-top:16px">
+        This is an automated receipt from Espíritu Travel. Keep it for your records. If you have any questions about your trip, simply reply to your travel specialist's most recent email — they'll be happy to help.
+      </td></tr>
+    </table>
+    <div style="max-width:600px;margin:12px auto 0;text-align:center;font-size:11px;color:#999;font-family:-apple-system,Segoe UI,Roboto,sans-serif">
+      Espíritu Travel · Bespoke journeys across Spain, Portugal, Italy & Morocco
+    </div>
+  </body>
+</html>
+"""
+    text = f"""\
+{kicker_label}
+
+{greeting}
+Trip: {trip_name}
+
+Amount received: {amount_eur:,.2f} {currency or 'EUR'}
+PayPal reference: {paypal_capture_id or 'processing'}
+
+{status_line}
+
+{next_step_text}
+{trip_link_text}
+This is an automated receipt from Espíritu Travel. Keep it for your records.
+If you have any questions, reply to your travel specialist's most recent email.
+"""
+    return subject, html, text
+
+
 def render_traveler_info_email(itn: dict, info: dict, public_url: Optional[str] = None) -> tuple[str, str, str]:
     """Render the subject/HTML/text bodies for the 'client has filled in
     the booking form' notification."""

@@ -1,11 +1,12 @@
 # PRD — Travel Itinerary Builder
 
-## 🚀 Production status (2026-07-06)
+## 🚀 Production status (2026-07-07)
 - **Live URL**: https://trips.espiritutravel.com
 - **Deploy unblocker (Jul 6, 2026)**: Added `/app/.dockerignore` excluding `/app/artifacts/` (580 MB of one-shot import files). Previous K8sDeployNotRetryable timeouts were caused by the oversized deploy package, not by application code. Backend was already fine (seed loader in background task, FastAPI starts in <1s).
-- **PayPal**: Live mode, brand_name="Espíritu Travel", Guest Checkout enabled, webhook configured.
+- **PayPal**: Live mode, brand_name="Espíritu Travel", Guest Checkout enabled, webhook configured. **`paypal_fee` (3%) is now enabled by default on new itineraries** (agent must untick manually if they want to absorb the fee).
 - **Auth**: Emergent Google Auth on custom domain (trips.espiritutravel.com) working.
-- **Client-facing UX**: 100% US English (emails, payment pages, T&C).
+- **Managers (Bea + Marina) — since 2026-07-07**: `REFUND_APPROVERS` (Bea, Marina) unlock full read/write access to ALL itineraries in the agency, plus visibility of the agent filter — so they can review any trip before approving a refund. Implemented via `_is_refund_approver()` reused in `_can_access()`, `list_itineraries()`, and `/itineraries/agents`.
+- **Client-facing UX**: 100% US English (emails, payment pages, T&C). **Client email is now REQUIRED at every checkout** (with regex validation) — used to send a per-payer PayPal receipt in US English via Resend (`render_payment_receipt_client_email`). Split payments generate one receipt per co-payer. PayPal's own receipt still fires; ours is a friendlier branded follow-up with "your booking is confirmed / balance due by DATE" copy.
 - **Compliance**: Mandatory Terms & Conditions checkbox on every payment; IP + timestamp + version stored per payment row.
 - **Payment deadlines**: 60 days before trip start (deposit-or-full allowed >60d; full-only ≤60d).
 
